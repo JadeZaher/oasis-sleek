@@ -1,3 +1,0 @@
-﻿<Project>
-  <Import Project="..\build\OASIS.WebAPI.props" />
-</Project>

@@ -98,32 +98,6 @@ public class AvatarManagerExtendedTests
     }
 
     [Fact]
-    public async Task RemoveWalletAsync_WhenWalletMissing_ShouldReturnError()
-    {
-        _provider.Setup(p => p.LoadWalletAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-                 .ReturnsAsync(new OASISResult<IWallet> { IsError = true, Message = "Not found" });
-
-        var result = await _manager.RemoveWalletAsync(Guid.NewGuid(), Guid.NewGuid());
-
-        result.IsError.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task GetWalletsAsync_ShouldReturnWallets()
-    {
-        var avatarId = Guid.NewGuid();
-        _provider.Setup(p => p.LoadWalletsByAvatarAsync(avatarId, It.IsAny<CancellationToken>()))
-                 .ReturnsAsync(new OASISResult<IEnumerable<IWallet>>
-                 {
-                     Result = new[] { new Wallet { Address = "addr1" }, new Wallet { Address = "addr2" } }
-                 });
-
-        var result = await _manager.GetWalletsAsync(avatarId);
-
-        result.Result.Should().HaveCount(2);
-    }
-
-    [Fact]
     public async Task RegisterAsync_WhenProviderActivationFails_ShouldReturnError()
     {
         var config = new ConfigurationBuilder().Build();

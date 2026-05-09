@@ -11,4 +11,6 @@
 | [wallet-api](tracks/wallet-api/spec.md) | `[ ]` | First-class Wallet API with CRUD, portfolio analytics, and default-wallet management |
 | [nft-api](tracks/nft-api/spec.md) | `[ ]` | Semantic NFT layer (mint, transfer, burn, metadata) built on Holon infrastructure |
 | [search-api](tracks/search-api/spec.md) | `[ ]` | Unified cross-entity search with pagination, filtering, and faceted results |
+| [providers-and-cross-chain-bridge](tracks/providers-and-cross-chain-bridge/spec.md) | `[~]` | Rebuild Algorand + Solana providers, wire BlockchainProviderFactory, implement trusted cross-chain bridge orchestrator |
 | [validation-mapping](tracks/validation-mapping/spec.md) | `[ ]` | FluentValidation input pipeline + AutoMapper entity-DTO mapping layer |
+| [oasis-wallet-sdk](tracks/oasis-wallet-sdk_20260509/spec.md) | `[ ]` | Cross-platform Node SDK (@oasis/wallet-sdk) — client-side tx signing, OASIS API client, DEX adapters (Tinyman/Jupiter) |

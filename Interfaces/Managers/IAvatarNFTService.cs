@@ -22,13 +22,13 @@ public interface IAvatarNFTService
     
     // Wallet NFT Binding Management
     Task<OASISResult<IWalletNFTBinding>> BindWalletToAvatarNFTAsync(Guid walletId, Guid avatarNFTId, WalletNFTBindingModel model, OASISRequest? request = null);
-    Task<OASISResult<IEnumerable<IWalletNFTBinding>> GetWalletBindingsAsync(Guid avatarNFTId, OASISRequest? request = null);
+    Task<OASISResult<IEnumerable<IWalletNFTBinding>>> GetWalletBindingsAsync(Guid avatarNFTId, OASISRequest? request = null);
     Task<OASISResult<bool>> UpdateWalletBindingAsync(Guid id, WalletNFTBindingUpdateModel model, OASISRequest? request = null);
     Task<OASISResult<bool>> RemoveWalletBindingAsync(Guid id, OASISRequest? request = null);
     
     // Composite Operations
     Task<OASISResult<AvatarNFTCompositeResult>> GetAvatarNFTCompositeAsync(Guid avatarNFTId, OASISRequest? request = null);
-    Task<OASISResult<IEnumerable<AvatarNFTCompositeResult>> GetAvatarNFTCompositesByAvatarAsync(Guid avatarId, OASISRequest? request = null);
+    Task<OASISResult<IEnumerable<AvatarNFTCompositeResult>>> GetAvatarNFTCompositesByAvatarAsync(Guid avatarId, OASISRequest? request = null);
     
     // Verification and Authorization
     Task<OASISResult<bool>> VerifyAvatarNFTOwnershipAsync(Guid avatarId, string chainType, string nftContractAddress, string tokenId, OASISRequest? request = null);

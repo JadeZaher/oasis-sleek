@@ -82,4 +82,19 @@ public abstract class ProviderDecorator : IOASISStorageProvider
 
     public virtual Task<OASISResult<IEnumerable<ISTARODK>>> LoadAllSTARODKsAsync(CancellationToken ct = default)
         => Inner.LoadAllSTARODKsAsync(ct);
+
+    // NFT Extension methods (delegate to inner)
+    public virtual Task<OASISResult<IAvatarNFT>> SaveAvatarNFTAsync(IAvatarNFT n, CancellationToken ct = default) => Inner.SaveAvatarNFTAsync(n, ct);
+    public virtual Task<OASISResult<IAvatarNFT>> LoadAvatarNFTAsync(Guid id, CancellationToken ct = default) => Inner.LoadAvatarNFTAsync(id, ct);
+    public virtual Task<OASISResult<IAvatarNFT>> LoadAvatarNFTByTokenIdAsync(string c, string n, string t, CancellationToken ct = default) => Inner.LoadAvatarNFTByTokenIdAsync(c, n, t, ct);
+    public virtual Task<OASISResult<IEnumerable<IAvatarNFT>>> LoadAvatarNFTsByAvatarAsync(Guid a, CancellationToken ct = default) => Inner.LoadAvatarNFTsByAvatarAsync(a, ct);
+    public virtual Task<OASISResult<bool>> DeleteAvatarNFTAsync(Guid id, CancellationToken ct = default) => Inner.DeleteAvatarNFTAsync(id, ct);
+    public virtual Task<OASISResult<IHolonNFTBinding>> SaveHolonNFTBindingAsync(IHolonNFTBinding b, CancellationToken ct = default) => Inner.SaveHolonNFTBindingAsync(b, ct);
+    public virtual Task<OASISResult<IHolonNFTBinding>> LoadHolonNFTBindingAsync(Guid id, CancellationToken ct = default) => Inner.LoadHolonNFTBindingAsync(id, ct);
+    public virtual Task<OASISResult<IEnumerable<IHolonNFTBinding>>> LoadHolonNFTBindingsByAvatarNFTAsync(Guid a, CancellationToken ct = default) => Inner.LoadHolonNFTBindingsByAvatarNFTAsync(a, ct);
+    public virtual Task<OASISResult<bool>> DeleteHolonNFTBindingAsync(Guid id, CancellationToken ct = default) => Inner.DeleteHolonNFTBindingAsync(id, ct);
+    public virtual Task<OASISResult<IWalletNFTBinding>> SaveWalletNFTBindingAsync(IWalletNFTBinding b, CancellationToken ct = default) => Inner.SaveWalletNFTBindingAsync(b, ct);
+    public virtual Task<OASISResult<IWalletNFTBinding>> LoadWalletNFTBindingAsync(Guid id, CancellationToken ct = default) => Inner.LoadWalletNFTBindingAsync(id, ct);
+    public virtual Task<OASISResult<IEnumerable<IWalletNFTBinding>>> LoadWalletNFTBindingsByAvatarNFTAsync(Guid a, CancellationToken ct = default) => Inner.LoadWalletNFTBindingsByAvatarNFTAsync(a, ct);
+    public virtual Task<OASISResult<bool>> DeleteWalletNFTBindingAsync(Guid id, CancellationToken ct = default) => Inner.DeleteWalletNFTBindingAsync(id, ct);
 }

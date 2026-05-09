@@ -71,31 +71,4 @@ public class AvatarController : ControllerBase
         if (result.IsError || !result.Result) return NotFound(result);
         return Ok(new OASISResponse { Message = "Avatar deleted." });
     }
-
-    // Wallet endpoints
-    [HttpPost("{id:guid}/wallets")]
-    [Authorize]
-    public async Task<ActionResult<OASISResult<IWallet>>> AddWallet(Guid id, [FromBody] Wallet wallet, [FromQuery] OASISRequest? request)
-    {
-        var result = await _manager.AddWalletAsync(id, wallet, request);
-        if (result.IsError) return BadRequest(result);
-        return Ok(result);
-    }
-
-    [HttpDelete("{id:guid}/wallets/{walletId:guid}")]
-    [Authorize]
-    public async Task<ActionResult<OASISResponse>> RemoveWallet(Guid id, Guid walletId, [FromQuery] OASISRequest? request)
-    {
-        var result = await _manager.RemoveWalletAsync(id, walletId, request);
-        if (result.IsError || !result.Result) return NotFound(result);
-        return Ok(new OASISResponse { Message = "Wallet removed." });
-    }
-
-    [HttpGet("{id:guid}/wallets")]
-    [Authorize]
-    public async Task<ActionResult<OASISResult<IEnumerable<IWallet>>>> GetWallets(Guid id, [FromQuery] OASISRequest? request)
-    {
-        var result = await _manager.GetWalletsAsync(id, request);
-        return Ok(result);
-    }
 }

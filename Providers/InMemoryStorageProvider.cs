@@ -195,4 +195,19 @@ public class InMemoryStorageProvider : IOASISStorageProvider
             Message = "Success"
         });
     }
+
+    // NFT Extension stubs
+public Task<OASISResult<IAvatarNFT>> SaveAvatarNFTAsync(IAvatarNFT n, CancellationToken ct = default) => Task.FromResult(new OASISResult<IAvatarNFT> { Result = n, Message = "Saved" });
+public Task<OASISResult<IAvatarNFT>> LoadAvatarNFTAsync(Guid id, CancellationToken ct = default) => Task.FromResult(new OASISResult<IAvatarNFT> { IsError = true, Message = "Not implemented" });
+public Task<OASISResult<IAvatarNFT>> LoadAvatarNFTByTokenIdAsync(string c, string n, string t, CancellationToken ct = default) => Task.FromResult(new OASISResult<IAvatarNFT> { IsError = true, Message = "Not implemented" });
+public Task<OASISResult<IEnumerable<IAvatarNFT>>> LoadAvatarNFTsByAvatarAsync(Guid a, CancellationToken ct = default) => Task.FromResult<OASISResult<IEnumerable<IAvatarNFT>>>(new() { Result = Array.Empty<IAvatarNFT>(), Message = "Success" });
+public Task<OASISResult<bool>> DeleteAvatarNFTAsync(Guid id, CancellationToken ct = default) => Task.FromResult(new OASISResult<bool> { IsError = true, Message = "Not implemented" });
+public Task<OASISResult<IHolonNFTBinding>> SaveHolonNFTBindingAsync(IHolonNFTBinding b, CancellationToken ct = default) => Task.FromResult(new OASISResult<IHolonNFTBinding> { Result = b, Message = "Saved" });
+public Task<OASISResult<IHolonNFTBinding>> LoadHolonNFTBindingAsync(Guid id, CancellationToken ct = default) => Task.FromResult(new OASISResult<IHolonNFTBinding> { IsError = true, Message = "Not implemented" });
+public Task<OASISResult<IEnumerable<IHolonNFTBinding>>> LoadHolonNFTBindingsByAvatarNFTAsync(Guid a, CancellationToken ct = default) => Task.FromResult<OASISResult<IEnumerable<IHolonNFTBinding>>>(new() { Result = Array.Empty<IHolonNFTBinding>(), Message = "Success" });
+public Task<OASISResult<bool>> DeleteHolonNFTBindingAsync(Guid id, CancellationToken ct = default) => Task.FromResult(new OASISResult<bool> { IsError = true, Message = "Not implemented" });
+public Task<OASISResult<IWalletNFTBinding>> SaveWalletNFTBindingAsync(IWalletNFTBinding b, CancellationToken ct = default) => Task.FromResult(new OASISResult<IWalletNFTBinding> { Result = b, Message = "Saved" });
+public Task<OASISResult<IWalletNFTBinding>> LoadWalletNFTBindingAsync(Guid id, CancellationToken ct = default) => Task.FromResult(new OASISResult<IWalletNFTBinding> { IsError = true, Message = "Not implemented" });
+public Task<OASISResult<IEnumerable<IWalletNFTBinding>>> LoadWalletNFTBindingsByAvatarNFTAsync(Guid a, CancellationToken ct = default) => Task.FromResult<OASISResult<IEnumerable<IWalletNFTBinding>>>(new() { Result = Array.Empty<IWalletNFTBinding>(), Message = "Success" });
+public Task<OASISResult<bool>> DeleteWalletNFTBindingAsync(Guid id, CancellationToken ct = default) => Task.FromResult(new OASISResult<bool> { IsError = true, Message = "Not implemented" });
 }

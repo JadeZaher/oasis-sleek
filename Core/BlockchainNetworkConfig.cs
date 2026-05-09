@@ -3,6 +3,7 @@ namespace OASIS.WebAPI.Core;
 public class BlockchainNetworkConfig
 {
     public string NodeUrl { get; set; } = string.Empty;
+    public string? IndexerUrl { get; set; }
     public string? ApiToken { get; set; }
     public string? ApiKey { get; set; }
     public string? PrivateKey { get; set; }

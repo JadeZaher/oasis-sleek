@@ -10,6 +10,11 @@ public interface IBlockchainProvider
 
     void Initialize(BlockchainNetworkConfig config, ChainNetwork network);
 
+    /// <summary>
+    /// Get a chain-specific capability module (e.g., IAlgorandASAModule, ISolanaMetaplexModule).
+    /// </summary>
+    bool TryGetModule<T>(out T? module) where T : class, IBlockchainProviderModule;
+
     // ─── Account / Wallet ───
     Task<OASISResult<string>> GetBalanceAsync(string address, string? tokenId = null, CancellationToken ct = default);
     Task<OASISResult<bool>> ValidateAddressAsync(string address, CancellationToken ct = default);
@@ -80,4 +85,37 @@ public interface IBlockchainProvider
 
     // ─── Chain Info ───
     Task<OASISResult<Dictionary<string, object>>> GetChainInfoAsync(CancellationToken ct = default);
+
+    // ─── Cross-Chain Bridge Primitives ───
+    /// <summary>
+    /// Lock an asset in a bridge vault on this chain (for outbound bridging).
+    /// </summary>
+    Task<OASISResult<string>> LockForBridgeAsync(
+        string tokenId, string vaultAddress, int amount,
+        string targetChain, string targetRecipient, CancellationToken ct = default);
+
+    /// <summary>
+    /// Mint a wrapped asset representation of an asset from another chain.
+    /// </summary>
+    Task<OASISResult<string>> MintWrappedAsync(
+        string sourceChain, string sourceTokenId, string tokenUri,
+        int amount, string recipientAddress, CancellationToken ct = default);
+
+    /// <summary>
+    /// Burn a wrapped asset to release the original asset on the source chain.
+    /// </summary>
+    Task<OASISResult<string>> BurnWrappedAsync(
+        string tokenId, int amount, string sourceChain,
+        string sourceRecipient, string walletAddress, CancellationToken ct = default);
+
+    /// <summary>
+    /// Verify a cross-chain proof/message from another chain.
+    /// </summary>
+    Task<OASISResult<bool>> VerifyBridgeProofAsync(
+        string proofData, string sourceChain, string targetChainId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Check if this provider supports bridging operations natively.
+    /// </summary>
+    bool SupportsBridging { get; }
 }

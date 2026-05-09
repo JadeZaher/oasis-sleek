@@ -98,35 +98,6 @@ public class AvatarManager : IAvatarManager
         return await _providerContext.CurrentProvider.DeleteAvatarAsync(id);
     }
 
-    public async Task<OASISResult<IWallet>> AddWalletAsync(Guid avatarId, Wallet wallet, OASISRequest? request = null)
-    {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IWallet> { IsError = true, Message = activation.Message };
-
-        wallet.AvatarId = avatarId;
-        return await _providerContext.CurrentProvider.SaveWalletAsync(wallet);
-    }
-
-    public async Task<OASISResult<bool>> RemoveWalletAsync(Guid avatarId, Guid walletId, OASISRequest? request = null)
-    {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        var wallet = await _providerContext.CurrentProvider.LoadWalletAsync(walletId);
-        if (wallet.IsError || wallet.Result == null || wallet.Result.AvatarId != avatarId)
-            return new OASISResult<bool> { IsError = true, Message = "Wallet not found or not owned by avatar.", Result = false };
-
-        return await _providerContext.CurrentProvider.DeleteWalletAsync(walletId);
-    }
-
-    public async Task<OASISResult<IEnumerable<IWallet>>> GetWalletsAsync(Guid avatarId, OASISRequest? request = null)
-    {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IWallet>> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadWalletsByAvatarAsync(avatarId);
-    }
-
     private string GenerateJwt(IAvatar avatar)
     {
         var key = _config.GetValue<string>("Jwt:Key") ?? throw new InvalidOperationException("JWT Key missing.");

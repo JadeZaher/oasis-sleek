@@ -3,7 +3,7 @@ using OASIS.WebAPI.Models.Responses;
 
 namespace OASIS.WebAPI.Interfaces;
 
-public interface IOASISStorageProvider
+public interface IOASISStorageProvider : IOASISStorageProviderNFTExtensions
 {
     string ProviderName { get; }
 

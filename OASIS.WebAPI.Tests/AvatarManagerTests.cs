@@ -101,29 +101,4 @@ public class AvatarManagerTests
         result.Result!.Username.Should().Be("test");
     }
 
-    [Fact]
-    public async Task AddWalletAsync_ShouldSetAvatarIdAndSave()
-    {
-        var wallet = new Wallet { Address = "0x123", ChainType = "Ethereum" };
-        _provider.Setup(p => p.SaveWalletAsync(It.IsAny<IWallet>(), It.IsAny<CancellationToken>()))
-                 .ReturnsAsync((IWallet w, CancellationToken _) => new OASISResult<IWallet> { Result = w });
-
-        var result = await _manager.AddWalletAsync(Guid.NewGuid(), wallet);
-
-        result.IsError.Should().BeFalse();
-        result.Result!.AvatarId.Should().NotBe(Guid.Empty);
-    }
-
-    [Fact]
-    public async Task RemoveWalletAsync_WithWrongAvatar_ShouldReturnError()
-    {
-        var wallet = new Wallet { Id = Guid.NewGuid(), AvatarId = Guid.NewGuid() };
-        _provider.Setup(p => p.LoadWalletAsync(wallet.Id, It.IsAny<CancellationToken>()))
-                 .ReturnsAsync(new OASISResult<IWallet> { Result = wallet });
-
-        var result = await _manager.RemoveWalletAsync(Guid.NewGuid(), wallet.Id);
-
-        result.IsError.Should().BeTrue();
-        result.Message.Should().Contain("not owned by avatar");
-    }
 }

@@ -9,5 +9,7 @@ public enum ProviderType
     IPFS,
     HoloOASIS,
     Ethereum,
+    Algorand,
+    Solana,
     Custom
 }

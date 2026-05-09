@@ -1,3 +1,5 @@
+using OASIS.WebAPI.Models;
+
 namespace OASIS.WebAPI.Interfaces;
 
 public interface IAvatarNFTCompositeResult

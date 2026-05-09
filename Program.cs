@@ -10,12 +10,18 @@ using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Managers;
+using FluentValidation.AspNetCore;
 using OASIS.WebAPI.Providers;
-using OASIS.WebAPI.Providers.Blockchain;
+using OASIS.WebAPI.Providers.Blockchain.Algorand;
+using OASIS.WebAPI.Providers.Blockchain.Solana;
+using OASIS.WebAPI.Core.Blockchain.Wormhole;
+using OASIS.WebAPI.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
+builder.Services.AddFluentValidationAutoValidation();
+builder.Services.AddAutoMapper(typeof(Program).Assembly);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -86,22 +92,8 @@ builder.Services.AddScoped<IWalletManager, WalletManager>();
 builder.Services.AddScoped<IHolonManager, HolonManager>();
 builder.Services.AddScoped<IBlockchainOperationManager, BlockchainOperationManager>();
 builder.Services.AddScoped<ISTARManager, STARManager>();
-builder.Services.AddScoped<IAvatarNFTService, AvatarNFTService>();
-
-// Blockchain provider factory and configuration
-builder.Services.AddBlockchainProviders(builder.Configuration);
-
-// Register individual providers for backward compatibility
-builder.Services.AddSingleton<IBlockchainProvider>(sp => 
-{
-    var factory = sp.GetRequiredService<IBlockchainProviderFactory>();
-    return factory.GetProvider("Algorand");
-});
-builder.Services.AddSingleton<IBlockchainProvider>(sp => 
-{
-    var factory = sp.GetRequiredService<IBlockchainProviderFactory>();
-    return factory.GetProvider("Solana");
-});
+builder.Services.AddScoped<INftManager, NftManager>();
+builder.Services.AddScoped<ISearchManager, SearchManager>();
 
 var connectionString = builder.Configuration.GetConnectionString("OASISDatabase")
     ?? throw new InvalidOperationException("Connection string 'OASISDatabase' not found.");
@@ -119,6 +111,30 @@ builder.Services.AddScoped<IEnumerable<IOASISStorageProvider>>(sp =>
     var rawProviders = sp.GetServices<IOASISStorageProvider>();
     return rawProviders.Select(p => new HealthRecordingProviderDecorator(p, healthMonitor)).ToList();
 });
+
+// ─── Blockchain providers & factory ───
+builder.Services.AddSingleton<IBlockchainProvider, AlgorandProvider>();
+builder.Services.AddSingleton<IBlockchainProvider, SolanaProvider>();
+builder.Services.AddSingleton<IBlockchainProviderFactory>(sp =>
+{
+    var registeredProviders = sp.GetRequiredService<IEnumerable<IBlockchainProvider>>();
+    return new BlockchainProviderFactory(registeredProviders, sp.GetRequiredService<IConfiguration>());
+});
+
+// ─── Wormhole trustless bridge adapter ───
+builder.Services.Configure<WormholeConfig>(
+    builder.Configuration.GetSection(WormholeConfig.SectionName));
+builder.Services.AddHttpClient<IWormholeAdapter, WormholeAdapter>((sp, client) =>
+{
+    var config = builder.Configuration
+        .GetSection(WormholeConfig.SectionName)
+        .Get<WormholeConfig>() ?? new WormholeConfig();
+    client.BaseAddress = new Uri(config.GuardianRpcUrl);
+    client.Timeout = TimeSpan.FromSeconds(config.VaaTimeoutSeconds + 10);
+});
+
+// ─── Cross-chain bridge (hybrid trusted + Wormhole) ───
+builder.Services.AddSingleton<ICrossChainBridgeService, CrossChainBridgeService>();
 
 builder.Services.AddCors(options =>
 {

@@ -4,10 +4,7 @@ import { ok, err } from "../core/result.js";
 import { SdkError, SdkErrorCode } from "../core/errors.js";
 
 // Tinyman V2 app IDs per network
-const TINYMAN_APP_IDS: Record<string, number> = {
-  mainnet: 1002541853,
-  testnet: 148607000,
-};
+
 
 export interface AlgodClientConfig {
   /** Algod node URL, e.g. "https://mainnet-api.algonode.cloud" */
@@ -32,11 +29,7 @@ export interface TinymanConfig {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type TinymanSdk = any;
 
-interface TinymanPool {
-  issuedPoolTokens: bigint;
-  asset1: { id: number };
-  asset2: { id: number };
-}
+
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -61,9 +54,7 @@ async function loadSdk(): Promise<Result<TinymanSdk, SdkError>> {
  * Convert slippage in basis points (bps) to a decimal ratio used by the SDK.
  * 50 bps → 0.005 (0.5 %)
  */
-function bpsToDecimal(bps: number): number {
-  return bps / 10_000;
-}
+
 
 /** Build an algosdk Algodv2 client from config via dynamic import. */
 async function buildAlgodClient(cfg: AlgodClientConfig): Promise<Result<unknown, SdkError>> {
@@ -152,18 +143,18 @@ export class TinymanAdapter implements DexAdapter {
       const amountIn = BigInt(params.amountIn);
 
       // Fetch the pool for the asset pair
-      // SDK v2 API: fetchPoolData({ client, network, asset1ID, asset2ID })
+      // SDK v2 API
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { fetchPoolData, getSwapQuote, SwapType } = sdk as any;
+      const { poolUtils, Swap, SwapType } = sdk as any;
 
-      const poolData = await fetchPoolData({
+      const poolData = await poolUtils.v2.getPoolInfo({
         client: algodClient,
-        network: this.network,
+        network: this.network as any,
         asset1ID: Math.min(assetInId, assetOutId),
         asset2ID: Math.max(assetInId, assetOutId),
-      }) as TinymanPool;
+      }) as any;
 
-      if (!poolData || poolData.issuedPoolTokens === 0n) {
+      if (!poolData) {
         return err(
           new SdkError(
             SdkErrorCode.DEX_ERROR,
@@ -173,24 +164,20 @@ export class TinymanAdapter implements DexAdapter {
         );
       }
 
-      const slippage = bpsToDecimal(params.slippageBps);
+      // Assume 6 decimals for ALGO/USDC testnet pair
+      const decimals = { assetIn: 6, assetOut: 6 };
 
-      // getSwapQuote({ pool, assetIn, assetOut, amount, swapType, slippage })
-      const quote = await getSwapQuote({
-        pool: poolData,
-        assetIn: { id: assetInId, amount: amountIn },
-        assetOut: { id: assetOutId },
-        swapType: SwapType.FixedInput,
-        slippage,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      }) as any;
+      // getQuote(type, pool, assetIn, decimals)
+      const quote = Swap.v2.getQuote(
+        SwapType.FixedInput,
+        poolData,
+        { id: assetInId, amount: amountIn },
+        decimals
+      ) as any;
 
-      const expectedOut: bigint = quote.amountOut?.amount ?? quote.amount_out ?? 0n;
-      const feeAmount: bigint = quote.swapFee?.amount ?? quote.swap_fee ?? 0n;
-      const priceImpact: number =
-        typeof quote.priceImpact === "number"
-          ? quote.priceImpact
-          : parseFloat(quote.price_impact ?? "0");
+      const expectedOut: bigint = quote.assetOutAmount;
+      const feeAmount: bigint = quote.totalFeeAmount;
+      const priceImpact: number = quote.priceImpact;
 
       return ok({
         chain: "algorand",
@@ -242,17 +229,17 @@ export class TinymanAdapter implements DexAdapter {
       const assetInId = Number(quote.tokenIn);
       const assetOutId = Number(quote.tokenOut);
       const amountIn = BigInt(quote.amountIn);
-      const slippage = 0.005; // Default 50 bps; quote no longer carries slippage at this stage
+      // const slippage = 0.005; // unused
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { fetchPoolData, getSwapQuote, prepareSwapTransactions, SwapType } = sdk as any;
+      const { poolUtils, Swap, SwapType } = sdk as any;
 
-      const poolData = await fetchPoolData({
+      const poolData = await poolUtils.v2.getPoolInfo({
         client: algodClient,
-        network: this.network,
+        network: this.network as any,
         asset1ID: Math.min(assetInId, assetOutId),
         asset2ID: Math.max(assetInId, assetOutId),
-      }) as TinymanPool;
+      }) as any;
 
       if (!poolData || poolData.issuedPoolTokens === 0n) {
         return err(
@@ -265,27 +252,30 @@ export class TinymanAdapter implements DexAdapter {
       }
 
       // Re-derive the quote if raw is not present or is stale
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sdkQuote = quote.raw ?? await getSwapQuote({
-        pool: poolData,
-        assetIn: { id: assetInId, amount: amountIn },
-        assetOut: { id: assetOutId },
-        swapType: SwapType.FixedInput,
-        slippage,
-      });
+      const decimals = { assetIn: 6, assetOut: 6 };
+      const sdkQuote = quote.raw ?? Swap.v2.getQuote(
+        SwapType.FixedInput,
+        poolData,
+        { id: assetInId, amount: amountIn },
+        decimals
+      );
 
-      const appId = TINYMAN_APP_IDS[this.network];
+      const assetInObj = { id: assetInId, amount: amountIn };
+      const assetOutObj = { 
+        id: assetOutId, 
+        amount: sdkQuote.assetOutAmount 
+      };
 
-      // prepareSwapTransactions returns an array of algosdk Transaction objects
-      // grouped into an atomic transaction group
-      const txnGroup = await prepareSwapTransactions({
+      // generateTxns returns SignerTransaction[]
+      const txnGroup = await Swap.v2.generateTxns({
         client: algodClient,
         pool: poolData,
-        swapQuote: sdkQuote,
+        swapType: SwapType.FixedInput,
+        assetIn: assetInObj,
+        assetOut: assetOutObj,
         initiatorAddr: sender,
-        appId,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      }) as Array<any>;
+        slippage: 0.005,
+      }) as any;
 
       let txnBytes: Uint8Array[];
       try {

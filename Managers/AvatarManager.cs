@@ -27,6 +27,15 @@ public class AvatarManager : IAvatarManager
         var activation = _providerContext.Activate(request);
         if (activation.IsError) return new OASISResult<IAvatar> { IsError = true, Message = activation.Message };
 
+        // Check for duplicate email
+        var allAvatars = await _providerContext.CurrentProvider.LoadAllAvatarsAsync();
+        if (allAvatars.Result?.Any(a => a.Email.Equals(model.Email, StringComparison.OrdinalIgnoreCase)) == true)
+            return new OASISResult<IAvatar> { IsError = true, Message = "An account with this email already exists." };
+
+        // Check for duplicate username
+        if (allAvatars.Result?.Any(a => a.Username.Equals(model.Username, StringComparison.OrdinalIgnoreCase)) == true)
+            return new OASISResult<IAvatar> { IsError = true, Message = "This username is already taken." };
+
         var avatar = new Avatar
         {
             Username = model.Username,

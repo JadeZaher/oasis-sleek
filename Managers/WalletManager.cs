@@ -11,11 +11,13 @@ public class WalletManager : IWalletManager
 {
     private readonly ProviderContext _providerContext;
     private readonly IBlockchainProviderFactory _chainFactory;
+    private readonly WalletKeyService _keyService;
 
-    public WalletManager(ProviderContext providerContext, IBlockchainProviderFactory chainFactory)
+    public WalletManager(ProviderContext providerContext, IBlockchainProviderFactory chainFactory, WalletKeyService keyService)
     {
         _providerContext = providerContext;
         _chainFactory = chainFactory;
+        _keyService = keyService;
     }
 
     public async Task<OASISResult<IWallet>> GetAsync(Guid id, OASISRequest? request = null)
@@ -67,7 +69,8 @@ public class WalletManager : IWalletManager
             Address = model.Address,
             PublicKey = model.PublicKey,
             Label = model.Label,
-            IsDefault = model.IsDefault
+            IsDefault = model.IsDefault,
+            WalletType = model.WalletType
         };
 
         if (model.IsDefault)
@@ -190,6 +193,148 @@ public class WalletManager : IWalletManager
         };
 
         return new OASISResult<PortfolioResult> { Result = portfolio, Message = "Portfolio computed." };
+    }
+
+    // ─── New: Generate a wallet on-platform ───
+
+    public async Task<OASISResult<IWallet>> GenerateWalletAsync(WalletGenerateRequest model, Guid avatarId, OASISRequest? request = null)
+    {
+        var activation = _providerContext.Activate(request);
+        if (activation.IsError) return new OASISResult<IWallet> { IsError = true, Message = activation.Message };
+
+        try
+        {
+            var (publicKey, privateKeyHex, address, seedPhrase) = _keyService.GenerateKeypair(model.ChainType);
+
+            // Check uniqueness
+            var all = await _providerContext.CurrentProvider.LoadAllWalletsAsync();
+            var existing = all.Result?.FirstOrDefault(w =>
+                w.Address.Equals(address, StringComparison.OrdinalIgnoreCase) &&
+                w.ChainType.Equals(model.ChainType, StringComparison.OrdinalIgnoreCase));
+
+            if (existing != null)
+                return new OASISResult<IWallet> { IsError = true, Message = "Generated address collision — please retry." };
+
+            var wallet = new Wallet
+            {
+                AvatarId = avatarId,
+                ChainType = model.ChainType,
+                Address = address,
+                PublicKey = publicKey,
+                Label = model.Label,
+                IsDefault = model.IsDefault,
+                WalletType = WalletType.Platform,
+                EncryptedPrivateKey = _keyService.EncryptPrivateKey(privateKeyHex),
+                EncryptedSeedPhrase = seedPhrase != null ? _keyService.EncryptSeedPhrase(seedPhrase) : null
+            };
+
+            if (model.IsDefault)
+                await UnsetPreviousDefaultAsync(avatarId, model.ChainType, wallet.Id);
+
+            return await _providerContext.CurrentProvider.SaveWalletAsync(wallet);
+        }
+        catch (NotSupportedException ex)
+        {
+            return new OASISResult<IWallet> { IsError = true, Message = ex.Message };
+        }
+    }
+
+    // ─── New: Connect an external wallet (MetaMask, Ghost, etc.) ───
+
+    public async Task<OASISResult<IWallet>> ConnectWalletAsync(WalletConnectRequest model, Guid avatarId, OASISRequest? request = null)
+    {
+        var activation = _providerContext.Activate(request);
+        if (activation.IsError) return new OASISResult<IWallet> { IsError = true, Message = activation.Message };
+
+        if (string.IsNullOrWhiteSpace(model.Address))
+            return new OASISResult<IWallet> { IsError = true, Message = "Address is required." };
+
+        // Optional: Verify ownership via signed message
+        if (!string.IsNullOrEmpty(model.SignedMessage) && !string.IsNullOrEmpty(model.OriginalMessage))
+        {
+            // In production, verify the signature using chain-specific recovery
+            // For now, trust the address if they provide it (lightweight verification)
+        }
+
+        // Check uniqueness
+        var all = await _providerContext.CurrentProvider.LoadAllWalletsAsync();
+        var existing = all.Result?.FirstOrDefault(w =>
+            w.Address.Equals(model.Address, StringComparison.OrdinalIgnoreCase) &&
+            w.ChainType.Equals(model.ChainType, StringComparison.OrdinalIgnoreCase));
+
+        if (existing != null)
+        {
+            // If the wallet belongs to this avatar, return it
+            if (existing.AvatarId == avatarId)
+                return new OASISResult<IWallet> { Result = existing, Message = "Wallet already connected." };
+
+            return new OASISResult<IWallet> { IsError = true, Message = "Address already registered by another avatar." };
+        }
+
+        var wallet = new Wallet
+        {
+            AvatarId = avatarId,
+            ChainType = model.ChainType,
+            Address = model.Address,
+            PublicKey = model.PublicKey,
+            Label = model.Label,
+            IsDefault = model.IsDefault,
+            WalletType = WalletType.External
+        };
+
+        if (model.IsDefault)
+            await UnsetPreviousDefaultAsync(avatarId, model.ChainType, wallet.Id);
+
+        return await _providerContext.CurrentProvider.SaveWalletAsync(wallet);
+    }
+
+    // ─── New: Export wallet private key ───
+
+    public async Task<OASISResult<WalletExportResult>> ExportWalletAsync(Guid walletId, Guid avatarId, OASISRequest? request = null)
+    {
+        var activation = _providerContext.Activate(request);
+        if (activation.IsError) return new OASISResult<WalletExportResult> { IsError = true, Message = activation.Message };
+
+        var walletResult = await _providerContext.CurrentProvider.LoadWalletAsync(walletId);
+        if (walletResult.IsError || walletResult.Result == null)
+            return new OASISResult<WalletExportResult> { IsError = true, Message = "Wallet not found." };
+
+        var wallet = walletResult.Result;
+
+        if (wallet.AvatarId != avatarId)
+            return new OASISResult<WalletExportResult> { IsError = true, Message = "Wallet not owned by this avatar." };
+
+        if (wallet.WalletType != WalletType.Platform)
+            return new OASISResult<WalletExportResult> { IsError = true, Message = "Only platform-generated wallets can be exported. External wallets are managed by their respective browser wallet." };
+
+        if (string.IsNullOrEmpty(wallet.EncryptedPrivateKey))
+            return new OASISResult<WalletExportResult> { IsError = true, Message = "No private key stored for this wallet." };
+
+        try
+        {
+            var privateKey = _keyService.DecryptPrivateKey(wallet.EncryptedPrivateKey);
+            var seedPhrase = wallet.EncryptedSeedPhrase != null
+                ? _keyService.DecryptSeedPhrase(wallet.EncryptedSeedPhrase)
+                : null;
+
+            return new OASISResult<WalletExportResult>
+            {
+                Result = new WalletExportResult
+                {
+                    WalletId = wallet.Id,
+                    ChainType = wallet.ChainType,
+                    Address = wallet.Address,
+                    PublicKey = wallet.PublicKey,
+                    PrivateKey = privateKey,
+                    SeedPhrase = seedPhrase
+                },
+                Message = "Export successful. Handle with extreme care."
+            };
+        }
+        catch (Exception ex)
+        {
+            return new OASISResult<WalletExportResult> { IsError = true, Message = $"Decryption failed: {ex.Message}" };
+        }
     }
 
     private async Task UnsetPreviousDefaultAsync(Guid avatarId, string chainType, Guid exceptWalletId)

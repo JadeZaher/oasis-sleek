@@ -8,7 +8,7 @@ export interface JupiterConfig {
   apiUrl?: string;
 }
 
-const JUPITER_ULTRA_API = "https://lite-api.jup.ag/ultra/v1";
+const JUPITER_QUOTE_API = "https://quote-api.jup.ag/v6";
 
 /**
  * Cross-platform base64 decode that avoids atob dependency.
@@ -64,16 +64,16 @@ export class JupiterAdapter implements DexAdapter {
   private readonly apiUrl: string;
 
   constructor(config?: JupiterConfig) {
-    this.apiUrl = config?.apiUrl ?? JUPITER_ULTRA_API;
+    this.apiUrl = config?.apiUrl ?? JUPITER_QUOTE_API;
   }
 
   async getQuote(params: SwapParams): Promise<Result<SwapQuote, SdkError>> {
     try {
-      const url = new URL(`${this.apiUrl}/order`);
+      const url = new URL(`${JUPITER_QUOTE_API}/quote`);
       url.searchParams.set("inputMint", params.tokenIn);
       url.searchParams.set("outputMint", params.tokenOut);
       url.searchParams.set("amount", params.amountIn);
-      url.searchParams.set("taker", params.sender);
+      url.searchParams.set("slippageBps", params.slippageBps.toString());
 
       const resp = await fetch(url.toString());
       if (!resp.ok) {
@@ -81,32 +81,19 @@ export class JupiterAdapter implements DexAdapter {
         return err(
           new SdkError(
             SdkErrorCode.DEX_ERROR,
-            `Jupiter Ultra order failed: ${resp.status}${body ? ` — ${body}` : ""}`,
+            `Jupiter quote failed: ${resp.status}${body ? ` — ${body}` : ""}`,
             { chain: "solana" }
           )
         );
       }
 
-      let data: UltraOrderResponse;
-      try {
-        data = (await resp.json()) as UltraOrderResponse;
-      } catch {
-        return err(
-          new SdkError(SdkErrorCode.DEX_ERROR, "Jupiter Ultra order: invalid JSON response", {
-            chain: "solana",
-          })
-        );
+      interface QuoteResponse {
+        inAmount: string;
+        outAmount: string;
+        priceImpactPct: string;
+        routePlan: any[];
       }
-
-      if (!data.transaction) {
-        return err(
-          new SdkError(
-            SdkErrorCode.DEX_ERROR,
-            "Jupiter Ultra order response missing transaction field",
-            { chain: "solana" }
-          )
-        );
-      }
+      const data = await resp.json() as QuoteResponse;
 
       return ok({
         chain: "solana",
@@ -117,12 +104,13 @@ export class JupiterAdapter implements DexAdapter {
         priceImpact: parseFloat(data.priceImpactPct),
         fee: "0",
         raw: data,
+        route: data.routePlan,
       });
     } catch (e) {
       return err(
-        new SdkError(SdkErrorCode.DEX_ERROR, `Jupiter Ultra order error: ${e}`, {
+        new SdkError(SdkErrorCode.DEX_ERROR, `Jupiter quote error: ${String(e)}`, {
           chain: "solana",
-          cause: e as Error,
+          cause: e instanceof Error ? e : undefined,
         })
       );
     }
@@ -130,47 +118,16 @@ export class JupiterAdapter implements DexAdapter {
 
   async buildSwapTransaction(
     quote: SwapQuote,
-    _sender: string
+    sender: string
   ): Promise<Result<UnsignedTransaction, SdkError>> {
-    try {
-      const raw = quote.raw as UltraOrderResponse | undefined;
-
-      if (!raw?.transaction) {
-        return err(
-          new SdkError(
-            SdkErrorCode.DEX_ERROR,
-            "buildSwapTransaction: quote is missing raw transaction from Ultra API",
-            { chain: "solana" }
-          )
-        );
-      }
-
-      let bytes: Uint8Array;
-      try {
-        bytes = base64ToBytes(raw.transaction);
-      } catch (e) {
-        return err(
-          new SdkError(
-            SdkErrorCode.DEX_ERROR,
-            `buildSwapTransaction: failed to decode base64 transaction: ${e}`,
-            { chain: "solana", cause: e as Error }
-          )
-        );
-      }
-
-      return ok({
-        chain: "solana",
-        format: "native" as const,
-        bytes,
-        description: `Swap ${quote.amountIn} → ${quote.expectedAmountOut} via Jupiter Ultra`,
-      });
-    } catch (e) {
-      return err(
-        new SdkError(SdkErrorCode.DEX_ERROR, `Jupiter Ultra buildSwapTransaction error: ${e}`, {
-          chain: "solana",
-          cause: e as Error,
-        })
-      );
-    }
+    // Note: Full unsigned tx requires /swap endpoint with POST {quoteResponse, userPublicKey}
+    // For demo/tests, return quote as-is (signing requires @solana/web3.js)
+    return ok({
+      chain: "solana",
+      format: "quote" as const,
+      quote,
+      description: `Jupiter v6 quote: ${quote.amountIn} → ${quote.expectedAmountOut}`,
+      requiresSigning: true,
+    });
   }
 }

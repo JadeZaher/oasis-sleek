@@ -1,27 +1,34 @@
 using System.Text;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using OASIS.WebAPI.Core;
+using OASIS.WebAPI.Core.Blockchain.Wormhole;
 using OASIS.WebAPI.Core.Decorators;
 using OASIS.WebAPI.Core.ProviderSelection;
 using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Managers;
+using FluentValidation;
 using FluentValidation.AspNetCore;
 using OASIS.WebAPI.Providers;
 using OASIS.WebAPI.Providers.Blockchain.Algorand;
 using OASIS.WebAPI.Providers.Blockchain.Solana;
-using OASIS.WebAPI.Core.Blockchain.Wormhole;
 using OASIS.WebAPI.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    });
 builder.Services.AddFluentValidationAutoValidation();
+builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddAutoMapper(typeof(Program).Assembly);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -114,8 +121,15 @@ builder.Services.AddScoped<ProviderContext>(sp =>
 });
 
 builder.Services.AddScoped<IAvatarManager, AvatarManager>();
+builder.Services.AddSingleton<WalletKeyService>();
 builder.Services.AddScoped<IWalletManager, WalletManager>();
 builder.Services.AddScoped<IHolonManager, HolonManager>();
+// Configure HttpClient for Jupiter API with optimal settings
+builder.Services.AddHttpClient<ISwapManager, SwapManager>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(15);
+    client.DefaultRequestHeaders.Add("User-Agent", "OASIS-SwapManager/1.0");
+});
 builder.Services.AddScoped<IBlockchainOperationManager, BlockchainOperationManager>();
 builder.Services.AddScoped<ISTARManager, STARManager>();
 builder.Services.AddScoped<INftManager, NftManager>();
@@ -129,15 +143,17 @@ var connectionString = builder.Configuration.GetConnectionString("OASISDatabase"
 builder.Services.AddDbContext<OASISDbContext>(options =>
     options.UseNpgsql(connectionString, b => b.MigrationsAssembly("OASIS.WebAPI")));
 
-builder.Services.AddScoped<IOASISStorageProvider, EfStorageProvider>();
-builder.Services.AddSingleton<IOASISStorageProvider, InMemoryStorageProvider>();
+// Use InMemoryStorageProvider as the data provider (singleton for data persistence)
+// EfStorageProvider is NOT registered due to DI resolution issues with mixed lifetimes.
+// The EF Core DbContext is still available for startup migration/seed.
+var inMemoryProvider = new InMemoryStorageProvider();
+builder.Services.AddSingleton<IOASISStorageProvider>(inMemoryProvider);
 
-// Wrap all resolved providers with health-recording decorator
 builder.Services.AddScoped<IEnumerable<IOASISStorageProvider>>(sp =>
 {
     var healthMonitor = sp.GetRequiredService<IProviderHealthMonitor>();
-    var rawProviders = sp.GetServices<IOASISStorageProvider>();
-    return rawProviders.Select(p => new HealthRecordingProviderDecorator(p, healthMonitor)).ToList();
+    var list = new List<IOASISStorageProvider> { inMemoryProvider };
+    return list.Select(p => new HealthRecordingProviderDecorator(p, healthMonitor)).ToList();
 });
 
 // ─── Blockchain providers & factory ───
@@ -196,6 +212,7 @@ app.UseHttpsRedirection();
 app.UseCors("Dev");
 app.UseAuthentication();
 app.UseAuthorization();
+// ISwapManager already registered via AddHttpClient above
 app.MapControllers();
 await app.RunAsync();
 

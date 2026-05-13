@@ -134,6 +134,12 @@ export class AlgorandProvider implements ChainProvider {
   async getBalance(address: string, tokenId?: string): Promise<Result<BalanceInfo, SdkError>> {
     try {
       const resp = await this.algodFetch(`/v2/accounts/${address}`);
+
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => `HTTP ${resp.status}`);
+        return err(new SdkError(SdkErrorCode.NETWORK_ERROR, `Algorand node rejected request: ${text}`, { chain: "algorand" }));
+      }
+
       const account = (await resp.json()) as { amount: number; assets?: Array<{ "asset-id": number; amount: number }> };
 
       if (!tokenId) {

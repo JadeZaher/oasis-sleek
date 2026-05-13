@@ -22,6 +22,61 @@ namespace OASIS.WebAPI.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("OASIS.WebAPI.Models.ApiKey", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AvatarId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("KeyHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("KeyPrefix")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTime?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<DateTime?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Scopes")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AvatarId");
+
+                    b.HasIndex("KeyHash")
+                        .IsUnique();
+
+                    b.HasIndex("KeyPrefix");
+
+                    b.ToTable("ApiKeys");
+                });
+
             modelBuilder.Entity("OASIS.WebAPI.Models.Avatar", b =>
                 {
                     b.Property<Guid>("Id")
@@ -778,6 +833,14 @@ namespace OASIS.WebAPI.Migrations
                     b.Property<DateTime>("CreatedDate")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("EncryptedPrivateKey")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<string>("EncryptedSeedPhrase")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
                     b.Property<bool>("IsDefault")
                         .HasColumnType("boolean");
 
@@ -788,6 +851,9 @@ namespace OASIS.WebAPI.Migrations
                     b.Property<string>("PublicKey")
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");
+
+                    b.Property<int>("WalletType")
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
@@ -839,6 +905,15 @@ namespace OASIS.WebAPI.Migrations
                     b.HasIndex("WalletId");
 
                     b.ToTable("WalletNFTBindings");
+                });
+
+            modelBuilder.Entity("OASIS.WebAPI.Models.ApiKey", b =>
+                {
+                    b.HasOne("OASIS.WebAPI.Models.Avatar", null)
+                        .WithMany()
+                        .HasForeignKey("AvatarId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("OASIS.WebAPI.Models.AvatarNFT", b =>

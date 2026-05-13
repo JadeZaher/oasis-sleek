@@ -73,6 +73,10 @@ public class OASISDbContext : DbContext
             entity.Property(e => e.ChainType).HasMaxLength(64);
             entity.Property(e => e.PublicKey).HasMaxLength(512);
             entity.Property(e => e.Label).HasMaxLength(128);
+            entity.Property(e => e.WalletType)
+                  .HasConversion<int>();
+            entity.Property(e => e.EncryptedPrivateKey).HasMaxLength(1024);
+            entity.Property(e => e.EncryptedSeedPhrase).HasMaxLength(1024);
         });
 
         modelBuilder.Entity<Holon>(entity =>

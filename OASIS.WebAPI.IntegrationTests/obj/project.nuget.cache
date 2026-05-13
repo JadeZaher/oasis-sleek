@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "YRz8zWKy7W8=",
+  "dgSpecHash": "QVcxyF5hj3M=",
   "success": true,
-  "projectFilePath": "C:\\Users\\atooz\\Programming\\Projects\\oasis-sleek\\OASIS.WebAPI.IntegrationTests\\OASIS.WebAPI.IntegrationTests.csproj",
+  "projectFilePath": "c:\\Users\\atooz\\Programming\\Projects\\oasis-sleek\\OASIS.WebAPI.IntegrationTests\\OASIS.WebAPI.IntegrationTests.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\atooz\\.nuget\\packages\\algorand2\\2.0.0.2024051911\\algorand2.2.0.0.2024051911.nupkg.sha512",
     "C:\\Users\\atooz\\.nuget\\packages\\automapper\\12.0.1\\automapper.12.0.1.nupkg.sha512",

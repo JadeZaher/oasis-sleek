@@ -1,3 +1,4 @@
+using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 
 namespace OASIS.WebAPI.Models;
@@ -11,5 +12,8 @@ public class Wallet : IWallet
     public string? PublicKey { get; set; }
     public string? Label { get; set; }
     public bool IsDefault { get; set; }
+    public WalletType WalletType { get; set; } = WalletType.External;
+    public string? EncryptedPrivateKey { get; set; }
+    public string? EncryptedSeedPhrase { get; set; }
     public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 }

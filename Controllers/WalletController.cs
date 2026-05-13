@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Models;
@@ -81,6 +82,72 @@ public class WalletController : ControllerBase
         var result = await _walletManager.GetPortfolioAsync(id, request);
         if (result.IsError) return NotFound(result);
         return Ok(result);
+    }
+
+    // ─── Generate a new wallet on-platform ───
+
+    [HttpPost("generate")]
+    public async Task<ActionResult<OASISResult<IWallet>>> Generate([FromBody] WalletGenerateRequest model, [FromQuery] OASISRequest? request)
+    {
+        var avatarId = GetAvatarIdFromClaims();
+        if (avatarId == null)
+            return Unauthorized(new OASISResult<IWallet> { IsError = true, Message = "Invalid token." });
+
+        var result = await _walletManager.GenerateWalletAsync(model, avatarId.Value, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
+    // ─── Connect an external wallet (MetaMask, Ghost, etc.) ───
+
+    [HttpPost("connect")]
+    public async Task<ActionResult<OASISResult<IWallet>>> Connect([FromBody] WalletConnectRequest model, [FromQuery] OASISRequest? request)
+    {
+        var avatarId = GetAvatarIdFromClaims();
+        if (avatarId == null)
+            return Unauthorized(new OASISResult<IWallet> { IsError = true, Message = "Invalid token." });
+
+        var result = await _walletManager.ConnectWalletAsync(model, avatarId.Value, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
+    // ─── Export a platform wallet's private key ───
+
+    [HttpPost("{id:guid}/export")]
+    public async Task<ActionResult<OASISResult<WalletExportResult>>> Export(Guid id, [FromQuery] OASISRequest? request)
+    {
+        var avatarId = GetAvatarIdFromClaims();
+        if (avatarId == null)
+            return Unauthorized(new OASISResult<WalletExportResult> { IsError = true, Message = "Invalid token." });
+
+        var result = await _walletManager.ExportWalletAsync(id, avatarId.Value, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
+    // ─── Get all wallets grouped by type (for UI) ───
+
+    [HttpGet("types")]
+    public async Task<ActionResult<OASISResult<object>>> GetByType([FromQuery] OASISRequest? request)
+    {
+        var avatarId = GetAvatarIdFromClaims();
+        if (avatarId == null)
+            return Unauthorized(new OASISResult<object> { IsError = true, Message = "Invalid token." });
+
+        var allResult = await _walletManager.QueryAsync(new WalletQueryRequest { AvatarId = avatarId }, request);
+        if (allResult.IsError || allResult.Result == null)
+            return Ok(new OASISResult<object> { Result = new { external = new List<IWallet>(), platform = new List<IWallet>() } });
+
+        var all = allResult.Result.ToList();
+        var external = all.Where(w => w.WalletType == WalletType.External).ToList();
+        var platform = all.Where(w => w.WalletType == WalletType.Platform).ToList();
+
+        return Ok(new OASISResult<object>
+        {
+            Result = new { external, platform, total = all.Count },
+            Message = "Wallets grouped by type."
+        });
     }
 
     private Guid? GetAvatarIdFromClaims()

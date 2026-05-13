@@ -1,3 +1,5 @@
+using OASIS.WebAPI.Core;
+
 namespace OASIS.WebAPI.Models.Requests;
 
 public class WalletCreateModel
@@ -7,4 +9,6 @@ public class WalletCreateModel
     public string? PublicKey { get; set; }
     public string? Label { get; set; }
     public bool IsDefault { get; set; }
+    /// <summary>Whether this is a Platform-managed or External wallet. Defaults to External.</summary>
+    public WalletType WalletType { get; set; } = WalletType.External;
 }

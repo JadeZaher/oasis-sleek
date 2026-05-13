@@ -15,16 +15,23 @@ public class WalletManagerTests
     private readonly Mock<IOASISStorageProvider> _provider;
     private readonly ProviderContext _providerContext;
     private readonly WalletManager _manager;
+    private readonly WalletKeyService _keyService;
 
     public WalletManagerTests()
     {
         _provider = new Mock<IOASISStorageProvider>();
         _provider.Setup(p => p.ProviderName).Returns("InMemory");
 
-        var config = new ConfigurationBuilder().Build();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["OASIS:WalletEncryptionKey"] = "test-encryption-key-for-unit-tests-min-32-chars!!"
+            })
+            .Build();
         _providerContext = new ProviderContext(new[] { _provider.Object }, config, null);
         var chainFactory = new Mock<IBlockchainProviderFactory>();
-        _manager = new WalletManager(_providerContext, chainFactory.Object);
+        _keyService = new WalletKeyService(config);
+        _manager = new WalletManager(_providerContext, chainFactory.Object, _keyService);
     }
 
     [Fact]

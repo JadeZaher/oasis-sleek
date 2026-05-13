@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "RNDzT/0mf+I=",
+  "dgSpecHash": "5FqhKiy/xJo=",
   "success": true,
-  "projectFilePath": "c:\\Users\\atooz\\Programming\\Projects\\oasis-sleek\\OASIS.WebAPI.LiveTests\\OASIS.WebAPI.LiveTests.csproj",
+  "projectFilePath": "C:\\Users\\atooz\\Programming\\Projects\\oasis-sleek\\OASIS.WebAPI.LiveTests\\OASIS.WebAPI.LiveTests.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\atooz\\.nuget\\packages\\microsoft.bcl.asyncinterfaces\\6.0.0\\microsoft.bcl.asyncinterfaces.6.0.0.nupkg.sha512",
     "C:\\Users\\atooz\\.nuget\\packages\\microsoft.extensions.configuration\\8.0.0\\microsoft.extensions.configuration.8.0.0.nupkg.sha512",

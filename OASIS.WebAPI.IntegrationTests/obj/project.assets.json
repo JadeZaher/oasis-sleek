@@ -5898,8 +5898,8 @@
         "net8.0": {
           "targetAlias": "net8.0",
           "projectReferences": {
-            "c:\\Users\\atooz\\Programming\\Projects\\oasis-sleek\\OASIS.WebAPI.csproj": {
-              "projectPath": "c:\\Users\\atooz\\Programming\\Projects\\oasis-sleek\\OASIS.WebAPI.csproj"
+            "C:\\Users\\atooz\\Programming\\Projects\\oasis-sleek\\OASIS.WebAPI.csproj": {
+              "projectPath": "C:\\Users\\atooz\\Programming\\Projects\\oasis-sleek\\OASIS.WebAPI.csproj"
             }
           }
         }

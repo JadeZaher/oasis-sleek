@@ -107,7 +107,7 @@ builder.Services.AddScoped<ProviderContext>(sp =>
 {
     var providers = sp.GetRequiredService<IEnumerable<IOASISStorageProvider>>();
     var config = sp.GetRequiredService<IConfiguration>();
-    var healthMonitor = sp.GetService<IProviderHealthMonitor>();
+    var healthMonitor = sp.GetRequiredService<IProviderHealthMonitor>();
     var customStrategyName = config.GetValue<string>("OASIS:CustomProviderStrategy");
 
     IProviderSelectionStrategy? customStrategy = customStrategyName?.ToLowerInvariant() switch
@@ -117,7 +117,9 @@ builder.Services.AddScoped<ProviderContext>(sp =>
         _ => null
     };
 
-    return new ProviderContext(providers, config, healthMonitor, customStrategy);
+    // Decorate each provider with health monitoring
+    var decorated = providers.Select(p => new HealthRecordingProviderDecorator(p, healthMonitor));
+    return new ProviderContext(decorated, config, healthMonitor, customStrategy);
 });
 
 builder.Services.AddScoped<IAvatarManager, AvatarManager>();
@@ -143,18 +145,12 @@ var connectionString = builder.Configuration.GetConnectionString("OASISDatabase"
 builder.Services.AddDbContext<OASISDbContext>(options =>
     options.UseNpgsql(connectionString, b => b.MigrationsAssembly("OASIS.WebAPI")));
 
-// Use InMemoryStorageProvider as the data provider (singleton for data persistence)
-// EfStorageProvider is NOT registered due to DI resolution issues with mixed lifetimes.
-// The EF Core DbContext is still available for startup migration/seed.
+// InMemoryStorageProvider (singleton) — fast in-process reads, shared across requests
 var inMemoryProvider = new InMemoryStorageProvider();
 builder.Services.AddSingleton<IOASISStorageProvider>(inMemoryProvider);
 
-builder.Services.AddScoped<IEnumerable<IOASISStorageProvider>>(sp =>
-{
-    var healthMonitor = sp.GetRequiredService<IProviderHealthMonitor>();
-    var list = new List<IOASISStorageProvider> { inMemoryProvider };
-    return list.Select(p => new HealthRecordingProviderDecorator(p, healthMonitor)).ToList();
-});
+// EfStorageProvider (scoped) — standard lifetime matching OASISDbContext, handles PostgreSQL persistence
+builder.Services.AddScoped<IOASISStorageProvider, EfStorageProvider>();
 
 // ─── Blockchain providers & factory ───
 builder.Services.AddSingleton<IBlockchainProvider, AlgorandProvider>();

@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using OASIS.WebAPI.Core;
+using OASIS.WebAPI.Core.Blockchain;
 using OASIS.WebAPI.Core.Blockchain.Wormhole;
 using OASIS.WebAPI.Core.Decorators;
 using OASIS.WebAPI.Core.ProviderSelection;
@@ -13,6 +14,8 @@ using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Managers;
+using OASIS.WebAPI.Managers.Dex;
+using OASIS.WebAPI.Models.Responses;
 using FluentValidation;
 using FluentValidation.AspNetCore;
 using OASIS.WebAPI.Providers;
@@ -124,14 +127,27 @@ builder.Services.AddScoped<ProviderContext>(sp =>
 
 builder.Services.AddScoped<IAvatarManager, AvatarManager>();
 builder.Services.AddSingleton<WalletKeyService>();
+builder.Services.AddSingleton<IAlgorandFaucet, AlgorandFaucet>();
 builder.Services.AddScoped<IWalletManager, WalletManager>();
 builder.Services.AddScoped<IHolonManager, HolonManager>();
-// Configure HttpClient for Jupiter API with optimal settings
-builder.Services.AddHttpClient<ISwapManager, SwapManager>(client =>
+// Bind Jupiter DEX configuration
+builder.Services.Configure<JupiterConfig>(
+    builder.Configuration.GetSection(JupiterConfig.SectionName));
+
+// DEX adapters — one IDexAdapter per chain. Adding a new chain = add one
+// IDexAdapter implementation + one registration line here; SwapManager (the
+// dispatcher) never changes. The Jupiter adapter uses a typed HttpClient that
+// preserves the prior Jupiter HttpClient config (15s timeout + User-Agent)
+// that previously lived on AddHttpClient<ISwapManager, SwapManager>.
+builder.Services.AddHttpClient<JupiterDexAdapter>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(15);
     client.DefaultRequestHeaders.Add("User-Agent", "OASIS-SwapManager/1.0");
 });
+builder.Services.AddScoped<IDexAdapter>(sp => sp.GetRequiredService<JupiterDexAdapter>());
+// Tinyman creates its own short-lived Algod HttpClient internally (no typed client needed).
+builder.Services.AddScoped<IDexAdapter, TinymanDexAdapter>();
+builder.Services.AddScoped<ISwapManager, SwapManager>();
 builder.Services.AddScoped<IBlockchainOperationManager, BlockchainOperationManager>();
 builder.Services.AddScoped<ISTARManager, STARManager>();
 builder.Services.AddScoped<INftManager, NftManager>();
@@ -173,8 +189,8 @@ builder.Services.AddHttpClient<IWormholeAdapter, WormholeAdapter>((sp, client) =
     client.Timeout = TimeSpan.FromSeconds(config.VaaTimeoutSeconds + 10);
 });
 
-// ─── Cross-chain bridge (hybrid trusted + Wormhole) ───
-builder.Services.AddSingleton<ICrossChainBridgeService, CrossChainBridgeService>();
+// ─── Cross-chain bridge (hybrid trusted + Wormhole) — Scoped for EF DbContext access ───
+builder.Services.AddScoped<ICrossChainBridgeService, CrossChainBridgeService>();
 
 // ─── Quest DAG system ───
 builder.Services.AddScoped<OASIS.WebAPI.Interfaces.IQuestDagValidator, OASIS.WebAPI.Services.QuestDagValidator>();
@@ -188,6 +204,30 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+// Verbose error reporting.
+//   • Opt-in via OASIS:DebugErrors (env: OASIS__DebugErrors); defaults on in Development.
+//   • HARD GUARDRAIL: Production can NEVER emit verbose debug, no matter what
+//     config or environment variables say. Only platform devs running a
+//     non-Production environment can turn this on — so stack traces and other
+//     internals can never leak from a production deployment.
+var debugRequested = builder.Configuration.GetValue<bool?>("OASIS:DebugErrors")
+    ?? app.Environment.IsDevelopment();
+OASISResultDebug.Enabled = debugRequested && !app.Environment.IsProduction();
+
+app.Logger.LogInformation(
+    "Verbose error debug is {State} (environment={Environment}, requested={Requested}).",
+    OASISResultDebug.Enabled ? "ENABLED" : "disabled",
+    app.Environment.EnvironmentName,
+    debugRequested);
+if (debugRequested && app.Environment.IsProduction())
+    app.Logger.LogWarning(
+        "OASIS:DebugErrors was requested but is FORCE-DISABLED in Production.");
+
+// Must be the first middleware so it wraps the entire pipeline and turns any
+// unhandled throw into a structured (debug-aware) JSON error instead of a
+// blank HTTP 500.
+app.UseMiddleware<DebugExceptionMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -208,7 +248,7 @@ app.UseHttpsRedirection();
 app.UseCors("Dev");
 app.UseAuthentication();
 app.UseAuthorization();
-// ISwapManager already registered via AddHttpClient above
+// ISwapManager + IDexAdapter registrations are above (DEX adapters block)
 app.MapControllers();
 await app.RunAsync();
 

@@ -20,6 +20,10 @@
 | [quest-core](tracks/quest-core/spec.md) | `[x]` | Quest DAG domain models — Quest, QuestNode, QuestEdge, QuestDependency, templates, DAG validation |
 | [quest-api](tracks/quest-api/spec.md) | `[ ]` | Quest REST API — CRUD, execution orchestration, template management, node dispatch to holon/wallet/STAR managers |
 | [dapp-composition](tracks/dapp-composition/spec.md) | `[ ]` | DappSeries — compose quest chains into deployable dApp contracts via STAR generation pipeline |
+| [api-safety-hardening](tracks/api-safety-hardening/spec.md) | `[ ]` | **Tier 0 (urgent, no deps)** — bridge replay/atomicity, irreversible-op idempotency (`OperationIdGenerator` is counterfeit), chain reconciliation, validation coverage, rate limiting, remove InMemory provider. Blocks any real value flow |
+| [architecture-decoupling](tracks/architecture-decoupling/spec.md) | `[ ]` | **Tier 1** — per-aggregate persistence seam (collapse god interface + redundant `IQuestRepository`), `IQuestNodeHandler` strategy, `ExecutionOrder` dedup, `IMemoryCache`, OpenTelemetry + `/health`. Precondition for SurrealDB |
+| [surrealdb-migration](tracks/surrealdb-migration/spec.md) | `[ ]` | **Tier 2** — replace EF/Postgres/InMemory with SurrealDB single engine behind the seam; 7 guardrails (G1–G7) as acceptance; graph remodel; ~4–5 wk. Deps: architecture-decoupling, api-safety-hardening |
+| [mcp-surface](tracks/mcp-surface/spec.md) | `[ ]` | **Tier 3** — MCP server over SurrealDB graph (quest/holon traversal, NFT graph, HNSW vector). Dep: surrealdb-migration |
 
 ## Completed This Session
 

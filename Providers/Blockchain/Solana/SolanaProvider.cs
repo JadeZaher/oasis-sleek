@@ -122,16 +122,16 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
         CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
-            $"sol_mint_{Guid.NewGuid():N}",
-            $"SPL token mint recorded for {assetType} (amount={amount}) by {walletAddress}. Requires client-side signing with Token Program."));
+            OperationIdGenerator.Generate("solana", "mint", walletAddress),
+            $"SPL token mint operation recorded for {assetType} (amount={amount}) by {walletAddress}. Requires client-side signing with Token Program."));
     }
 
     public override Task<OASISResult<string>> BurnAsync(
         string tokenId, int amount, string walletAddress, CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
-            $"sol_burn_{Guid.NewGuid():N}",
-            $"SPL token burn recorded for {tokenId} (amount={amount}). Requires client-side signing."));
+            OperationIdGenerator.Generate("solana", "burn", walletAddress, tokenId, amount),
+            $"SPL token burn operation recorded for {tokenId} (amount={amount}). Requires client-side signing."));
     }
 
     public override Task<OASISResult<string>> TransferAsync(
@@ -139,8 +139,8 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
         CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
-            $"sol_transfer_{Guid.NewGuid():N}",
-            $"SPL transfer recorded: {amount} of {tokenId ?? "SOL"} from {fromAddress} to {toAddress}. Requires client-side signing."));
+            OperationIdGenerator.Generate("solana", "transfer", fromAddress, toAddress, amount),
+            $"SPL transfer operation recorded: {amount} of {tokenId ?? "SOL"} from {fromAddress} to {toAddress}. Requires client-side signing."));
     }
 
     public override Task<OASISResult<string>> ExchangeAsync(
@@ -320,7 +320,7 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
             tokenId, amount, vaultAddress, targetChain, targetRecipient);
 
         return Task.FromResult(Ok(
-            $"bridge_lock_{Guid.NewGuid():N}",
+            OperationIdGenerator.Generate("solana", "bridge_lock", vaultAddress, targetChain, targetRecipient),
             $"Lock request recorded: {amount} of {tokenId ?? "SOL"} → vault {vaultAddress} for {targetChain} bridge to {targetRecipient}"));
     }
 
@@ -329,7 +329,7 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
         int amount, string recipientAddress, CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
-            $"sol_wrap_{Guid.NewGuid():N}",
+            OperationIdGenerator.Generate("solana", "wrap", recipientAddress, sourceChain, sourceTokenId),
             $"Wrapped mint recorded: w{sourceChain}-{sourceTokenId} for {recipientAddress}. Requires client-side SPL token mint."));
     }
 
@@ -338,7 +338,7 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
         string sourceRecipient, string walletAddress, CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
-            $"sol_burn_wrap_{Guid.NewGuid():N}",
+            OperationIdGenerator.Generate("solana", "burn_wrap", walletAddress, tokenId, sourceChain),
             $"Wrapped burn recorded for {tokenId} on Solana → release on {sourceChain}"));
     }
 
@@ -355,7 +355,7 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
         int sellerFeeBasisPoints, string walletAddress, CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
-            $"sol_meta_{Guid.NewGuid():N}",
+            OperationIdGenerator.Generate("solana", "metadata", walletAddress, mint),
             $"Metaplex metadata account recorded for mint {mint}. Requires client-side Metaplex Token Metadata program call."));
     }
 
@@ -372,7 +372,7 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
         string mint, string owner, CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
-            $"sol_ta_{Guid.NewGuid():N}",
+            OperationIdGenerator.Generate("solana", "create_token_account", owner, mint),
             $"SPL token account creation recorded for mint {mint}, owner {owner}. Requires AssociatedTokenAccountProgram call."));
     }
 
@@ -380,7 +380,7 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
         string tokenAccount, string owner, CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
-            $"sol_close_{Guid.NewGuid():N}",
+            OperationIdGenerator.Generate("solana", "close_token_account", owner, tokenAccount),
             $"SPL token account closure recorded for {tokenAccount}. Requires client-side signing."));
     }
 

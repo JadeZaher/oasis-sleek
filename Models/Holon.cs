@@ -3,7 +3,7 @@ using OASIS.WebAPI.Interfaces;
 
 namespace OASIS.WebAPI.Models;
 
-public class Holon : IHolon
+public class Holon : IHolon, INft
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = string.Empty;

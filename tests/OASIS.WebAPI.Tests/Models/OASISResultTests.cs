@@ -67,21 +67,91 @@ public class OASISResultTests
     }
 
     [Fact]
-    public void Serialization_OASISResult_WithException_ShouldRoundTrip()
+    public void Serialization_OASISResult_RawException_IsNeverSerialized()
     {
+        // The raw Exception is [JsonIgnore] — serializing it is unsafe and
+        // leaks internals. Verbose detail is exposed via Detail, gated by
+        // debug mode (see the debug-mode tests below).
         var original = new OASISResult<string>
         {
             IsError = true,
             Message = "error",
             Exception = new Exception("hidden")
         };
-        var json = JsonSerializer.Serialize(original);
-        var deserialized = JsonSerializer.Deserialize<OASISResult<string>>(json);
 
-        deserialized!.IsError.Should().BeTrue();
-        deserialized.Message.Should().Be("error");
-        // System.Text.Json serializes exception properties by default
-        deserialized.Exception.Should().NotBeNull();
+        var json = JsonSerializer.Serialize(original);
+
+        json.Should().NotContain("hidden");
+        json.Should().NotContain("StackTrace");
+    }
+
+    [Fact]
+    public void Detail_IsNull_WhenDebugDisabled()
+    {
+        var prev = OASISResultDebug.Enabled;
+        try
+        {
+            OASISResultDebug.Enabled = false;
+            var result = new OASISResult<string>()
+                .CaptureException(new InvalidOperationException("boom"));
+
+            result.IsError.Should().BeTrue();
+            result.Message.Should().Be("boom");
+            result.Detail.Should().BeNull();
+        }
+        finally { OASISResultDebug.Enabled = prev; }
+    }
+
+    [Fact]
+    public void Detail_IncludesExceptionChain_WhenDebugEnabled()
+    {
+        var prev = OASISResultDebug.Enabled;
+        try
+        {
+            OASISResultDebug.Enabled = true;
+            var ex = new InvalidOperationException("outer", new IOException("inner cause"));
+            var result = new OASISResult<string>().CaptureException(ex);
+
+            result.Detail.Should().NotBeNull();
+            result.Detail!.Type.Should().Contain("InvalidOperationException");
+            result.Detail.Message.Should().Be("outer");
+            result.Detail.Inner.Should().NotBeNull();
+            result.Detail.Inner!.Message.Should().Be("inner cause");
+
+            var payload = JsonSerializer.Serialize(result.ToErrorPayload(),
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            payload.Should().Contain("\"error\":\"outer\"");
+            payload.Should().Contain("\"detail\"");
+            payload.Should().Contain("inner cause");
+        }
+        finally { OASISResultDebug.Enabled = prev; }
+    }
+
+    [Fact]
+    public void ToErrorPayload_OmitsDetail_WhenDebugDisabled()
+    {
+        var prev = OASISResultDebug.Enabled;
+        try
+        {
+            OASISResultDebug.Enabled = false;
+            // Internal exception ("secret internals") + public-facing summary.
+            var result = new OASISResult<string>()
+                .CaptureException(
+                    new InvalidOperationException("secret internals"),
+                    "Something went wrong.");
+
+            var payload = JsonSerializer.Serialize(result.ToErrorPayload(),
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+            // The chosen summary message is surfaced...
+            payload.Should().Contain("Something went wrong.");
+            // ...but no verbose internals (type, stack trace, inner chain) leak.
+            payload.Should().Contain("\"detail\":null");
+            payload.Should().NotContain("secret internals");
+            payload.Should().NotContain("InvalidOperationException");
+            result.Detail.Should().BeNull();
+        }
+        finally { OASISResultDebug.Enabled = prev; }
     }
 
     [Fact]

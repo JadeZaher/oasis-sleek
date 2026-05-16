@@ -13,13 +13,13 @@ A standalone console harness for hitting the **live** OASIS WebAPI with real HTT
 
 ```bash
 # Run against localhost (default)
-dotnet run --project OASIS.WebAPI.LiveTests
+dotnet run --project tests/OASIS.WebAPI.LiveTests
 
 # Run against a deployed environment
-dotnet run --project OASIS.WebAPI.LiveTests -- --url https://api.oasis.example.com
+dotnet run --project tests/OASIS.WebAPI.LiveTests -- --url https://api.oasis.example.com
 
 # Customize parallelism and output
-dotnet run --project OASIS.WebAPI.LiveTests -- -u https://api.oasis.example.com -p 8 -o results.md
+dotnet run --project tests/OASIS.WebAPI.LiveTests -- -u https://api.oasis.example.com -p 8 -o results.md
 ```
 
 ## Configuration

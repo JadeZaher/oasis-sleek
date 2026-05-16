@@ -46,6 +46,16 @@ export class OasisWallet {
     }
   }
 
+  /**
+   * Remove every registered provider and DEX adapter. Used when switching the
+   * active network so no stale-network provider can service an operation —
+   * this is what structurally prevents cross-network (dev/test/main) asset ops.
+   */
+  clear(): void {
+    this.providers.clear();
+    this.dexAdapters.clear();
+  }
+
   /** List all registered chain IDs. */
   get chains(): string[] {
     return [...this.providers.keys()];

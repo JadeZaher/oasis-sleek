@@ -20,7 +20,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
-    <ProjectReference Include="..\OASIS.WebAPI.csproj" />
+    <ProjectReference Include="..\..\OASIS.WebAPI.csproj" />
   </ItemGroup>
 
 </Project>

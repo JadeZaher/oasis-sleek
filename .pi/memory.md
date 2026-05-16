@@ -1,3 +1,68 @@
+## Blockchain Hardening Progress: Tracks 1-3 Complete
+*2026-05-16 03:24:04* **Tags:** #blockchain #hardening #progress #complete
+
+## Completed (2026-05-15)
+
+### Track 1: Jupiter API Migration ✅
+- Migrated from deprecated v6 `quote-api.jup.ag/v6/quote` to `api.jup.ag/swap/v2/quote` with x-api-key header
+- Added `GetSwapTransactionAsync` calling `api.jup.ag/swap/v2/swap` for client-side signing
+- Tinyman now performs real Algod/Indexer pool state lookup (no more hardcoded reserves)
+- Created `JupiterConfig` class, `SwapExecuteRequest` model
+- Quote caching for quote→execute flow
+
+### Track 2: Wormhole + Bridge Hardening ✅
+- Fixed Guardian API URL: `wormhole-v2-mainnet-api.certus.one` → `api.wormholescan.io`  
+- Fixed GuardianVAAEnvelope DTO (WormholeScan returns vaaBytes at top level, not nested)
+- Added devnet chain mappings (separate from mainnet)
+- Added BridgeVaults config dictionary
+- BridgeTransactionResult is now an EF entity with proper annotations
+- CrossChainBridgeService uses OASISDbContext (EF persistence) instead of in-memory Dictionary
+- Changed Bridge service from Singleton to Scoped
+
+### Track 3: Remove Fake Transactions ✅
+- Created OperationIdGenerator (deterministic SHA256-based operation IDs)
+- Replaced ALL 9 Guid.NewGuid() fake tx hashes in SolanaProvider
+- Replaced ALL 3 Guid.NewGuid() fake tx hashes in AlgorandProvider
+- Updated BlockchainOperationManager.ApplyChainResult to detect "Requires client-side signing" and set status to "AwaitingSignature"
+
+## Remaining
+- Track 4: Wallet Crypto fix (real Ed25519/secp256k1) - needs migration planning
+- Track 5: Frontend mock auth removal (auth-simple.tsx, auth.tsx)
+- Track 6: EF migration for BridgeTransaction table
+- Track 7: Add IndexerUrl for Algorand in appsettings
+
+---
+## Blockchain Hardening: Complete Research Findings
+*2026-05-16 03:00:35* **Tags:** #blockchain #research #hardening #production-readiness #mocks #api-migration
+
+## 2026-05-15: Blockchain Hardening Research Findings
+
+### CRITICAL API Migration Issues
+1. **Jupiter API v6 is DEPRECATED**. Must migrate to `https://api.jup.ag/swap/v2/quote` and `https://api.jup.ag/swap/v2/build` with `x-api-key` header. v6 endpoints no longer work.
+2. **Wormhole Guardian API URL wrong**: Current code uses `https://wormhole-v2-mainnet-api.certus.one`. Correct endpoint is `https://api.wormholescan.io/v1/signed_vaa/{chain_id}/{emitter}/{sequence}`. Wormholescan is the official API.
+
+### Mock/Stub Catalog
+3. 11 Guid.NewGuid()-based fake transaction hashes across providers
+4. ~35 stub methods returning "not implemented" or "requires client-side signing"
+5. Fake wallet key generation in WalletKeyService (HMAC placeholder instead of real Ed25519/secp256k1)
+6. In-memory dictionaries as databases: CrossChainBridgeService._bridgeTransactions, ProviderHealthMonitor._scores, StickySessionStrategy._stickyMap
+7. Fake bridge vault address generator: `$"{sourceChain}_bridge_vault_for_{targetChain}"`
+8. Frontend mock auth in auth-simple.tsx and auth.tsx
+9. Wormhole VAA signature verification is skipped (only counts signatures)
+10. Hardcoded Wormhole mainnet addresses used with devnet - mismatch
+
+### Provider Status
+- Algorand: Balance, ValidateAddress, GetTransactionStatus, GetChainInfo, GetTokenMetadata, GetTokensByOwner → WORKING (real REST API)
+- Algorand: Mint, Burn, Transfer, Exchange, Swap, DeployContract, CallContract, LockForBridge, MintWrapped, BurnWrapped, CreateASA, OptIn → STUB
+- Solana: Balance, ValidateAddress, GetTransactionStatus, GetChainInfo, GetTokenMetadata, GetTokensByOwner → WORKING (real JSON-RPC)
+- Solana: Mint, Burn, Transfer, Exchange, Swap, DeployContract, CallContract, LockForBridge, MintWrapped, BurnWrapped → STUB
+
+### AlgorandIndexer URL missing from config
+The Algorand provider needs an IndexerUrl config field which is present in BlockchainNetworkConfig but not in appsettings.json
+
+### Ethereum chain configured but NO provider exists
+
+---
 ## Quest Core track completed - all 20 tasks done
 *2026-05-10 06:33:08* **Tags:** #architecture #quest #dotnet
 

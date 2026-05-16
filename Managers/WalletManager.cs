@@ -4,6 +4,7 @@ using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
+using OASIS.WebAPI.Providers.Blockchain.Base;
 
 namespace OASIS.WebAPI.Managers;
 
@@ -12,12 +13,23 @@ public class WalletManager : IWalletManager
     private readonly ProviderContext _providerContext;
     private readonly IBlockchainProviderFactory _chainFactory;
     private readonly WalletKeyService _keyService;
+    private readonly IConfiguration _config;
+    private readonly IAlgorandFaucet _algorandFaucet;
+    private readonly BlockchainConfigurationManager _blockchainConfig;
 
-    public WalletManager(ProviderContext providerContext, IBlockchainProviderFactory chainFactory, WalletKeyService keyService)
+    public WalletManager(
+        ProviderContext providerContext,
+        IBlockchainProviderFactory chainFactory,
+        WalletKeyService keyService,
+        IConfiguration config,
+        IAlgorandFaucet algorandFaucet)
     {
         _providerContext = providerContext;
         _chainFactory = chainFactory;
         _keyService = keyService;
+        _config = config;
+        _algorandFaucet = algorandFaucet;
+        _blockchainConfig = new BlockchainConfigurationManager(config);
     }
 
     public async Task<OASISResult<IWallet>> GetAsync(Guid id, OASISRequest? request = null)
@@ -334,6 +346,90 @@ public class WalletManager : IWalletManager
         catch (Exception ex)
         {
             return new OASISResult<WalletExportResult> { IsError = true, Message = $"Decryption failed: {ex.Message}" };
+        }
+    }
+
+    // ─── New: Top-up a wallet via faucet (dev / test networks only) ───
+
+    public async Task<OASISResult<object>> TopUpAsync(Guid walletId, decimal? amount, Guid avatarId, OASISRequest? request = null)
+    {
+        var activation = _providerContext.Activate(request);
+        if (activation.IsError) return new OASISResult<object> { IsError = true, Message = activation.Message };
+
+        var walletResult = await _providerContext.CurrentProvider.LoadWalletAsync(walletId);
+        if (walletResult.IsError || walletResult.Result == null)
+            return new OASISResult<object> { IsError = true, Message = "Wallet not found." };
+
+        var wallet = walletResult.Result;
+
+        // Ownership check — mirror ExportWalletAsync.
+        if (wallet.AvatarId != avatarId)
+            return new OASISResult<object> { IsError = true, Message = "Wallet not owned by this avatar." };
+
+        // HARD GUARD: never dispense on mainnet.
+        var network = _blockchainConfig.GetDefaultNetwork(wallet.ChainType);
+        if (network == ChainNetwork.Mainnet)
+            return new OASISResult<object> { IsError = true, Message = "Top-up (faucet) is disabled on mainnet." };
+
+        var defaultAmount = _config.GetValue<decimal?>("Blockchain:Faucet:DefaultAmount") ?? 5m;
+        var dispenseAmount = amount.GetValueOrDefault(defaultAmount);
+        if (dispenseAmount <= 0)
+            return new OASISResult<object> { IsError = true, Message = "Amount must be a positive value." };
+
+        switch (wallet.ChainType.ToLowerInvariant())
+        {
+            case "algorand":
+            case "algo":
+                if (!_algorandFaucet.IsConfigured)
+                    return new OASISResult<object>
+                    {
+                        IsError = true,
+                        Message = "Algorand faucet is not configured (set Blockchain:Faucet:Algorand:Mnemonic)."
+                    };
+
+                try
+                {
+                    var txHash = await _algorandFaucet.DispenseAsync(wallet.Address, dispenseAmount);
+                    return new OASISResult<object>
+                    {
+                        Result = new
+                        {
+                            txHash,
+                            amount = dispenseAmount,
+                            chain = wallet.ChainType,
+                            network = network.ToString()
+                        },
+                        Message = $"Dispensed {dispenseAmount} test ALGO to {wallet.Address} on {network}."
+                    };
+                }
+                catch (Exception ex)
+                {
+                    return new OASISResult<object> { IsError = true, Message = $"Algorand faucet failed: {ex.Message}", Exception = ex };
+                }
+
+            case "solana":
+            case "sol":
+                // Solana devnet/testnet top-up is performed client-side via RPC airdrop
+                // (the frontend handles Solana). Keep the method shape consistent.
+                return new OASISResult<object>
+                {
+                    IsError = false,
+                    Result = new
+                    {
+                        txHash = (string?)null,
+                        amount = dispenseAmount,
+                        chain = wallet.ChainType,
+                        network = network.ToString()
+                    },
+                    Message = "Solana devnet/testnet top-up is performed client-side via RPC airdrop (requestAirdrop)."
+                };
+
+            default:
+                return new OASISResult<object>
+                {
+                    IsError = true,
+                    Message = $"Top-up not supported for chain {wallet.ChainType}."
+                };
         }
     }
 

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Quest;
+using OASIS.WebAPI.Models.Responses;
 
 namespace OASIS.WebAPI.Data;
 
@@ -21,6 +22,7 @@ public class OASISDbContext : DbContext
     public DbSet<HolonNFTBinding> HolonNFTBindings => Set<HolonNFTBinding>();
     public DbSet<WalletNFTBinding> WalletNFTBindings => Set<WalletNFTBinding>();
     public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
+    public DbSet<BridgeTransactionResult> BridgeTransactions => Set<BridgeTransactionResult>();
 
     // Quest entities
     public DbSet<Quest> Quests => Set<Quest>();
@@ -197,6 +199,14 @@ public class OASISDbContext : DbContext
                   .WithMany()
                   .HasForeignKey(e => e.AvatarId)
                   .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<BridgeTransactionResult>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.AvatarId);
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => new { e.SourceChain, e.TargetChain });
         });
 
         // Quest configurations

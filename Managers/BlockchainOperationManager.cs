@@ -174,10 +174,29 @@ public class BlockchainOperationManager : IBlockchainOperationManager
 
     private static void ApplyChainResult<T>(IBlockchainOperation operation, OASISResult<T> chainResult, string successStatus)
     {
-        operation.Status = chainResult.IsError ? "Failed" : successStatus;
-        if (!chainResult.IsError && chainResult.Result != null)
-            operation.Parameters["TxHash"] = chainResult.Result?.ToString() ?? string.Empty;
-        else if (chainResult.IsError)
+        if (chainResult.IsError)
+        {
+            operation.Status = "Failed";
             operation.Parameters["Error"] = chainResult.Message;
+            return;
+        }
+
+        var message = chainResult.Message ?? "";
+        var requiresSignature = message.Contains("Requires client-side signing") ||
+                                message.Contains("Requires client-side") ||
+                                message.Contains("Sign and submit");
+
+        if (requiresSignature)
+        {
+            operation.Status = "AwaitingSignature";
+            operation.Parameters["OperationId"] = chainResult.Result?.ToString() ?? string.Empty;
+            operation.Parameters["Instruction"] = message;
+        }
+        else
+        {
+            operation.Status = successStatus;
+            if (chainResult.Result != null)
+                operation.Parameters["TxHash"] = chainResult.Result.ToString() ?? string.Empty;
+        }
     }
 }

@@ -1,6 +1,8 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Core.Blockchain.Wormhole;
+using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Models.Responses;
 
@@ -12,31 +14,28 @@ namespace OASIS.WebAPI.Services;
 /// Trusted mode: OASIS server coordinates lock→mint (fast, custodial).
 /// Wormhole mode: Guardian network produces VAAs for trustless proof verification.
 ///
-/// The bridge mode is selected per-request, defaulting to the configured default.
-/// Wormhole transfers follow a multi-step flow:
-///   1. InitiateBridge → locks on source, returns AwaitingVAA
-///   2. FetchVAA → polls Guardians, returns VAAReady
-///   3. RedeemWithVAA → submits VAA to target chain, returns Completed
+/// Bridge transactions are persisted via EF Core to the PostgreSQL database.
+/// Service is Scoped (tied to request DbContext).
 /// </summary>
 public class CrossChainBridgeService : ICrossChainBridgeService
 {
     private readonly IBlockchainProviderFactory _factory;
     private readonly IWormholeAdapter _wormhole;
     private readonly WormholeConfig _wormholeConfig;
+    private readonly OASISDbContext _db;
     private readonly ILogger<CrossChainBridgeService> _logger;
-
-    // In-memory bridge transaction store (production: use database)
-    private readonly Dictionary<string, BridgeTransactionResult> _bridgeTransactions = new();
 
     public CrossChainBridgeService(
         IBlockchainProviderFactory factory,
         IWormholeAdapter wormhole,
         IOptions<WormholeConfig> wormholeConfig,
+        OASISDbContext db,
         ILogger<CrossChainBridgeService> logger)
     {
         _factory = factory;
         _wormhole = wormhole;
         _wormholeConfig = wormholeConfig.Value;
+        _db = db;
         _logger = logger;
     }
 
@@ -56,7 +55,6 @@ public class CrossChainBridgeService : ICrossChainBridgeService
 
             var resolvedMode = mode ?? _wormholeConfig.DefaultMode;
 
-            // If Wormhole requested but route isn't supported, fall back to trusted
             if (resolvedMode == BridgeMode.Wormhole && !_wormhole.IsRouteSupported(sourceChain, targetChain))
             {
                 _logger.LogWarning(
@@ -78,7 +76,8 @@ public class CrossChainBridgeService : ICrossChainBridgeService
     public async Task<OASISResult<BridgeTransactionResult>> FetchVAAAsync(
         string bridgeTransactionId, CancellationToken ct = default)
     {
-        if (!_bridgeTransactions.TryGetValue(bridgeTransactionId, out var tx))
+        var tx = await _db.BridgeTransactions.FindAsync(new object[] { bridgeTransactionId }, ct);
+        if (tx == null)
             return Error<BridgeTransactionResult>("Bridge transaction not found");
 
         if (tx.Mode != BridgeMode.Wormhole)
@@ -99,6 +98,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         if (vaaResult.IsError)
         {
             tx.ErrorMessage = vaaResult.Message;
+            await _db.SaveChangesAsync(ct);
             return Error<BridgeTransactionResult>($"VAA fetch failed: {vaaResult.Message}");
         }
 
@@ -107,6 +107,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         tx.VaaSignatureCount = vaa.SignatureCount;
         tx.ProofData = vaa.Digest;
         tx.Status = BridgeStatus.VAAReady;
+        await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
             "VAA ready for bridge {Id}: seq={Sequence} sigs={Sigs}",
@@ -118,7 +119,8 @@ public class CrossChainBridgeService : ICrossChainBridgeService
     public async Task<OASISResult<BridgeTransactionResult>> RedeemWithVAAAsync(
         string bridgeTransactionId, CancellationToken ct = default)
     {
-        if (!_bridgeTransactions.TryGetValue(bridgeTransactionId, out var tx))
+        var tx = await _db.BridgeTransactions.FindAsync(new object[] { bridgeTransactionId }, ct);
+        if (tx == null)
             return Error<BridgeTransactionResult>("Bridge transaction not found");
 
         if (tx.Mode != BridgeMode.Wormhole)
@@ -149,6 +151,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         {
             tx.Status = BridgeStatus.Failed;
             tx.ErrorMessage = redeemResult.Message;
+            await _db.SaveChangesAsync(ct);
             return Error<BridgeTransactionResult>($"Redemption failed: {redeemResult.Message}");
         }
 
@@ -157,6 +160,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         tx.MintTxHash = redemption.TxHash;
         tx.Status = BridgeStatus.Completed;
         tx.CompletedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
             "Wormhole bridge completed: {Id} {Source}→{Target} redeemTx={TxHash}",
@@ -165,49 +169,54 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         return Ok(tx, $"Wormhole bridge completed trustlessly: {tx.SourceChain} → {tx.TargetChain}");
     }
 
-    public Task<OASISResult<BridgeTransactionResult>> CompleteBridgeAsync(
+    public async Task<OASISResult<BridgeTransactionResult>> CompleteBridgeAsync(
         string bridgeTransactionId, CancellationToken ct = default)
     {
-        if (!_bridgeTransactions.TryGetValue(bridgeTransactionId, out var tx))
-            return Task.FromResult(Error<BridgeTransactionResult>("Bridge transaction not found"));
+        var tx = await _db.BridgeTransactions.FindAsync(new object[] { bridgeTransactionId }, ct);
+        if (tx == null)
+            return Error<BridgeTransactionResult>("Bridge transaction not found");
 
         if (tx.Status == BridgeStatus.Completed)
-            return Task.FromResult(Ok(tx, "Bridge already completed"));
+            return Ok(tx, "Bridge already completed");
 
         tx.Status = BridgeStatus.Completed;
         tx.CompletedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
 
-        return Task.FromResult(Ok(tx, "Bridge marked as completed"));
+        return Ok(tx, "Bridge marked as completed");
     }
 
-    public Task<OASISResult<BridgeTransactionResult>> ReverseBridgeAsync(
+    public async Task<OASISResult<BridgeTransactionResult>> ReverseBridgeAsync(
         string bridgeTransactionId, string sourceRecipientAddress, CancellationToken ct = default)
     {
-        if (!_bridgeTransactions.TryGetValue(bridgeTransactionId, out var tx))
-            return Task.FromResult(Error<BridgeTransactionResult>("Bridge transaction not found"));
+        var tx = await _db.BridgeTransactions.FindAsync(new object[] { bridgeTransactionId }, ct);
+        if (tx == null)
+            return Error<BridgeTransactionResult>("Bridge transaction not found");
 
         if (tx.Status != BridgeStatus.Completed)
-            return Task.FromResult(Error<BridgeTransactionResult>("Only completed bridges can be reversed"));
+            return Error<BridgeTransactionResult>("Only completed bridges can be reversed");
 
         tx.Status = BridgeStatus.Refunded;
         tx.CompletedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation("Bridge reversed: {Id} → {SourceRecipient}", bridgeTransactionId, sourceRecipientAddress);
-        return Task.FromResult(Ok(tx, "Bridge reversed — wrapped burned, original released"));
+        return Ok(tx, "Bridge reversed — wrapped burned, original released");
     }
 
-    public Task<OASISResult<IEnumerable<BridgeTransactionResult>>> GetBridgeHistoryAsync(
+    public async Task<OASISResult<IEnumerable<BridgeTransactionResult>>> GetBridgeHistoryAsync(
         Guid avatarId, CancellationToken ct = default)
     {
-        var history = _bridgeTransactions.Values
+        var history = await _db.BridgeTransactions
             .Where(t => t.AvatarId == avatarId)
-            .OrderByDescending(t => t.CreatedAt);
+            .OrderByDescending(t => t.CreatedAt)
+            .ToListAsync(ct);
 
-        return Task.FromResult(Ok<IEnumerable<BridgeTransactionResult>>(
-            history, $"Retrieved {history.Count()} bridge transactions"));
+        return Ok<IEnumerable<BridgeTransactionResult>>(
+            history, $"Retrieved {history.Count} bridge transactions");
     }
 
-    public Task<OASISResult<IEnumerable<BridgeRouteInfo>>> GetSupportedRoutesAsync(
+    public async Task<OASISResult<IEnumerable<BridgeRouteInfo>>> GetSupportedRoutesAsync(
         CancellationToken ct = default)
     {
         var providers = _factory.GetAllEnabledProviders().ToList();
@@ -245,16 +254,17 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             }
         }
 
-        return Task.FromResult(Ok<IEnumerable<BridgeRouteInfo>>(routes, $"Retrieved {routes.Count} bridge routes"));
+        return Ok<IEnumerable<BridgeRouteInfo>>(routes, $"Retrieved {routes.Count} bridge routes");
     }
 
-    public Task<OASISResult<BridgeTransactionResult>> GetBridgeStatusAsync(
+    public async Task<OASISResult<BridgeTransactionResult>> GetBridgeStatusAsync(
         string bridgeTransactionId, CancellationToken ct = default)
     {
-        if (!_bridgeTransactions.TryGetValue(bridgeTransactionId, out var tx))
-            return Task.FromResult(Error<BridgeTransactionResult>("Bridge transaction not found"));
+        var tx = await _db.BridgeTransactions.FindAsync(new object[] { bridgeTransactionId }, ct);
+        if (tx == null)
+            return Error<BridgeTransactionResult>("Bridge transaction not found");
 
-        return Task.FromResult(Ok(tx, $"Bridge status: {tx.Status} (mode: {tx.Mode})"));
+        return Ok(tx, $"Bridge status: {tx.Status} (mode: {tx.Mode})");
     }
 
     // ─── Private: Wormhole (trustless) flow ───
@@ -290,7 +300,8 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             CreatedAt = DateTime.UtcNow
         };
 
-        _bridgeTransactions[bridgeTx.Id] = bridgeTx;
+        _db.BridgeTransactions.Add(bridgeTx);
+        await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
             "Wormhole bridge initiated: {Id} {Source}→{Target} seq={Sequence} — awaiting Guardian VAA",
@@ -344,7 +355,8 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             CompletedAt = DateTime.UtcNow
         };
 
-        _bridgeTransactions[bridgeTx.Id] = bridgeTx;
+        _db.BridgeTransactions.Add(bridgeTx);
+        await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
             "Trusted bridge completed: {Id} {Source}→{Target} token={TokenId} amount={Amount}",
@@ -353,8 +365,19 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         return Ok(bridgeTx, $"Trusted bridge completed: {sourceChain} → {targetChain}");
     }
 
-    private static string GetBridgeVaultAddress(string sourceChain, string targetChain)
+    private string GetBridgeVaultAddress(string sourceChain, string targetChain)
     {
+        // Use configured vault address from Wormhole section, falling back to placeholder
+        if (_wormholeConfig.BridgeVaults.TryGetValue(sourceChain, out var vaultCfg)
+            && !string.IsNullOrWhiteSpace(vaultCfg.VaultAddress))
+        {
+            return vaultCfg.VaultAddress;
+        }
+
+        _logger.LogWarning(
+            "No bridge vault configured for {Chain}. Using placeholder. Configure Blockchain:Wormhole:BridgeVaults",
+            sourceChain);
+
         return $"{sourceChain.ToLowerInvariant()}_bridge_vault_for_{targetChain.ToLowerInvariant()}";
     }
 

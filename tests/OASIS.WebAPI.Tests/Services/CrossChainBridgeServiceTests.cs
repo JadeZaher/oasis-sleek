@@ -1,9 +1,11 @@
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Core.Blockchain.Wormhole;
+using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Models.Responses;
 using OASIS.WebAPI.Services;
@@ -31,10 +33,18 @@ public class CrossChainBridgeServiceTests
         _factoryMock.Setup(f => f.GetProvider(It.IsAny<string>(), It.IsAny<ChainNetwork>()))
             .Returns(_providerMock.Object);
 
+        // Tests use an isolated in-memory store; the main app stays on the
+        // persisted Npgsql/PostgreSQL provider (see Program.cs).
+        var dbOptions = new DbContextOptionsBuilder<OASISDbContext>()
+            .UseInMemoryDatabase($"BridgeTests_{Guid.NewGuid()}")
+            .Options;
+        var db = new OASISDbContext(dbOptions);
+
         _service = new CrossChainBridgeService(
             _factoryMock.Object,
             _wormholeMock.Object,
             Options.Create(_config),
+            db,
             Mock.Of<ILogger<CrossChainBridgeService>>());
     }
 

@@ -17,4 +17,7 @@ public class SwapQuoteRequest
     public string AmountIn { get; set; } = string.Empty;
 
     public int SlippageBps { get; set; } = 50;
+
+    /// <summary>Public key of the wallet requesting the swap (required for Jupiter v2).</summary>
+    public string? WalletAddress { get; set; }
 }

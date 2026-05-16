@@ -27,6 +27,8 @@ export {
 
 export type {
   Result,
+  SdkErrorDetail,
+  SdkErrorOptions,
   Signer,
   ChainNetwork,
   UnsignedTransaction,

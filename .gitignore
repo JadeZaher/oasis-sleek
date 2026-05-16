@@ -210,3 +210,5 @@ out/
 # Cache
 .cache/
 .temp/
+# Mutation testing artifacts (Stryker.NET)
+StrykerOutput/

@@ -202,24 +202,27 @@ public class NftManager : INftManager
             Description = holon.Description
         };
 
-        if (holon.Metadata.TryGetValue("image", out var image))
-            metadata.Image = image;
-        if (holon.Metadata.TryGetValue("external_url", out var externalUrl))
-            metadata.ExternalUrl = externalUrl;
-        if (holon.Metadata.TryGetValue("animation_url", out var animUrl))
-            metadata.AnimationUrl = animUrl;
-
-        // Parse attributes from metadata
-        if (holon.Metadata.TryGetValue("attributes", out var attrsJson))
+        if (holon.Metadata != null)
         {
-            try
+            if (holon.Metadata.TryGetValue("image", out var image))
+                metadata.Image = image;
+            if (holon.Metadata.TryGetValue("external_url", out var externalUrl))
+                metadata.ExternalUrl = externalUrl;
+            if (holon.Metadata.TryGetValue("animation_url", out var animUrl))
+                metadata.AnimationUrl = animUrl;
+
+            // Parse attributes from metadata
+            if (holon.Metadata.TryGetValue("attributes", out var attrsJson))
             {
-                var attrs = System.Text.Json.JsonSerializer.Deserialize<List<NftAttribute>>(attrsJson);
-                if (attrs != null) metadata.Attributes = attrs;
-            }
-            catch
-            {
-                // If parsing fails, skip attributes
+                try
+                {
+                    var attrs = System.Text.Json.JsonSerializer.Deserialize<List<NftAttribute>>(attrsJson);
+                    if (attrs != null) metadata.Attributes = attrs;
+                }
+                catch
+                {
+                    // If parsing fails, skip attributes
+                }
             }
         }
 

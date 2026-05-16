@@ -302,6 +302,42 @@ export class SolanaProvider implements ChainProvider {
     }
   }
 
+  // ─── Faucet (devnet / testnet only) ───
+
+  /**
+   * Request an airdrop of native SOL. Only works on devnet/testnet —
+   * mainnet has no faucet and the call is rejected client-side.
+   *
+   * @param address recipient base58 address
+   * @param sol amount of SOL to request (default 1)
+   */
+  async requestAirdrop(address: string, sol = 1): Promise<Result<TransactionResult, SdkError>> {
+    if (this.config.network === "mainnet") {
+      return err(
+        new SdkError(
+          SdkErrorCode.INVALID_INPUT,
+          "requestAirdrop is only available on devnet/testnet, not mainnet",
+          { chain: "solana" }
+        )
+      );
+    }
+    try {
+      const lamports = Math.round(sol * 1_000_000_000);
+      const resp = await this.rpcCall<string>("requestAirdrop", [address, lamports]);
+      if (resp.error) {
+        return err(new SdkError(SdkErrorCode.NETWORK_ERROR, resp.error.message, { chain: "solana" }));
+      }
+      return ok({
+        txHash: resp.result ?? "",
+        chain: "solana",
+        status: "submitted",
+        raw: resp,
+      });
+    } catch (e) {
+      return err(new SdkError(SdkErrorCode.NETWORK_ERROR, `Airdrop failed: ${e}`, { chain: "solana", cause: e as Error }));
+    }
+  }
+
   // ─── Internal helpers ───
 
   private buildSolTransferTx(params: TransferParams, blockhash: string): UnsignedTransaction {

@@ -38,6 +38,11 @@ public class AvatarManagerTests
     [Fact]
     public async Task RegisterAsync_ShouldHashPasswordAndSave()
     {
+        // RegisterAsync now checks for duplicate email/username first, so the
+        // avatar listing must be mocked or the loop NREs on a null result.
+        _provider.Setup(p => p.LoadAllAvatarsAsync(It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<IEnumerable<IAvatar>> { Result = Array.Empty<IAvatar>() });
+
         _provider.Setup(p => p.SaveAvatarAsync(It.IsAny<IAvatar>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IAvatar a, CancellationToken _) => new OASISResult<IAvatar> { Result = a });
 

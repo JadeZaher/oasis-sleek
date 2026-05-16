@@ -1,6 +1,7 @@
 import type { Result } from "../core/result.js";
 import { ok, err } from "../core/result.js";
 import { SdkError, SdkErrorCode } from "../core/errors.js";
+import type { SdkErrorDetail } from "../core/errors.js";
 
 export interface OasisApiConfig {
   baseUrl: string;
@@ -8,13 +9,25 @@ export interface OasisApiConfig {
   apiKey?: string;
   onTokenRefresh?: () => Promise<string>;
   timeoutMs?: number;
+  /**
+   * Enable verbose diagnostics: every request/response/error is logged via
+   * `debugLogger` and parsed server-side exception detail (when the backend
+   * runs with `OASIS:DebugErrors`) is attached to the resulting `SdkError`.
+   */
+  debug?: boolean;
+  /** Sink for debug output. Defaults to the global `console`. */
+  debugLogger?: Pick<Console, "debug" | "error">;
 }
 
-// Mirrors the .NET OASISResult<T> shape returned by most controllers
+// Mirrors the .NET OASISResult<T> shape returned by most controllers.
+// `error`/`detail` appear on error responses (and the unhandled-exception
+// middleware payload); `detail` is only present in backend debug mode.
 interface OASISResponse<T> {
   isError: boolean;
-  message: string;
+  message?: string;
+  error?: string;
   result?: T;
+  detail?: SdkErrorDetail;
 }
 
 // ─── Response types matching .NET DTOs ───
@@ -525,6 +538,26 @@ export class OasisApiClient {
     this.config = config;
   }
 
+  /** Clear the cached token. Forces the next request to use onTokenRefresh. */
+  clearToken(): void {
+    this.config.token = undefined;
+  }
+
+  /**
+   * Toggle verbose diagnostics at runtime. When on, every
+   * request/response/error is logged and the backend's server-side exception
+   * chain (when it runs with `OASIS:DebugErrors`) is rendered via
+   * `SdkError.debugString()` in error logs.
+   */
+  setDebug(enabled: boolean): void {
+    this.config.debug = enabled;
+  }
+
+  /** Whether verbose diagnostics are currently enabled. */
+  get debug(): boolean {
+    return this.config.debug ?? false;
+  }
+
   // ─── Avatar ───
 
   async login(email: string, password: string): Promise<Result<string, SdkError>> {
@@ -934,85 +967,152 @@ export class OasisApiClient {
     return this.request("DELETE", `/api/apikey/${keyId}`);
   }
 
-  // ─── Generic HTTP ───
-
   /** Send a request to an OASISResult<T>-wrapped endpoint. Public for use by query builders. */
   async request<T>(method: string, path: string, body?: unknown, _retried = false): Promise<Result<T, SdkError>> {
+    this.logRequest(method, path, body);
     try {
       const resp = await this.fetchWithAuth(method, path, body);
 
       if (resp.status === 401 && this.config.onTokenRefresh && !_retried) {
         try {
-          await this.getOrRefreshToken();
+          await this.getOrRefreshToken(true);
         } catch (refreshErr) {
-          return this.handleFetchError(refreshErr);
+          return this.handleFetchError(method, path, refreshErr);
         }
         return this.request(method, path, body, true);
       }
 
       if (resp.status === 401 && _retried) {
-        return err(new SdkError(SdkErrorCode.AUTH_EXPIRED, `${method} ${path}: session expired. Please log in again.`));
+        return this.fail(new SdkError(SdkErrorCode.AUTH_EXPIRED, `${method} ${path}: session expired. Please log in again.`, { status: 401, method, path }));
       }
 
       if (!resp.ok) {
-        let msg = `${method} ${path} failed with HTTP ${resp.status}`;
-        try {
-          const errBody = (await resp.json()) as Partial<OASISResponse<unknown>>;
-          if (errBody.message) msg = `${method} ${path}: ${errBody.message}`;
-        } catch { /* non-JSON body */ }
-        return err(new SdkError(SdkErrorCode.API_ERROR, msg));
+        const parsed = await this.parseErrorBody(resp);
+        return this.fail(this.apiError(method, path, resp.status, parsed));
       }
 
       const data = (await resp.json()) as OASISResponse<T>;
 
       if (data.isError) {
-        return err(new SdkError(SdkErrorCode.API_ERROR, `${method} ${path}: ${data.message}`));
+        return this.fail(this.apiError(method, path, resp.status, {
+          message: data.message ?? data.error,
+          detail: data.detail,
+        }));
       }
 
+      this.logResponse(method, path, resp.status);
       return ok(data.result as T);
     } catch (e) {
-      return this.handleFetchError(e);
+      return this.handleFetchError(method, path, e);
     }
   }
 
   /** For endpoints that return bare objects (BridgeController pattern). */
   async requestBare<T>(method: string, path: string, body?: unknown, _retried = false): Promise<Result<T, SdkError>> {
+    this.logRequest(method, path, body);
     try {
       const resp = await this.fetchWithAuth(method, path, body);
 
       if (resp.status === 401 && this.config.onTokenRefresh && !_retried) {
         try {
-          await this.getOrRefreshToken();
+          await this.getOrRefreshToken(true);
         } catch (refreshErr) {
-          return this.handleFetchError(refreshErr);
+          return this.handleFetchError(method, path, refreshErr);
         }
         return this.requestBare(method, path, body, true);
       }
 
       if (resp.status === 401 && _retried) {
-        return err(new SdkError(SdkErrorCode.AUTH_EXPIRED, `${method} ${path}: session expired. Please log in again.`));
+        return this.fail(new SdkError(SdkErrorCode.AUTH_EXPIRED, `${method} ${path}: session expired. Please log in again.`, { status: 401, method, path }));
       }
 
       if (!resp.ok) {
-        let msg = `${method} ${path} failed with HTTP ${resp.status}`;
-        try {
-          const errorData = (await resp.json()) as { error?: string };
-          if (errorData.error) msg = `${method} ${path}: ${errorData.error}`;
-        } catch { /* non-JSON error body */ }
-        return err(new SdkError(SdkErrorCode.API_ERROR, msg));
+        const parsed = await this.parseErrorBody(resp);
+        return this.fail(this.apiError(method, path, resp.status, parsed));
       }
 
       const data = (await resp.json()) as T;
+      this.logResponse(method, path, resp.status);
       return ok(data);
     } catch (e) {
-      return this.handleFetchError(e);
+      return this.handleFetchError(method, path, e);
     }
+  }
+
+  /**
+   * Parse an error response body, tolerating both the OASISResult shape
+   * (`message`) and the bare-error shape (`error`), plus the verbose
+   * `detail` exception chain present when backend debug mode is on.
+   */
+  private async parseErrorBody(
+    resp: Response
+  ): Promise<{ message?: string; detail?: SdkErrorDetail }> {
+    try {
+      const body = (await resp.json()) as {
+        message?: string;
+        error?: string;
+        detail?: SdkErrorDetail;
+      };
+      return { message: body.message ?? body.error, detail: body.detail };
+    } catch {
+      return {}; // non-JSON / empty body (e.g. a bare 500 with no body)
+    }
+  }
+
+  private apiError(
+    method: string,
+    path: string,
+    status: number,
+    parsed: { message?: string; detail?: SdkErrorDetail }
+  ): SdkError {
+    const message = parsed.message
+      ? `${method} ${path}: ${parsed.message}`
+      : `${method} ${path} failed with HTTP ${status}`;
+    return new SdkError(SdkErrorCode.API_ERROR, message, {
+      status,
+      method,
+      path,
+      detail: parsed.detail,
+    });
+  }
+
+  private fail<T>(e: SdkError): Result<T, SdkError> {
+    this.logError(e);
+    return err(e);
+  }
+
+  private get logger(): Pick<Console, "debug" | "error"> {
+    return this.config.debugLogger ?? console;
+  }
+
+  private logRequest(method: string, path: string, body?: unknown): void {
+    if (!this.config.debug) return;
+    this.logger.debug(
+      `[oasis-sdk] → ${method} ${path}`,
+      body !== undefined ? redactSecrets(body) : ""
+    );
+  }
+
+  private logResponse(method: string, path: string, status: number): void {
+    if (!this.config.debug) return;
+    this.logger.debug(`[oasis-sdk] ← ${method} ${path} ${status}`);
+  }
+
+  private logError(e: SdkError): void {
+    if (!this.config.debug) return;
+    this.logger.error(`[oasis-sdk] ✗ ${e.debugString()}`);
   }
 
   private async fetchWithAuth(method: string, path: string, body?: unknown): Promise<Response> {
     let token = this.config.token;
     if (!token && this.config.onTokenRefresh) {
-      token = await this.getOrRefreshToken();
+      try {
+        token = await this.getOrRefreshToken();
+      } catch (e) {
+        // Initial token fetch failed — likely no session active.
+        // We continue anyway as the endpoint might be anonymous.
+        // If it's NOT anonymous, the server will return 401 and we'll handle it in request().
+      }
     }
 
     const headers: Record<string, string> = {};
@@ -1039,10 +1139,13 @@ export class OasisApiClient {
   }
 
   /** Deduplicated token refresh — prevents concurrent refresh races. */
-  private async getOrRefreshToken(): Promise<string | undefined> {
-    if (this.config.token) return this.config.token;
+  private async getOrRefreshToken(force = false): Promise<string | undefined> {
+    if (this.config.token && !force) return this.config.token;
     if (!this.config.onTokenRefresh) return undefined;
     if (!this._refreshInFlight) {
+      // If forcing, clear the cached token first so the refresh callback is guaranteed to be used
+      if (force) this.config.token = undefined;
+      
       this._refreshInFlight = this.config.onTokenRefresh().finally(() => {
         this._refreshInFlight = null;
       });
@@ -1052,10 +1155,21 @@ export class OasisApiClient {
     return token;
   }
 
-  private handleFetchError<T>(e: unknown): Result<T, SdkError> {
+  private handleFetchError<T>(method: string, path: string, e: unknown): Result<T, SdkError> {
     if (e instanceof DOMException && e.name === "AbortError") {
-      return err(new SdkError(SdkErrorCode.NETWORK_ERROR, "Request timed out"));
+      return this.fail(new SdkError(SdkErrorCode.NETWORK_ERROR, `${method} ${path}: request timed out`, { method, path }));
     }
-    return err(new SdkError(SdkErrorCode.NETWORK_ERROR, "Network request failed", { cause: e as Error }));
+    return this.fail(new SdkError(SdkErrorCode.NETWORK_ERROR, `${method} ${path}: network request failed`, { method, path, cause: e as Error }));
   }
+}
+
+/** Shallow-redact obvious credentials before logging a request body. */
+function redactSecrets(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const SECRET_RE = /pass(word)?|token|secret|api[-_]?key|mnemonic|privatekey|seed/i;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    out[k] = SECRET_RE.test(k) ? "«redacted»" : v;
+  }
+  return out;
 }

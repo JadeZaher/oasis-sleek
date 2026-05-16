@@ -28,4 +28,10 @@ public interface IWalletManager
     /// Requires verification of avatar ownership.
     /// </summary>
     Task<OASISResult<WalletExportResult>> ExportWalletAsync(Guid walletId, Guid avatarId, OASISRequest? request = null);
+
+    /// <summary>
+    /// Top-up (faucet-fund) a wallet with test tokens on a dev / test network.
+    /// HARD GUARD: never dispenses on mainnet. Requires avatar ownership of the wallet.
+    /// </summary>
+    Task<OASISResult<object>> TopUpAsync(Guid walletId, decimal? amount, Guid avatarId, OASISRequest? request = null);
 }

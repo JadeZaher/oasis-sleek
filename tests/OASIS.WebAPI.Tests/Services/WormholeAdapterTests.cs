@@ -232,10 +232,9 @@ public class WormholeAdapterTests
         vaaBody[5] = 13;  // 13 signatures
         var vaaBase64 = Convert.ToBase64String(vaaBody);
 
-        var responseJson = JsonSerializer.Serialize(new
-        {
-            data = new { vaaBytes = vaaBase64 }
-        });
+        // The Guardian REST API returns vaaBytes at the JSON root (mapped by
+        // GuardianVAAEnvelope) — not nested under a "data" envelope.
+        var responseJson = JsonSerializer.Serialize(new { vaaBytes = vaaBase64 });
 
         var handler = new FakeHandler(HttpStatusCode.OK, responseJson);
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri(_config.GuardianRpcUrl) };

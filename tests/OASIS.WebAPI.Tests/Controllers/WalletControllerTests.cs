@@ -203,4 +203,42 @@ public class WalletControllerTests
 
         result.Result.Should().BeOfType<NotFoundObjectResult>();
     }
+
+    [Fact]
+    public async Task TopUp_Success_ReturnsOk()
+    {
+        var id = Guid.NewGuid();
+        _walletManager.Setup(m => m.TopUpAsync(id, It.IsAny<decimal?>(), It.IsAny<Guid>(), It.IsAny<OASISRequest?>()))
+                      .ReturnsAsync(new OASISResult<object> { Result = new { txHash = "abc" } });
+
+        var result = await _controller.TopUp(id, new WalletTopUpRequest { Amount = 5m }, null);
+
+        result.Result.Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task TopUp_Error_ReturnsBadRequest()
+    {
+        var id = Guid.NewGuid();
+        _walletManager.Setup(m => m.TopUpAsync(id, It.IsAny<decimal?>(), It.IsAny<Guid>(), It.IsAny<OASISRequest?>()))
+                      .ReturnsAsync(new OASISResult<object> { IsError = true, Message = "Top-up (faucet) is disabled on mainnet." });
+
+        var result = await _controller.TopUp(id, new WalletTopUpRequest(), null);
+
+        result.Result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    [Fact]
+    public async Task TopUp_NoAuth_ReturnsUnauthorized()
+    {
+        var noAuthController = new WalletController(_walletManager.Object);
+        noAuthController.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity()) }
+        };
+
+        var result = await noAuthController.TopUp(Guid.NewGuid(), new WalletTopUpRequest(), null);
+
+        result.Result.Should().BeOfType<UnauthorizedObjectResult>();
+    }
 }

@@ -1,18 +1,39 @@
 using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
-using System.Text.Json;
 
 namespace OASIS.WebAPI.Managers;
 
+/// <summary>
+/// Thin swap dispatcher. Validates the request, resolves the per-chain
+/// <see cref="IDexAdapter"/> (Tinyman/Algorand, Jupiter/Solana, …) by
+/// <see cref="SwapQuoteRequest.Chain"/>, and delegates. All chain-specific
+/// HTTP / AMM math / pool discovery lives in the adapters.
+///
+/// SwapManager owns the cross-cutting quote→execute cache and the
+/// <see cref="SwapQuoteResponse.QuoteId"/> lifecycle so behavior is uniform
+/// across chains: an adapter returns a <see cref="DexQuote"/> (quote + opaque
+/// payload); SwapManager assigns the QuoteId, caches the payload, and replays
+/// it into the adapter on execute.
+///
+/// Adding a new chain = add one <see cref="IDexAdapter"/> implementation + one
+/// DI registration. This dispatcher never changes.
+/// </summary>
 public class SwapManager : ISwapManager
 {
-    private readonly HttpClient _httpClient;
+    private readonly IReadOnlyDictionary<string, IDexAdapter> _adapters;
     private readonly ILogger<SwapManager> _logger;
 
-    public SwapManager(HttpClient httpClient, ILogger<SwapManager> logger)
+    // In-memory quote cache keyed by QuoteId (valid for ~2 min). Cross-cutting
+    // across chains, so it stays here rather than in any single adapter.
+    private static readonly Dictionary<string, CachedQuote> _quoteCache = new();
+    private static readonly object _cacheLock = new();
+
+    public SwapManager(IEnumerable<IDexAdapter> adapters, ILogger<SwapManager> logger)
     {
-        _httpClient = httpClient;
+        // Resolve adapters by chain, case-insensitive (mirrors the chain switch
+        // that used request.Chain.ToLowerInvariant()).
+        _adapters = adapters.ToDictionary(a => a.Chain, StringComparer.OrdinalIgnoreCase);
         _logger = logger;
     }
 
@@ -20,168 +41,108 @@ public class SwapManager : ISwapManager
     {
         try
         {
-            return request.Chain.ToLowerInvariant() switch
+            if (!_adapters.TryGetValue(request.Chain, out var adapter))
+                return new OASISResult<SwapQuoteResponse> { IsError = true, Message = "Unsupported chain" };
+
+            var quoteResult = await adapter.GetQuoteAsync(request);
+            if (quoteResult.IsError || quoteResult.Result is null)
+                return new OASISResult<SwapQuoteResponse>
+                {
+                    IsError = true,
+                    Message = quoteResult.Message,
+                    Exception = quoteResult.Exception
+                };
+
+            var dexQuote = quoteResult.Result;
+            var quote = dexQuote.Quote;
+
+            // SwapManager owns the QuoteId + cache lifecycle (uniform across chains).
+            quote.QuoteId = Guid.NewGuid().ToString("N");
+            CacheQuote(quote.QuoteId, request.Chain, dexQuote.CachePayload);
+
+            return new OASISResult<SwapQuoteResponse>
             {
-                "algorand" => await GetTinymanQuoteAsync(request),
-                "solana" => await GetJupiterQuoteAsync(request),
-                _ => new OASISResult<SwapQuoteResponse> { IsError = true, Message = "Unsupported chain" }
+                IsError = false,
+                Result = quote,
+                Message = quoteResult.Message
             };
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Swap quote failed for {Chain}", request.Chain);
-            return new OASISResult<SwapQuoteResponse> { IsError = true, Message = ex.Message };
+            return new OASISResult<SwapQuoteResponse> { IsError = true, Message = ex.Message, Exception = ex };
         }
     }
 
-    private async Task<OASISResult<SwapQuoteResponse>> GetJupiterQuoteAsync(SwapQuoteRequest req)
+    public async Task<OASISResult<SwapQuoteResponse>> GetSwapTransactionAsync(SwapExecuteRequest request)
     {
-        // Jupiter has multiple endpoints - try in order:
-        // 1. quote-api.jup.ag/v6/quote (primary)
-        // 2. public-api.jup.ag/quote/v6 (fallback)
-        var endpoints = new[]
-        {
-            $"https://quote-api.jup.ag/v6/quote?inputMint={Uri.EscapeDataString(req.TokenIn)}&outputMint={Uri.EscapeDataString(req.TokenOut)}&amount={req.AmountIn}&slippageBps={req.SlippageBps}",
-            $"https://api.mainnet-beta.solana.com", // Sanity check
-        };
-
-        Exception? lastError = null;
-        
-        // Try primary endpoint
-        var url = endpoints[0];
         try
         {
-            var response = await _httpClient.GetAsync(url, CancellationToken.None);
-            if (!response.IsSuccessStatusCode)
-            {
-                var error = await response.Content.ReadAsStringAsync();
-                return new OASISResult<SwapQuoteResponse> 
-                { 
-                    IsError = true, 
-                    Message = $"Jupiter API error: {response.StatusCode} - {(string.IsNullOrEmpty(error) ? "No route found. Try mainnet tokens with liquidity." : error)}" 
-                };
-            }
+            if (string.IsNullOrWhiteSpace(request.QuoteId))
+                return Error<SwapQuoteResponse>("QuoteId is required");
 
-            var json = await response.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
+            if (string.IsNullOrWhiteSpace(request.WalletAddress))
+                return Error<SwapQuoteResponse>("WalletAddress is required for swap execution");
 
-            if (!root.TryGetProperty("outAmount", out var outAmountProp))
-            {
-                return new OASISResult<SwapQuoteResponse>
-                {
-                    IsError = true,
-                    Message = "Jupiter response missing outAmount - check token mints are valid mainnet addresses"
-                };
-            }
+            if (!_adapters.TryGetValue(request.Chain, out var adapter))
+                return Error<SwapQuoteResponse>($"Unsupported chain: {request.Chain}");
 
-            return new OASISResult<SwapQuoteResponse>
+            if (!TryGetCachedQuote(request.QuoteId, out var cachedPayload))
+                return Error<SwapQuoteResponse>("Quote expired or not found. Request a new quote first.");
+
+            return await adapter.BuildSwapTransactionAsync(request, cachedPayload);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Swap transaction build failed for {Chain}", request.Chain);
+            return Error<SwapQuoteResponse>(ex.Message, ex);
+        }
+    }
+
+    // ─── Quote Cache (simple in-memory, for bridging quote → execute) ───
+
+    private static void CacheQuote(string quoteId, string chain, string rawPayload)
+    {
+        lock (_cacheLock)
+        {
+            _quoteCache[quoteId] = new CachedQuote
             {
-                Result = new SwapQuoteResponse
-                {
-                    Chain = "solana",
-                    TokenIn = req.TokenIn,
-                    TokenOut = req.TokenOut,
-                    AmountIn = root.GetProperty("inAmount").GetString() ?? "0",
-                    ExpectedAmountOut = outAmountProp.GetString() ?? "0",
-                    PriceImpact = root.TryGetProperty("priceImpactPct", out var pip) ? pip.GetDouble() : 0,
-                    Fee = "0",
-                    Route = root.TryGetProperty("routePlan", out var rp) ? JsonSerializer.Deserialize<object>(rp.GetRawText()) : null,
-                    Raw = JsonSerializer.Deserialize<object>(json)
-                }
+                Chain = chain,
+                RawPayload = rawPayload,
+                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
             };
-        }
-        catch (HttpRequestException ex) when (ex.Message.Contains("No such host") || ex.Message.Contains("requested name is valid"))
-        {
-            // DNS resolution failed - try with custom DNS or return helpful error
-            lastError = ex;
-            _logger.LogWarning(ex, "Jupiter quote-api.jup.ag DNS failed. Check router/firewall.");
-        }
-        catch (Exception ex)
-        {
-            lastError = ex;
-            _logger.LogError(ex, "Jupiter quote failed");
-        }
 
-        // DNS/Network failure - Jupiter's quote-api.jup.ag is blocked by local network/ISP
-        // This is NOT a code issue - works fine in cloud/other networks
-        return new OASISResult<SwapQuoteResponse>
-        {
-            IsError = true,
-            Message = $"Jupiter DNS resolution failed: {lastError?.Message}. " +
-                      $"Your router/ISP blocks quote-api.jup.ag. " +
-                      $"Fix: (1) Change DNS to 8.8.8.8, (2) Check firewall, or (3) Deploy to cloud." 
-        };
+            // Cleanup expired entries
+            var expired = _quoteCache.Where(kv => kv.Value.ExpiresAt < DateTime.UtcNow)
+                .Select(kv => kv.Key).ToList();
+            foreach (var key in expired)
+                _quoteCache.Remove(key);
+        }
     }
 
-    private Task<OASISResult<SwapQuoteResponse>> GetTinymanQuoteAsync(SwapQuoteRequest req)
+    private static bool TryGetCachedQuote(string quoteId, out string rawPayload)
     {
-        // Real Tinyman V2 quote: Fetch pool reserves via algod + AMM math
-        // Testnet: ALGO(0)-USDC(31566704) pool app ~500k+ (dynamic lookup simplified)
-        // Prod: Use Tinyman indexer API or full pool discovery
-        
-        var asset1Id = uint.Parse(req.TokenIn);
-        var asset2Id = uint.Parse(req.TokenOut);
-        var amountInMicro = ulong.Parse(req.AmountIn);
-        var feeBps = 30;  // Tinyman V2 0.3%
-        var slippageBps = req.SlippageBps;
-
-        // Testnet algod (from appsettings)
-        // var algodUrl = "https://testnet-api.algonode.cloud";  // Future: dynamic reserves
-        // var poolAppId = 148607000u;  // Tinyman V2 master app
-
-        try
+        lock (_cacheLock)
         {
-            // Fetch pool reserves (simplified: direct AMM calc assuming known reserves)
-            // Real: GET /v2/applications/{poolAppId}/state → parse 'a:reserve1','a:reserve2'
-            // For E2E: Use known testnet ALGO-USDC reserves (~1M ALGO / 1M USDC)
-            var reserveIn = 1_000_000_000_000ul;  // 1M ALGO micro
-            var reserveOut = 1_000_000_000_000ul; // 1M USDC micro
-
-            // AMM Constant Product: x * y = k
-            // Formula: out = (in * (10000-fee) * reserveOut) / (reserveIn * 10000 + in * (10000-fee))
-            var feeMultiplier = 10000UL - (uint)feeBps;  // 9970 for 0.3% fee
-            var amountInWithFee = amountInMicro * feeMultiplier / 10000UL;
-            
-            // out = (amountInWithFee * reserveOut) / (reserveIn + amountInWithFee)
-            var numerator = amountInWithFee * reserveOut;
-            var denominator = reserveIn + amountInWithFee;
-            var amountOut = numerator / denominator;
-
-            // Apply slippage to final amount
-            var slippageMultiplier = 10000UL - (uint)slippageBps;  // 9950 for 0.5%
-            amountOut = amountOut * slippageMultiplier / 10000UL;
-
-            var priceImpactPct = (double)(amountInMicro * reserveOut - reserveIn * amountOut) / (reserveIn * amountOut) * 100;
-
-            var feeMicro = amountInMicro - (amountInWithFee * 10000ul / (ulong)feeMultiplier);
-
-            return Task.FromResult(new OASISResult<SwapQuoteResponse>
+            if (_quoteCache.TryGetValue(quoteId, out var cached) && cached.ExpiresAt > DateTime.UtcNow)
             {
-                Result = new SwapQuoteResponse
-                {
-                    Chain = "algorand",
-                    TokenIn = req.TokenIn,
-                    TokenOut = req.TokenOut,
-                    AmountIn = req.AmountIn,
-                    ExpectedAmountOut = amountOut.ToString(),
-                    PriceImpact = Math.Abs(priceImpactPct),
-                    Fee = feeMicro.ToString(),
-                    Raw = new
-                    {
-                        reserveIn = reserveIn.ToString(),
-                        reserveOut = reserveOut.ToString(),
-                        amountInWithFee,
-                        amountOut,
-                        priceImpactPct,
-                        method = "constant_product_amm"
-                    }
-                }
-            });
-        }
-        catch (Exception ex)
-        {
-            return Task.FromResult(new OASISResult<SwapQuoteResponse> { IsError = true, Message = $"Tinyman calc error: {ex.Message}" });
+                rawPayload = cached.RawPayload;
+                return true;
+            }
+            rawPayload = "";
+            return false;
         }
     }
+
+    private sealed class CachedQuote
+    {
+        public string Chain { get; set; } = "";
+        public string RawPayload { get; set; } = "";
+        public DateTime ExpiresAt { get; set; }
+    }
+
+    // ─── Result helpers ───
+
+    private static OASISResult<T> Error<T>(string message, Exception? ex = null)
+        => new() { IsError = true, Message = message, Exception = ex };
 }

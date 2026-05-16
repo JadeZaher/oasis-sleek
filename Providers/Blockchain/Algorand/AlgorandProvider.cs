@@ -325,7 +325,7 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
             tokenId, amount, vaultAddress, targetChain, targetRecipient);
 
         return Task.FromResult(Ok(
-            $"bridge_lock_{Guid.NewGuid():N}",
+            OperationIdGenerator.Generate("algorand", "bridge_lock", vaultAddress, targetChain, targetRecipient),
             $"Lock request recorded: {amount} of asset {tokenId} → vault {vaultAddress} for {targetChain} bridge to {targetRecipient}"));
     }
 
@@ -345,7 +345,7 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
         string sourceRecipient, string walletAddress, CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
-            $"bridge_burn_{Guid.NewGuid():N}",
+            OperationIdGenerator.Generate("algorand", "burn_wrap", walletAddress, tokenId, sourceChain),
             $"Wrapped burn request recorded for {tokenId} on Algorand → release on {sourceChain}"));
     }
 
@@ -370,7 +370,7 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
             name, unitName, total, managerAddress);
 
         return Task.FromResult(Ok(
-            $"asa_create_{Guid.NewGuid():N}",
+            OperationIdGenerator.Generate("algorand", "asa_create", walletAddress, name),
             $"ASA creation recorded: '{name}' ({unitName}) total={total} by {walletAddress}. Sign and submit with client-side key."));
     }
 

@@ -38,7 +38,7 @@ public class BridgeController : ControllerBase
     {
         var result = await _bridgeService.GetSupportedRoutesAsync(ct);
         if (result.IsError)
-            return BadRequest(new { error = result.Message });
+            return BadRequest(result.ToErrorPayload());
 
         return Ok(result.Result);
     }
@@ -63,7 +63,7 @@ public class BridgeController : ControllerBase
             request.Mode, ct);
 
         if (result.IsError)
-            return BadRequest(new { error = result.Message });
+            return BadRequest(result.ToErrorPayload());
 
         return Ok(result.Result);
     }
@@ -82,8 +82,8 @@ public class BridgeController : ControllerBase
         if (result.IsError)
         {
             if (result.Message.Contains("not found"))
-                return NotFound(new { error = result.Message });
-            return BadRequest(new { error = result.Message });
+                return NotFound(result.ToErrorPayload());
+            return BadRequest(result.ToErrorPayload());
         }
 
         return Ok(result.Result);
@@ -104,8 +104,8 @@ public class BridgeController : ControllerBase
         if (result.IsError)
         {
             if (result.Message.Contains("not found"))
-                return NotFound(new { error = result.Message });
-            return BadRequest(new { error = result.Message });
+                return NotFound(result.ToErrorPayload());
+            return BadRequest(result.ToErrorPayload());
         }
 
         return Ok(result.Result);
@@ -120,7 +120,7 @@ public class BridgeController : ControllerBase
     {
         var result = await _bridgeService.CompleteBridgeAsync(id, ct);
         if (result.IsError)
-            return NotFound(new { error = result.Message });
+            return NotFound(result.ToErrorPayload());
 
         return Ok(result.Result);
     }
@@ -137,7 +137,7 @@ public class BridgeController : ControllerBase
     {
         var result = await _bridgeService.ReverseBridgeAsync(id, request.SourceRecipientAddress, ct);
         if (result.IsError)
-            return BadRequest(new { error = result.Message });
+            return BadRequest(result.ToErrorPayload());
 
         return Ok(result.Result);
     }
@@ -151,7 +151,7 @@ public class BridgeController : ControllerBase
     {
         var result = await _bridgeService.GetBridgeStatusAsync(id, ct);
         if (result.IsError)
-            return NotFound(new { error = result.Message });
+            return NotFound(result.ToErrorPayload());
 
         return Ok(result.Result);
     }
@@ -166,7 +166,7 @@ public class BridgeController : ControllerBase
         var avatarId = GetAvatarId();
         var result = await _bridgeService.GetBridgeHistoryAsync(avatarId, ct);
         if (result.IsError)
-            return BadRequest(new { error = result.Message });
+            return BadRequest(result.ToErrorPayload());
 
         return Ok(result.Result);
     }
@@ -177,7 +177,16 @@ public class BridgeController : ControllerBase
         if (Guid.TryParse(avatarClaim, out var avatarId))
             return avatarId;
 
-        var userId = User.Identity?.Name ?? "anonymous";
+        // Fallback: try NameIdentifier claim (sub)
+        var subClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                     ?? User.FindFirst("sub")?.Value;
+        if (Guid.TryParse(subClaim, out var subId))
+            return subId;
+
+        // Last resort: derive a deterministic GUID from the identity name
+        var userId = User.Identity?.Name
+                  ?? User.FindFirst("client_id")?.Value
+                  ?? "anonymous";
         var bytes = System.Text.Encoding.UTF8.GetBytes(userId);
         var guidBytes = new byte[16];
         Array.Copy(bytes, guidBytes, Math.Min(bytes.Length, 16));

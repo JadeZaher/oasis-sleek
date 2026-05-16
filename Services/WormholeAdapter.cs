@@ -102,7 +102,7 @@ public class WormholeAdapter : IWormholeAdapter
                 if (response.IsSuccessStatusCode)
                 {
                     var envelope = await response.Content.ReadFromJsonAsync<GuardianVAAEnvelope>(cancellationToken: ct);
-                    if (envelope?.Data?.VaaBytes is { } vaaBytes)
+                    if (envelope?.VaaBytes is { } vaaBytes)
                     {
                         var vaa = ParseVAA(vaaBytes, emitterChainId, emitterAddress, sequence);
                         _logger.LogInformation("VAA fetched: seq={Sequence} signatures={Sigs}",

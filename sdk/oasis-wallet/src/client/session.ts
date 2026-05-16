@@ -65,7 +65,9 @@ export class SessionManager {
   async restore(): Promise<SessionState> {
     this._token = await this.storage.get(this.tokenKey);
     this._avatarId = await this.storage.get(this.avatarIdKey);
-    return this.state();
+    const state = this.state();
+    this.onChange?.(state);
+    return state;
   }
 
   /** Login and persist session. */

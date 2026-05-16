@@ -5,11 +5,11 @@ VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OASIS.WebAPI", "OASIS.WebAPI.csproj", "{3B223138-D76C-88AF-0B58-842E33D63992}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OASIS.WebAPI.Tests", "OASIS.WebAPI.Tests\OASIS.WebAPI.Tests.csproj", "{D36B3E39-D2D1-429A-9DE8-F94CC9D3F21A}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OASIS.WebAPI.Tests", "tests\OASIS.WebAPI.Tests\OASIS.WebAPI.Tests.csproj", "{D36B3E39-D2D1-429A-9DE8-F94CC9D3F21A}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OASIS.WebAPI.IntegrationTests", "OASIS.WebAPI.IntegrationTests\OASIS.WebAPI.IntegrationTests.csproj", "{22AD07D3-E41C-4A5D-AB5C-506F54959142}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OASIS.WebAPI.IntegrationTests", "tests\OASIS.WebAPI.IntegrationTests\OASIS.WebAPI.IntegrationTests.csproj", "{22AD07D3-E41C-4A5D-AB5C-506F54959142}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OASIS.WebAPI.LiveTests", "OASIS.WebAPI.LiveTests\OASIS.WebAPI.LiveTests.csproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OASIS.WebAPI.LiveTests", "tests\OASIS.WebAPI.LiveTests\OASIS.WebAPI.LiveTests.csproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

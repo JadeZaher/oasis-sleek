@@ -25,4 +25,12 @@ public class SwapController : ControllerBase
         if (result.IsError) return BadRequest(result);
         return Ok(result);
     }
+
+    [HttpPost("execute")]
+    public async Task<ActionResult<OASISResult<SwapQuoteResponse>>> ExecuteSwap([FromBody] SwapExecuteRequest request)
+    {
+        var result = await _swapManager.GetSwapTransactionAsync(request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
 }

@@ -21,7 +21,14 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
-    <ProjectReference Include="..\OASIS.WebAPI.csproj" />
+    <ProjectReference Include="..\..\OASIS.WebAPI.csproj" />
+  </ItemGroup>
+
+  <!-- Make the app's real configuration available so config-reading tests are
+       genuinely config-driven instead of relying on hardcoded fallbacks. -->
+  <ItemGroup>
+    <Content Include="..\..\appsettings.json" Link="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\appsettings.Development.json" Link="appsettings.Development.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

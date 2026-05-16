@@ -92,9 +92,12 @@ public class NftController : ControllerBase
             Description = holon.Description
         };
 
-        if (holon.Metadata.TryGetValue("image", out var image)) metadata.Image = image;
-        if (holon.Metadata.TryGetValue("external_url", out var extUrl)) metadata.ExternalUrl = extUrl;
-        if (holon.Metadata.TryGetValue("animation_url", out var animUrl)) metadata.AnimationUrl = animUrl;
+        if (holon.Metadata != null)
+        {
+            if (holon.Metadata.TryGetValue("image", out var image)) metadata.Image = image;
+            if (holon.Metadata.TryGetValue("external_url", out var extUrl)) metadata.ExternalUrl = extUrl;
+            if (holon.Metadata.TryGetValue("animation_url", out var animUrl)) metadata.AnimationUrl = animUrl;
+        }
 
         return new NftResult
         {

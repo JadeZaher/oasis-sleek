@@ -63,14 +63,18 @@ public class WormholeRedemptionResult
 
 // ─── Guardian API response DTOs ───
 
-public class GuardianSignedVAAResponse
+/// <summary>
+/// Response from api.wormholescan.io/v1/signed_vaa/{chain}/{emitter}/{seq}.
+/// WormholeScan returns vaaBytes at the top level (no data envelope).
+/// </summary>
+public class GuardianVAAEnvelope
 {
     [JsonPropertyName("vaaBytes")]
     public string? VaaBytes { get; set; }
-}
 
-public class GuardianVAAEnvelope
-{
-    [JsonPropertyName("data")]
-    public GuardianSignedVAAResponse? Data { get; set; }
+    [JsonPropertyName("vaa")]
+    public string? Vaa { get; set; }
+
+    [JsonPropertyName("timestamp")]
+    public string? Timestamp { get; set; }
 }

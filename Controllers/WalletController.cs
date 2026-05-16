@@ -126,6 +126,20 @@ public class WalletController : ControllerBase
         return Ok(result);
     }
 
+    // ─── Top-up a wallet with test tokens (faucet) — dev / test networks only ───
+
+    [HttpPost("{id:guid}/topup")]
+    public async Task<ActionResult<OASISResult<object>>> TopUp(Guid id, [FromBody] WalletTopUpRequest? model, [FromQuery] OASISRequest? request)
+    {
+        var avatarId = GetAvatarIdFromClaims();
+        if (avatarId == null)
+            return Unauthorized(new OASISResult<object> { IsError = true, Message = "Invalid token." });
+
+        var result = await _walletManager.TopUpAsync(id, model?.Amount, avatarId.Value, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
     // ─── Get all wallets grouped by type (for UI) ───
 
     [HttpGet("types")]

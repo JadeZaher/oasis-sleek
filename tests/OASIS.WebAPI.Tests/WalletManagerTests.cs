@@ -16,22 +16,27 @@ public class WalletManagerTests
     private readonly ProviderContext _providerContext;
     private readonly WalletManager _manager;
     private readonly WalletKeyService _keyService;
+    private readonly Mock<IAlgorandFaucet> _algorandFaucet;
+    private readonly IConfiguration _config;
 
     public WalletManagerTests()
     {
         _provider = new Mock<IOASISStorageProvider>();
         _provider.Setup(p => p.ProviderName).Returns("InMemory");
 
-        var config = new ConfigurationBuilder()
+        _config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["OASIS:WalletEncryptionKey"] = "test-encryption-key-for-unit-tests-min-32-chars!!"
+                ["OASIS:WalletEncryptionKey"] = "test-encryption-key-for-unit-tests-min-32-chars!!",
+                ["Blockchain:DefaultNetwork"] = "Devnet",
+                ["Blockchain:Faucet:DefaultAmount"] = "5"
             })
             .Build();
-        _providerContext = new ProviderContext(new[] { _provider.Object }, config, null);
+        _providerContext = new ProviderContext(new[] { _provider.Object }, _config, null);
         var chainFactory = new Mock<IBlockchainProviderFactory>();
-        _keyService = new WalletKeyService(config);
-        _manager = new WalletManager(_providerContext, chainFactory.Object, _keyService);
+        _keyService = new WalletKeyService(_config);
+        _algorandFaucet = new Mock<IAlgorandFaucet>();
+        _manager = new WalletManager(_providerContext, chainFactory.Object, _keyService, _config, _algorandFaucet.Object);
     }
 
     [Fact]
@@ -167,5 +172,160 @@ public class WalletManagerTests
 
         result.IsError.Should().BeFalse();
         result.Result.Should().ContainSingle(w => w.Id == w1.Id);
+    }
+
+    // ─── TopUpAsync (faucet) ───
+
+    private Wallet GivenOwnedAlgorandWallet(Guid avatarId)
+    {
+        var wallet = new Wallet
+        {
+            Id = Guid.NewGuid(),
+            AvatarId = avatarId,
+            ChainType = "Algorand",
+            Address = "RECIPIENTADDRESSALGORAND234567ABCDEFGHIJKLMNOPQRSTUVWXYZ23",
+            WalletType = WalletType.Platform
+        };
+        _provider.Setup(p => p.LoadWalletAsync(wallet.Id, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<IWallet> { Result = wallet });
+        return wallet;
+    }
+
+    [Fact]
+    public async Task TopUpAsync_WalletNotFound_ReturnsError()
+    {
+        var id = Guid.NewGuid();
+        _provider.Setup(p => p.LoadWalletAsync(id, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<IWallet> { IsError = true, Result = null });
+
+        var result = await _manager.TopUpAsync(id, null, Guid.NewGuid());
+
+        result.IsError.Should().BeTrue();
+        result.Message.Should().Contain("not found");
+    }
+
+    [Fact]
+    public async Task TopUpAsync_WrongAvatar_ReturnsError()
+    {
+        var wallet = GivenOwnedAlgorandWallet(Guid.NewGuid());
+
+        var result = await _manager.TopUpAsync(wallet.Id, null, Guid.NewGuid());
+
+        result.IsError.Should().BeTrue();
+        result.Message.Should().Contain("not owned");
+    }
+
+    [Fact]
+    public async Task TopUpAsync_OnMainnet_IsHardBlocked()
+    {
+        var mainnetConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["OASIS:WalletEncryptionKey"] = "test-encryption-key-for-unit-tests-min-32-chars!!",
+                ["Blockchain:DefaultNetwork"] = "Mainnet"
+            })
+            .Build();
+        var chainFactory = new Mock<IBlockchainProviderFactory>();
+        var manager = new WalletManager(_providerContext, chainFactory.Object,
+            new WalletKeyService(mainnetConfig), mainnetConfig, _algorandFaucet.Object);
+
+        var avatarId = Guid.NewGuid();
+        var wallet = GivenOwnedAlgorandWallet(avatarId);
+
+        var result = await manager.TopUpAsync(wallet.Id, 5m, avatarId);
+
+        result.IsError.Should().BeTrue();
+        result.Message.Should().Contain("mainnet");
+        _algorandFaucet.Verify(f => f.DispenseAsync(It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TopUpAsync_AlgorandFaucetNotConfigured_ReturnsClearError()
+    {
+        var avatarId = Guid.NewGuid();
+        var wallet = GivenOwnedAlgorandWallet(avatarId);
+        _algorandFaucet.Setup(f => f.IsConfigured).Returns(false);
+
+        var result = await _manager.TopUpAsync(wallet.Id, 5m, avatarId);
+
+        result.IsError.Should().BeTrue();
+        result.Message.Should().Contain("Blockchain:Faucet:Algorand:Mnemonic");
+    }
+
+    [Fact]
+    public async Task TopUpAsync_AlgorandSuccess_ReturnsTxHashAndUsesDefaultAmount()
+    {
+        var avatarId = Guid.NewGuid();
+        var wallet = GivenOwnedAlgorandWallet(avatarId);
+        _algorandFaucet.Setup(f => f.IsConfigured).Returns(true);
+        _algorandFaucet.Setup(f => f.DispenseAsync(wallet.Address, 5m, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync("TXHASH123");
+
+        var result = await _manager.TopUpAsync(wallet.Id, null, avatarId);
+
+        result.IsError.Should().BeFalse();
+        result.Result.Should().NotBeNull();
+        var payload = result.Result!.GetType();
+        payload.GetProperty("txHash")!.GetValue(result.Result).Should().Be("TXHASH123");
+        payload.GetProperty("amount")!.GetValue(result.Result).Should().Be(5m);
+        payload.GetProperty("chain")!.GetValue(result.Result).Should().Be("Algorand");
+        payload.GetProperty("network")!.GetValue(result.Result).Should().Be("Devnet");
+    }
+
+    [Fact]
+    public async Task TopUpAsync_AlgorandFaucetThrows_ReturnsError()
+    {
+        var avatarId = Guid.NewGuid();
+        var wallet = GivenOwnedAlgorandWallet(avatarId);
+        _algorandFaucet.Setup(f => f.IsConfigured).Returns(true);
+        _algorandFaucet.Setup(f => f.DispenseAsync(It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+                       .ThrowsAsync(new InvalidOperationException("algod unreachable"));
+
+        var result = await _manager.TopUpAsync(wallet.Id, 5m, avatarId);
+
+        result.IsError.Should().BeTrue();
+        result.Message.Should().Contain("algod unreachable");
+    }
+
+    [Fact]
+    public async Task TopUpAsync_Solana_ReturnsClientSideMessageWithoutError()
+    {
+        var avatarId = Guid.NewGuid();
+        var wallet = new Wallet
+        {
+            Id = Guid.NewGuid(),
+            AvatarId = avatarId,
+            ChainType = "Solana",
+            Address = "SoLaNaAddr1111111111111111111111111111111111",
+            WalletType = WalletType.Platform
+        };
+        _provider.Setup(p => p.LoadWalletAsync(wallet.Id, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<IWallet> { Result = wallet });
+
+        var result = await _manager.TopUpAsync(wallet.Id, 1m, avatarId);
+
+        result.IsError.Should().BeFalse();
+        result.Message.Should().Contain("client-side");
+    }
+
+    [Fact]
+    public async Task TopUpAsync_UnsupportedChain_ReturnsError()
+    {
+        var avatarId = Guid.NewGuid();
+        var wallet = new Wallet
+        {
+            Id = Guid.NewGuid(),
+            AvatarId = avatarId,
+            ChainType = "Ethereum",
+            Address = "0xabc",
+            WalletType = WalletType.Platform
+        };
+        _provider.Setup(p => p.LoadWalletAsync(wallet.Id, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<IWallet> { Result = wallet });
+
+        var result = await _manager.TopUpAsync(wallet.Id, 1m, avatarId);
+
+        result.IsError.Should().BeTrue();
+        result.Message.Should().Contain("not supported");
     }
 }

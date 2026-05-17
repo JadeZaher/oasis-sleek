@@ -351,7 +351,7 @@ public class WalletManager : IWalletManager
 
     // ─── New: Top-up a wallet via faucet (dev / test networks only) ───
 
-    public async Task<OASISResult<object>> TopUpAsync(Guid walletId, decimal? amount, Guid avatarId, OASISRequest? request = null)
+    public async Task<OASISResult<object>> TopUpAsync(Guid walletId, decimal? amount, Guid avatarId, OASISRequest? request = null, string? clientIdempotencyKey = null)
     {
         var activation = _providerContext.Activate(request);
         if (activation.IsError) return new OASISResult<object> { IsError = true, Message = activation.Message };
@@ -389,7 +389,13 @@ public class WalletManager : IWalletManager
 
                 try
                 {
-                    var txHash = await _algorandFaucet.DispenseAsync(wallet.Address, dispenseAmount);
+                    // Client-supplied Idempotency-Key (if any) wins; otherwise the
+                    // faucet derives a deterministic content key from
+                    // (chain, recipient, amount) — absence is still dedup-safe,
+                    // no random per-request key is ever generated.
+                    var txHash = string.IsNullOrWhiteSpace(clientIdempotencyKey)
+                        ? await _algorandFaucet.DispenseAsync(wallet.Address, dispenseAmount, ct: default)
+                        : await _algorandFaucet.DispenseAsync(wallet.Address, dispenseAmount, clientIdempotencyKey, ct: default);
                     return new OASISResult<object>
                     {
                         Result = new

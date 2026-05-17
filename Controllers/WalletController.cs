@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
@@ -129,15 +130,38 @@ public class WalletController : ControllerBase
     // ─── Top-up a wallet with test tokens (faucet) — dev / test networks only ───
 
     [HttpPost("{id:guid}/topup")]
+    [EnableRateLimiting("financial")]
     public async Task<ActionResult<OASISResult<object>>> TopUp(Guid id, [FromBody] WalletTopUpRequest? model, [FromQuery] OASISRequest? request)
     {
         var avatarId = GetAvatarIdFromClaims();
         if (avatarId == null)
             return Unauthorized(new OASISResult<object> { IsError = true, Message = "Invalid token." });
 
-        var result = await _walletManager.TopUpAsync(id, model?.Amount, avatarId.Value, request);
+        // Client-supplied idempotency key (optional). When present, the faucet
+        // uses it verbatim so a retried POST /topup dispenses exactly once.
+        // When absent the lower layers derive a deterministic content key —
+        // absence is still safe; NO random per-request key is generated here.
+        var idempotencyKey = ReadIdempotencyKey();
+
+        var result = await _walletManager.TopUpAsync(id, model?.Amount, avatarId.Value, request, idempotencyKey);
         if (result.IsError) return BadRequest(result);
         return Ok(result);
+    }
+
+    /// <summary>
+    /// Reads the optional client <c>Idempotency-Key</c> request header.
+    /// Returns null when absent/blank so the server falls back to its
+    /// deterministic content-addressed key (never a random per-request key).
+    /// </summary>
+    private string? ReadIdempotencyKey()
+    {
+        if (Request.Headers.TryGetValue("Idempotency-Key", out var values))
+        {
+            var key = values.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(key))
+                return key.Trim();
+        }
+        return null;
     }
 
     // ─── Get all wallets grouped by type (for UI) ───

@@ -74,8 +74,12 @@ public class SwapManager : ISwapManager
         }
     }
 
-    public async Task<OASISResult<SwapQuoteResponse>> GetSwapTransactionAsync(SwapExecuteRequest request)
+    public async Task<OASISResult<SwapQuoteResponse>> GetSwapTransactionAsync(SwapExecuteRequest request, string? clientIdempotencyKey = null)
     {
+        // clientIdempotencyKey is accepted for forward-compat/audit only: this
+        // path returns an UNSIGNED tx (client signs + broadcasts), so there is
+        // no server-side irreversible effect to dedupe. Intentionally not used.
+        _ = clientIdempotencyKey;
         try
         {
             if (string.IsNullOrWhiteSpace(request.QuoteId))

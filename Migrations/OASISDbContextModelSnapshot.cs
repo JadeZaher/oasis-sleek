@@ -300,6 +300,40 @@ namespace OASIS.WebAPI.Migrations
                     b.ToTable("BlockchainOperations");
                 });
 
+            modelBuilder.Entity("OASIS.WebAPI.Models.ConsumedVaaRecord", b =>
+                {
+                    b.Property<string>("Digest")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("BridgeTransactionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EmitterAddress")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<int>("EmitterChainId")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("Sequence")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Digest");
+
+                    b.HasIndex("Digest")
+                        .IsUnique();
+
+                    b.HasIndex("EmitterChainId", "EmitterAddress", "Sequence");
+
+                    b.ToTable("ConsumedVaas");
+                });
+
             modelBuilder.Entity("OASIS.WebAPI.Models.Holon", b =>
                 {
                     b.Property<Guid>("Id")
@@ -412,6 +446,44 @@ namespace OASIS.WebAPI.Migrations
                     b.HasIndex("HolonId");
 
                     b.ToTable("HolonNFTBindings");
+                });
+
+            modelBuilder.Entity("OASIS.WebAPI.Models.Idempotency.IdempotencyRecord", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<string>("OperationType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ResultPayload")
+                        .HasMaxLength(4096)
+                        .HasColumnType("character varying(4096)");
+
+                    b.Property<int>("State")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Key");
+
+                    b.HasIndex("Key")
+                        .IsUnique();
+
+                    b.HasIndex("OperationType");
+
+                    b.ToTable("IdempotencyRecords");
                 });
 
             modelBuilder.Entity("OASIS.WebAPI.Models.Quest.Quest", b =>
@@ -750,6 +822,127 @@ namespace OASIS.WebAPI.Migrations
                     b.HasIndex("TemplateId");
 
                     b.ToTable("QuestTemplateNodes");
+                });
+
+            modelBuilder.Entity("OASIS.WebAPI.Models.Responses.BridgeTransactionResult", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("Amount")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AvatarId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("LockTxHash")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("MintTxHash")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<int>("Mode")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProofData")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("RedemptionTxHash")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("SourceAddress")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("SourceChain")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("SourceTokenId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TargetAddress")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("TargetChain")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("TargetTokenId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("VaaBytes")
+                        .HasMaxLength(4096)
+                        .HasColumnType("character varying(4096)");
+
+                    b.Property<int?>("VaaSignatureCount")
+                        .HasColumnType("integer");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.Property<string>("WormholeEmitterAddress")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<int?>("WormholeEmitterChainId")
+                        .HasColumnType("integer");
+
+                    b.Property<long?>("WormholeSequence")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AvatarId");
+
+                    b.HasIndex("IdempotencyKey");
+
+                    b.HasIndex("LockTxHash")
+                        .IsUnique()
+                        .HasFilter("\"LockTxHash\" IS NOT NULL");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("SourceChain", "TargetChain");
+
+                    b.HasIndex("WormholeEmitterChainId", "WormholeEmitterAddress", "WormholeSequence")
+                        .IsUnique()
+                        .HasFilter("\"WormholeEmitterChainId\" IS NOT NULL AND \"WormholeEmitterAddress\" IS NOT NULL AND \"WormholeSequence\" IS NOT NULL");
+
+                    b.ToTable("BridgeTransactions");
                 });
 
             modelBuilder.Entity("OASIS.WebAPI.Models.STARODK", b =>

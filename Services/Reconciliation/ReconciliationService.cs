@@ -1,0 +1,797 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using OASIS.WebAPI.Core;
+using OASIS.WebAPI.Data;
+using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Models;
+using OASIS.WebAPI.Models.Idempotency;
+using OASIS.WebAPI.Models.Responses;
+
+namespace OASIS.WebAPI.Services.Reconciliation;
+
+/// <summary>
+/// Re-derives true bridge/operation status from on-chain confirmations.
+///
+/// <para><b>Chain-truth source.</b> The only confirmation-lookup capability on
+/// <see cref="IBlockchainProvider"/> is
+/// <c>GetTransactionStatusAsync(txHash, ct)</c> →
+/// <c>OASISResult&lt;Dictionary&lt;string,object&gt;&gt;</c>. The dictionary
+/// shape is provider-inconsistent (Algorand emits <c>confirmed</c>/
+/// <c>confirmedRound</c>; Solana emits <c>success</c>). There is NO provider
+/// method that distinguishes "definitively dropped/failed" from "not yet
+/// found": a not-found tx surfaces as <c>OASISResult.IsError == true</c> on
+/// both providers, which is ambiguous (mempool vs. dropped vs. never
+/// broadcast). This is the documented residual gap — see
+/// <see cref="ClassifyTx"/>. We therefore only ever:
+/// <list type="bullet">
+/// <item>ADVANCE on a positive confirmation signal,</item>
+/// <item>FAIL only on an explicit on-chain negative signal,</item>
+/// <item>otherwise LEAVE the record untouched and (past the hard-stuck
+/// threshold) flag it "MANUAL INTERVENTION REQUIRED" — never guess.</item>
+/// </list>
+/// </para>
+///
+/// Scoped lifetime. The hosted sweep resolves this inside a per-tick DI scope.
+/// </summary>
+public sealed class ReconciliationService : IReconciliationService
+{
+    private readonly OASISDbContext _db;
+    private readonly IBlockchainProviderFactory _chainFactory;
+    private readonly IIdempotencyStore _idempotency;
+    private readonly ILogger<ReconciliationService> _logger;
+    private readonly ReconciliationOptions _options;
+
+    private static readonly BridgeStatus[] NonTerminalBridge =
+    {
+        BridgeStatus.Initiated,
+        BridgeStatus.Locked,
+        BridgeStatus.AwaitingVAA,
+        BridgeStatus.VAAReady,
+        BridgeStatus.Redeeming,
+    };
+
+    private static readonly string[] NonTerminalOperation =
+    {
+        "Pending",
+        "AwaitingSignature",
+    };
+
+    public ReconciliationService(
+        OASISDbContext db,
+        IBlockchainProviderFactory chainFactory,
+        IIdempotencyStore idempotency,
+        ILogger<ReconciliationService> logger,
+        IOptions<ReconciliationOptions> options)
+    {
+        _db = db;
+        _chainFactory = chainFactory;
+        _idempotency = idempotency;
+        _logger = logger;
+        _options = options.Value;
+    }
+
+    // ───────────────────────── Bridge reconciliation ─────────────────────────
+
+    public async Task<ReconciliationReport> ReconcileBridgeAsync(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var staleBefore = now.AddSeconds(-Math.Max(0, _options.BridgeStaleAfterSeconds));
+        var batch = Math.Clamp(_options.BatchSize, 1, 1000);
+
+        // Snapshot candidate ids only (no tracking) — every write below is a
+        // standalone conditional UPDATE, so we never mutate tracked entities.
+        var candidates = await _db.BridgeTransactions
+            .AsNoTracking()
+            .Where(b => NonTerminalBridge.Contains(b.Status) && b.CreatedAt < staleBefore)
+            .OrderBy(b => b.CreatedAt)
+            .Take(batch)
+            .Select(b => b.Id)
+            .ToListAsync(ct);
+
+        var report = ReconciliationReport.Empty with { Scanned = candidates.Count };
+
+        foreach (var id in candidates)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                // Per-record reports carry Scanned == 0, so Combine preserves
+                // the batch scan count set above.
+                report = report.Combine(await ReconcileOneBridgeAsync(id, now, ct));
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Reconciliation: unexpected error reconciling bridge tx {BridgeId}", id);
+                report = report with { Errors = report.Errors + 1 };
+            }
+        }
+
+        return report;
+    }
+
+    public async Task<ReconciliationReport> ReconcileBridgeTransactionAsync(
+        string id, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+            throw new ArgumentException("Bridge transaction id is required", nameof(id));
+
+        var exists = await _db.BridgeTransactions
+            .AsNoTracking()
+            .AnyAsync(b => b.Id == id, ct);
+
+        if (!exists)
+        {
+            _logger.LogWarning(
+                "Reconciliation: bridge tx {BridgeId} not found (manual trigger)", id);
+            return ReconciliationReport.Empty;
+        }
+
+        var rep = await ReconcileOneBridgeAsync(id, DateTime.UtcNow, ct);
+        return rep with { Scanned = 1 };
+    }
+
+    /// <summary>
+    /// Reconcile exactly one bridge transaction. Re-reads (no-tracking) inside
+    /// so a manual trigger or a long sweep always sees current status. All
+    /// writes are conditional <c>ExecuteUpdateAsync</c> with the expected
+    /// current status in the predicate; exactly-one-row is asserted.
+    /// </summary>
+    private async Task<ReconciliationReport> ReconcileOneBridgeAsync(
+        string id, DateTime now, CancellationToken ct)
+    {
+        var tx = await _db.BridgeTransactions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(b => b.Id == id, ct);
+
+        if (tx is null || !NonTerminalBridge.Contains(tx.Status))
+            return ReconciliationReport.Empty; // already terminal / vanished — nothing to do
+
+        var ageSeconds = (now - tx.CreatedAt).TotalSeconds;
+        var hardStuck = ageSeconds >= Math.Max(0, _options.BridgeHardStuckAfterSeconds);
+
+        // Pick the on-chain tx hash that, if confirmed, proves the *current*
+        // phase advanced. Orphan-lock recovery (defense-in-depth half of plan
+        // task 6): Initiated/Locked/AwaitingVAA with a LockTxHash → verify the
+        // lock landed; we advance the lifecycle flag or flag for manual review,
+        // but NEVER auto-reverse funds here.
+        // MEDIUM-3 guard: a Redeeming row that ALREADY reached a Completed
+        // terminal state before going Redeeming is a REVERSAL in flight
+        // (CrossChainBridgeService.ReverseBridgeAsync reuses Redeeming as the
+        // in-flight burn marker: Completed→Redeeming, terminal Refunded/Failed).
+        // It is NOT a redeem awaiting confirmation. Advancing it back to
+        // Completed would mask an in-flight refund/burn. Detect reversal
+        // provenance on a Redeeming row and flag it for manual intervention —
+        // never auto-advance, never mutate (same conservative rule as the rest
+        // of the service). WHY this signal: the reverse path is observable by
+        // (a) an IdempotencyKey stamped "bridge-reverse:*" (most reliable —
+        // unambiguously set only by the reverse path's claim), or (b) a row
+        // whose CompletedAt is already set while still Redeeming (a fresh
+        // redeem reaches Redeeming from VAAReady and has NOT set CompletedAt;
+        // only a prior Completed→Redeeming reversal carries a CompletedAt).
+        if (tx.Status == BridgeStatus.Redeeming && IsReversalInFlight(tx))
+        {
+            _logger.LogError(
+                "Reconciliation: MANUAL INTERVENTION REQUIRED — bridge tx {BridgeId} is " +
+                "Redeeming with REVERSAL provenance (IdempotencyKey={IdemKey}, " +
+                "CompletedAt={CompletedAt}). This is an in-flight refund/burn, NOT a " +
+                "redeem awaiting confirmation. Reconciliation will NOT advance it to " +
+                "Completed (that would mask the reversal) and will NOT mutate it — " +
+                "operator must resolve the reversal outcome.",
+                tx.Id, tx.IdempotencyKey, tx.CompletedAt);
+            return ReconciliationReport.Empty with { StuckFlagged = 1 };
+        }
+
+        var (txHash, chainName, advanceTo, phase) = SelectBridgeProbe(tx);
+
+        if (string.IsNullOrWhiteSpace(txHash))
+        {
+            // No on-chain handle for the current phase (e.g. Initiated before a
+            // lock hash exists, or AwaitingVAA where progress is off-chain).
+            // Cannot derive truth — flag only if hard-stuck.
+            return MaybeFlagStuckBridge(tx, ageSeconds, hardStuck,
+                $"no on-chain tx hash for phase {phase}");
+        }
+
+        var provider = TryResolveProvider(chainName);
+        if (provider is null)
+        {
+            _logger.LogWarning(
+                "Reconciliation: no provider for chain '{Chain}' (bridge tx {BridgeId}, phase {Phase})",
+                chainName, tx.Id, phase);
+            return MaybeFlagStuckBridge(tx, ageSeconds, hardStuck,
+                $"no blockchain provider for '{chainName}'");
+        }
+
+        var verdict = await ProbeChainAsync(provider, txHash!, ct);
+
+        switch (verdict)
+        {
+            case ChainVerdict.Confirmed:
+            {
+                // Atomic, conditional advance. WHERE Id == x AND Status ==
+                // <expected current>. If a concurrent live request already
+                // moved it, affected == 0 and we simply no-op (idempotent).
+                var expected = tx.Status;
+                var completedAt = DateTime.UtcNow;
+                int affected = await _db.BridgeTransactions
+                    .Where(b => b.Id == tx.Id && b.Status == expected)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(b => b.Status, advanceTo)
+                        .SetProperty(b => b.CompletedAt,
+                            advanceTo == BridgeStatus.Completed
+                                ? completedAt
+                                : (DateTime?)null),
+                        ct);
+
+                if (affected == 1)
+                {
+                    _logger.LogInformation(
+                        "Reconciliation: bridge tx {BridgeId} {From} -> {To} " +
+                        "(chain-confirmed {Phase} tx {TxHash} on {Chain})",
+                        tx.Id, expected, advanceTo, phase, txHash, chainName);
+
+                    // HIGH-3: only a chain-confirmed TERMINAL state (Completed)
+                    // may settle the owning idempotency record. Advancing to a
+                    // non-terminal phase (e.g. Initiated→Locked) leaves the
+                    // op in flight — the record must stay InProgress.
+                    if (advanceTo == BridgeStatus.Completed)
+                        await SettleBridgeIdempotencyAsync(
+                            tx, settleCompleted: true,
+                            payloadOrReason: txHash!, ct);
+
+                    return ReconciliationReport.Empty with { Advanced = 1 };
+                }
+
+                _logger.LogInformation(
+                    "Reconciliation: bridge tx {BridgeId} not in expected status {Expected} " +
+                    "(concurrently advanced) — no-op", tx.Id, expected);
+                return ReconciliationReport.Empty;
+            }
+
+            case ChainVerdict.FailedOnChain:
+            {
+                var expected = tx.Status;
+                var msg = $"Reconciliation: {phase} tx {txHash} reported FAILED on-chain ({chainName}).";
+                int affected = await _db.BridgeTransactions
+                    .Where(b => b.Id == tx.Id && b.Status == expected)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(b => b.Status, BridgeStatus.Failed)
+                        .SetProperty(b => b.ErrorMessage, msg)
+                        .SetProperty(b => b.CompletedAt, DateTime.UtcNow),
+                        ct);
+
+                if (affected == 1)
+                {
+                    _logger.LogWarning(
+                        "Reconciliation: bridge tx {BridgeId} {From} -> Failed ({Reason})",
+                        tx.Id, expected, msg);
+
+                    // HIGH-3: chain-confirmed terminal failure settles the
+                    // owning idempotency record as Failed so the poisoned
+                    // InProgress key is released.
+                    await SettleBridgeIdempotencyAsync(
+                        tx, settleCompleted: false, payloadOrReason: msg, ct);
+
+                    return ReconciliationReport.Empty with { Failed = 1 };
+                }
+
+                _logger.LogInformation(
+                    "Reconciliation: bridge tx {BridgeId} not in expected status {Expected} " +
+                    "when marking Failed (concurrently advanced) — no-op", tx.Id, expected);
+                return ReconciliationReport.Empty;
+            }
+
+            default: // ChainVerdict.Unknown — never guess
+                return MaybeFlagStuckBridge(tx, ageSeconds, hardStuck,
+                    $"chain status for {phase} tx {txHash} on {chainName} is indeterminate");
+        }
+    }
+
+    /// <summary>
+    /// Decide which on-chain tx hash proves the current phase, and what status
+    /// a positive confirmation advances to. Never auto-reverses funds.
+    /// </summary>
+    private static (string? txHash, string chain, BridgeStatus advanceTo, string phase)
+        SelectBridgeProbe(BridgeTransactionResult tx) => tx.Status switch
+    {
+        // Outbound lock landed → lifecycle can move to Locked. Orphan-lock
+        // recovery: a stale Initiated/Locked/AwaitingVAA carrying a LockTxHash
+        // is verified here; we only advance the flag or (if hard-stuck and
+        // indeterminate) flag for manual reversal — never reverse on-chain.
+        BridgeStatus.Initiated or BridgeStatus.Locked or BridgeStatus.AwaitingVAA
+            => (tx.LockTxHash, tx.SourceChain, BridgeStatus.Locked, "lock"),
+
+        // Redeem/mint on the target chain confirmed → Completed.
+        BridgeStatus.Redeeming
+            => (tx.RedemptionTxHash ?? tx.MintTxHash, tx.TargetChain,
+               BridgeStatus.Completed, "redeem"),
+
+        // VAAReady: a mint/redeem hash may already exist if a crash happened
+        // after broadcast but before the Completed write.
+        BridgeStatus.VAAReady
+            => (tx.RedemptionTxHash ?? tx.MintTxHash, tx.TargetChain,
+               BridgeStatus.Completed, "redeem"),
+
+        _ => (null, tx.TargetChain, tx.Status, "unknown"),
+    };
+
+    /// <summary>
+    /// True when a <see cref="BridgeStatus.Redeeming"/> row is actually a
+    /// reversal in flight (MEDIUM-3), not a redeem awaiting confirmation.
+    ///
+    /// <para>Signal precedence (most reliable first):</para>
+    /// <list type="number">
+    /// <item><c>IdempotencyKey</c> begins with <c>"bridge-reverse"</c> — set
+    /// only by <c>ReverseBridgeAsync</c>'s claim; unambiguous.</item>
+    /// <item><c>CompletedAt != null</c> on a Redeeming row — a forward redeem
+    /// reaches Redeeming from VAAReady and only sets CompletedAt at the
+    /// terminal Completed write; a Completed→Redeeming reversal carries the
+    /// CompletedAt stamped by the earlier successful bridge.</item>
+    /// </list>
+    /// </summary>
+    private static bool IsReversalInFlight(BridgeTransactionResult tx)
+    {
+        if (tx.IdempotencyKey?.StartsWith("bridge-reverse", StringComparison.Ordinal) == true)
+            return true;
+
+        // A redeem in flight has not yet stamped CompletedAt; only a prior
+        // Completed bridge now being reversed carries one while Redeeming.
+        return tx.CompletedAt is not null;
+    }
+
+    private ReconciliationReport MaybeFlagStuckBridge(
+        BridgeTransactionResult tx, double ageSeconds, bool hardStuck, string reason)
+    {
+        if (hardStuck)
+        {
+            _logger.LogError(
+                "Reconciliation: MANUAL INTERVENTION REQUIRED — bridge tx {BridgeId} " +
+                "stuck in {Status} for {AgeSeconds:F0}s ({Reason}). " +
+                "Source={SourceChain} Target={TargetChain} LockTx={LockTx} " +
+                "MintTx={MintTx} RedeemTx={RedeemTx}. " +
+                "Reconciliation will NOT auto-fail or auto-reverse — operator must resolve.",
+                tx.Id, tx.Status, ageSeconds, reason,
+                tx.SourceChain, tx.TargetChain, tx.LockTxHash, tx.MintTxHash,
+                tx.RedemptionTxHash);
+            return ReconciliationReport.Empty with { StuckFlagged = 1 };
+        }
+
+        _logger.LogDebug(
+            "Reconciliation: bridge tx {BridgeId} in {Status} for {AgeSeconds:F0}s, " +
+            "not yet hard-stuck ({Reason}) — leaving untouched",
+            tx.Id, tx.Status, ageSeconds, reason);
+        return ReconciliationReport.Empty;
+    }
+
+    // ─────────────────────── Operation reconciliation ────────────────────────
+
+    public async Task<ReconciliationReport> ReconcileOperationsAsync(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var staleBefore = now.AddSeconds(-Math.Max(0, _options.OperationStaleAfterSeconds));
+        var batch = Math.Clamp(_options.BatchSize, 1, 1000);
+
+        var candidateIds = await _db.BlockchainOperations
+            .AsNoTracking()
+            .Where(o => NonTerminalOperation.Contains(o.Status) && o.CreatedDate < staleBefore)
+            .OrderBy(o => o.CreatedDate)
+            .Take(batch)
+            .Select(o => o.Id)
+            .ToListAsync(ct);
+
+        var report = ReconciliationReport.Empty with { Scanned = candidateIds.Count };
+
+        foreach (var id in candidateIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                // Per-record reports carry Scanned == 0, so Combine preserves
+                // the batch scan count set above.
+                report = report.Combine(await ReconcileOneOperationAsync(id, now, ct));
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Reconciliation: unexpected error reconciling operation {OperationId}", id);
+                report = report with { Errors = report.Errors + 1 };
+            }
+        }
+
+        return report;
+    }
+
+    private async Task<ReconciliationReport> ReconcileOneOperationAsync(
+        Guid id, DateTime now, CancellationToken ct)
+    {
+        var op = await _db.BlockchainOperations
+            .AsNoTracking()
+            .FirstOrDefaultAsync(o => o.Id == id, ct);
+
+        if (op is null || !NonTerminalOperation.Contains(op.Status))
+            return ReconciliationReport.Empty;
+
+        var ageSeconds = (now - op.CreatedDate).TotalSeconds;
+        var hardStuck = ageSeconds >= Math.Max(0, _options.OperationHardStuckAfterSeconds);
+
+        // Same provider-resolution convention as BlockchainOperationManager:
+        // Parameters["ChainType"] (else default provider), Parameters["ChainNetwork"].
+        op.Parameters.TryGetValue("TxHash", out var txHash);
+
+        if (string.IsNullOrWhiteSpace(txHash))
+        {
+            // No broadcast tx hash recorded → nothing was put on-chain (or the
+            // broadcast never reached the persistence point). Cannot derive
+            // truth; NEVER re-broadcast. Flag only if hard-stuck.
+            return MaybeFlagStuckOperation(op, ageSeconds, hardStuck,
+                "no TxHash in operation Parameters (nothing observable on-chain)");
+        }
+
+        var chainType = op.Parameters.TryGetValue("ChainType", out var ct0) && !string.IsNullOrWhiteSpace(ct0)
+            ? ct0
+            : null;
+
+        var provider = chainType is not null
+            ? TryResolveProvider(chainType)
+            : SafeDefaultProvider();
+
+        if (provider is null)
+        {
+            _logger.LogWarning(
+                "Reconciliation: no provider for operation {OperationId} (chain '{Chain}')",
+                op.Id, chainType ?? "<default>");
+            return MaybeFlagStuckOperation(op, ageSeconds, hardStuck,
+                "no blockchain provider resolvable");
+        }
+
+        var verdict = await ProbeChainAsync(provider, txHash!, ct);
+
+        switch (verdict)
+        {
+            case ChainVerdict.Confirmed:
+            {
+                var expected = op.Status;
+                int affected = await _db.BlockchainOperations
+                    .Where(o => o.Id == op.Id && o.Status == expected)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(o => o.Status, "Completed")
+                        .SetProperty(o => o.CompletedDate, DateTime.UtcNow),
+                        ct);
+
+                if (affected == 1)
+                {
+                    _logger.LogInformation(
+                        "Reconciliation: operation {OperationId} {From} -> Completed " +
+                        "(chain-confirmed tx {TxHash})", op.Id, expected, txHash);
+
+                    // HIGH-3: chain-confirmed terminal success settles the
+                    // owning idempotency record (Completed).
+                    await SettleOperationIdempotencyAsync(
+                        op, settleCompleted: true, payloadOrReason: txHash!, ct);
+
+                    return ReconciliationReport.Empty with { Advanced = 1 };
+                }
+
+                _logger.LogInformation(
+                    "Reconciliation: operation {OperationId} not in expected status {Expected} " +
+                    "(concurrently advanced) — no-op", op.Id, expected);
+                return ReconciliationReport.Empty;
+            }
+
+            case ChainVerdict.FailedOnChain:
+            {
+                var expected = op.Status;
+                int affected = await _db.BlockchainOperations
+                    .Where(o => o.Id == op.Id && o.Status == expected)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(o => o.Status, "Failed")
+                        .SetProperty(o => o.CompletedDate, DateTime.UtcNow),
+                        ct);
+
+                if (affected == 1)
+                {
+                    _logger.LogWarning(
+                        "Reconciliation: operation {OperationId} {From} -> Failed " +
+                        "(tx {TxHash} reported failed on-chain)", op.Id, expected, txHash);
+
+                    // HIGH-3: chain-confirmed terminal failure settles the
+                    // owning idempotency record (Failed).
+                    await SettleOperationIdempotencyAsync(
+                        op, settleCompleted: false,
+                        payloadOrReason:
+                            $"Reconciliation: operation tx {txHash} reported FAILED on-chain.",
+                        ct);
+
+                    return ReconciliationReport.Empty with { Failed = 1 };
+                }
+
+                _logger.LogInformation(
+                    "Reconciliation: operation {OperationId} not in expected status {Expected} " +
+                    "when marking Failed (concurrently advanced) — no-op", op.Id, expected);
+                return ReconciliationReport.Empty;
+            }
+
+            default:
+                return MaybeFlagStuckOperation(op, ageSeconds, hardStuck,
+                    $"chain status for tx {txHash} is indeterminate");
+        }
+    }
+
+    private ReconciliationReport MaybeFlagStuckOperation(
+        BlockchainOperation op, double ageSeconds, bool hardStuck, string reason)
+    {
+        if (hardStuck)
+        {
+            _logger.LogError(
+                "Reconciliation: MANUAL INTERVENTION REQUIRED — operation {OperationId} " +
+                "({OpType}) stuck in {Status} for {AgeSeconds:F0}s ({Reason}). " +
+                "Reconciliation observes only; it will NOT re-broadcast — operator must resolve.",
+                op.Id, op.OperationType, op.Status, ageSeconds, reason);
+            return ReconciliationReport.Empty with { StuckFlagged = 1 };
+        }
+
+        _logger.LogDebug(
+            "Reconciliation: operation {OperationId} in {Status} for {AgeSeconds:F0}s, " +
+            "not yet hard-stuck ({Reason}) — leaving untouched",
+            op.Id, op.Status, ageSeconds, reason);
+        return ReconciliationReport.Empty;
+    }
+
+    // ──────────────────── HIGH-3: idempotency settlement ─────────────────────
+    //
+    // When a process dies AFTER the on-chain effect but BEFORE the owning
+    // service called CompleteAsync/FailAsync, the IdempotencyRecord stays
+    // InProgress forever. ReplayFromRecord then returns "still in progress" for
+    // every duplicate, permanently poisoning the key. Once reconciliation has
+    // proven (from chain truth) that the owning bridge/op reached a
+    // chain-CONFIRMED terminal state, it is now safe to settle that record.
+    //
+    // Conservative rules (mirror the rest of the service):
+    //   • Only ever called from a branch that already advanced/failed the
+    //     owning entity to a chain-confirmed TERMINAL state — never on
+    //     ambiguous chain truth.
+    //   • Resolve the key WITHOUT guessing. Bridge rows carry the key in their
+    //     IdempotencyKey column (stamped by CrossChainBridgeService). Operation
+    //     rows do NOT persist their derived key; the manager derives it from
+    //     content via OperationIdGenerator and does not store it, so it is NOT
+    //     reconstructable here without guessing — when unresolvable, log a
+    //     flagged manual-intervention item and never fabricate a key.
+    //   • Idempotent: GetAsync first; skip if the record is already terminal or
+    //     absent; tolerate the InvalidOperationException contract of the store.
+    //
+    // No ReconciliationReport field is added (the report record lives in
+    // IReconciliationService.cs, outside this change's ownership): settlements
+    // fold into the existing Advanced/Failed counters and are explicitly logged.
+
+    private async Task SettleBridgeIdempotencyAsync(
+        BridgeTransactionResult tx, bool settleCompleted, string payloadOrReason,
+        CancellationToken ct)
+    {
+        var key = tx.IdempotencyKey;
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            // No key persisted on the row (legacy/back-compat row). Cannot
+            // settle without guessing — flag for manual intervention only.
+            _logger.LogWarning(
+                "Reconciliation: bridge tx {BridgeId} reached a chain-confirmed terminal " +
+                "state but carries NO IdempotencyKey — cannot settle the idempotency " +
+                "record without guessing. MANUAL INTERVENTION: verify no orphaned " +
+                "InProgress idempotency record poisons retries for this bridge.",
+                tx.Id);
+            return;
+        }
+
+        await SettleIdempotencyRecordAsync(
+            key!, settleCompleted, payloadOrReason,
+            ownerDescription: $"bridge tx {tx.Id}", ct);
+    }
+
+    private async Task SettleOperationIdempotencyAsync(
+        BlockchainOperation op, bool settleCompleted, string payloadOrReason,
+        CancellationToken ct)
+    {
+        // The operation row does NOT persist its idempotency key
+        // (BlockchainOperationManager.DeriveIdempotencyKey produces it from
+        // content via OperationIdGenerator and never stores it). The only
+        // non-guessing source is an explicit key on the operation Parameters
+        // (e.g. a caller-supplied "IdempotencyKey"). If absent, do NOT
+        // reconstruct it — flag for manual intervention.
+        if (!op.Parameters.TryGetValue("IdempotencyKey", out var key)
+            || string.IsNullOrWhiteSpace(key))
+        {
+            _logger.LogWarning(
+                "Reconciliation: operation {OperationId} ({OpType}) reached a " +
+                "chain-confirmed terminal state but its idempotency key is not " +
+                "persisted/resolvable (the manager derives it from content and does " +
+                "not store it). NOT fabricating a key. MANUAL INTERVENTION: verify no " +
+                "orphaned InProgress idempotency record poisons retries for this op.",
+                op.Id, op.OperationType);
+            return;
+        }
+
+        await SettleIdempotencyRecordAsync(
+            key, settleCompleted, payloadOrReason,
+            ownerDescription: $"operation {op.Id}", ct);
+    }
+
+    /// <summary>
+    /// Settle one resolved idempotency key, idempotently. GetAsync first; skip
+    /// when the record is absent or already terminal. The store's
+    /// Complete/FailAsync throw <see cref="InvalidOperationException"/> if the
+    /// key vanished between the check and the write (no claim) — tolerated and
+    /// downgraded to a log so a reconciliation pass never errors on a benign
+    /// race. Never throws out of reconciliation.
+    /// </summary>
+    private async Task SettleIdempotencyRecordAsync(
+        string key, bool settleCompleted, string payloadOrReason,
+        string ownerDescription, CancellationToken ct)
+    {
+        try
+        {
+            var record = await _idempotency.GetAsync(key, ct);
+            if (record is null)
+            {
+                _logger.LogDebug(
+                    "Reconciliation: no idempotency record for key '{Key}' ({Owner}) — " +
+                    "nothing to settle.", key, ownerDescription);
+                return;
+            }
+
+            if (record.State != IdempotencyState.InProgress)
+            {
+                // Already settled (Completed/Failed) — idempotent no-op. This
+                // is the normal case on a re-run.
+                _logger.LogDebug(
+                    "Reconciliation: idempotency record '{Key}' ({Owner}) already " +
+                    "terminal ({State}) — skipping (idempotent).",
+                    key, ownerDescription, record.State);
+                return;
+            }
+
+            if (settleCompleted)
+            {
+                await _idempotency.CompleteAsync(key, payloadOrReason, ct);
+                _logger.LogInformation(
+                    "Reconciliation: settled orphaned idempotency record '{Key}' " +
+                    "({Owner}) InProgress -> Completed (chain-confirmed; payload={Payload}).",
+                    key, ownerDescription, payloadOrReason);
+            }
+            else
+            {
+                await _idempotency.FailAsync(key, payloadOrReason, ct);
+                _logger.LogWarning(
+                    "Reconciliation: settled orphaned idempotency record '{Key}' " +
+                    "({Owner}) InProgress -> Failed (chain-confirmed terminal failure: {Reason}).",
+                    key, ownerDescription, payloadOrReason);
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (InvalidOperationException ex)
+        {
+            // The store throws this when no claim exists for the key — a benign
+            // race (the key was cleaned up / never persisted). Reconciliation
+            // must not error on settlement; the entity status write already
+            // succeeded conditionally.
+            _logger.LogWarning(ex,
+                "Reconciliation: idempotency settle for key '{Key}' ({Owner}) found " +
+                "no claim (benign race) — entity status already reconciled; skipping.",
+                key, ownerDescription);
+        }
+        catch (Exception ex)
+        {
+            // Never let an idempotency-settlement failure abort the sweep or
+            // undo the (already-committed, conditional) entity status write.
+            _logger.LogError(ex,
+                "Reconciliation: failed to settle idempotency record '{Key}' ({Owner}) — " +
+                "the owning entity status was reconciled but the idempotency key may " +
+                "remain InProgress. MANUAL INTERVENTION may be required.",
+                key, ownerDescription);
+        }
+    }
+
+    // ───────────────────────── Chain truth probing ──────────────────────────
+
+    private enum ChainVerdict { Confirmed, FailedOnChain, Unknown }
+
+    /// <summary>
+    /// Single point that talks to the chain. Pure observation: no mutation, no
+    /// re-broadcast. Any exception/timeout is downgraded to
+    /// <see cref="ChainVerdict.Unknown"/> so a flaky RPC never causes a wrong
+    /// status write.
+    /// </summary>
+    private async Task<ChainVerdict> ProbeChainAsync(
+        IBlockchainProvider provider, string txHash, CancellationToken ct)
+    {
+        try
+        {
+            var result = await provider.GetTransactionStatusAsync(txHash, ct);
+            return ClassifyTx(result);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Reconciliation: chain probe threw for tx {TxHash} on {Chain} — treating as indeterminate",
+                txHash, provider.ChainType);
+            return ChainVerdict.Unknown;
+        }
+    }
+
+    /// <summary>
+    /// Map the provider-inconsistent status dictionary to a verdict.
+    ///
+    /// <para><b>RESIDUAL GAP (documented, not invented):</b> there is no
+    /// provider capability that cleanly distinguishes "dropped/failed" from
+    /// "not yet observed". A not-found tx surfaces as
+    /// <c>OASISResult.IsError == true</c> on both Algorand and Solana, so it is
+    /// treated as <see cref="ChainVerdict.Unknown"/> (never auto-failed). A
+    /// dedicated provider method (e.g. <c>GetTransactionConfirmationAsync</c>
+    /// returning an explicit Confirmed/Dropped/Pending tri-state) would let
+    /// reconciliation also auto-fail genuinely-dropped txs; until then those
+    /// remain operator-resolved via the hard-stuck flag.</para>
+    /// </summary>
+    private static ChainVerdict ClassifyTx(OASISResult<Dictionary<string, object>> result)
+    {
+        // IsError ⇒ tx not found / RPC error / not-yet-mined. Ambiguous by
+        // construction. NEVER treat as failure.
+        if (result.IsError || result.Result is null)
+            return ChainVerdict.Unknown;
+
+        var d = result.Result;
+
+        // Positive confirmation signals (provider-specific keys).
+        if (ReadBool(d, "confirmed") == true) return ChainVerdict.Confirmed; // Algorand
+        if (ReadBool(d, "success") == true) return ChainVerdict.Confirmed;   // Solana
+
+        // Explicit on-chain negative: the tx exists on-chain but failed.
+        if (ReadBool(d, "success") == false) return ChainVerdict.FailedOnChain; // Solana revert
+        if (ReadBool(d, "confirmed") == false) return ChainVerdict.Unknown;     // Algorand: 0 rounds = not yet, NOT failed
+
+        // A non-error result with no recognizable signal: do not guess.
+        return ChainVerdict.Unknown;
+    }
+
+    private static bool? ReadBool(IReadOnlyDictionary<string, object> d, string key)
+    {
+        if (!d.TryGetValue(key, out var v) || v is null) return null;
+        return v switch
+        {
+            bool b => b,
+            string s when bool.TryParse(s, out var p) => p,
+            _ => null,
+        };
+    }
+
+    // ───────────────────────── Provider resolution ──────────────────────────
+
+    private IBlockchainProvider? TryResolveProvider(string? chain)
+    {
+        if (string.IsNullOrWhiteSpace(chain)) return SafeDefaultProvider();
+        try
+        {
+            // Network is not authoritatively persisted on the bridge row;
+            // use the configured default network for the chain. (Provider
+            // factory caches per chain:network.)
+            return _chainFactory.GetProvider(chain, ChainNetwork.Devnet);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Reconciliation: provider resolution failed for chain '{Chain}'", chain);
+            return null;
+        }
+    }
+
+    private IBlockchainProvider? SafeDefaultProvider()
+    {
+        try { return _chainFactory.GetDefaultProvider(); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Reconciliation: default provider resolution failed");
+            return null;
+        }
+    }
+}

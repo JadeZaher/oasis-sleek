@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
@@ -27,10 +28,33 @@ public class SwapController : ControllerBase
     }
 
     [HttpPost("execute")]
+    [EnableRateLimiting("financial")]
     public async Task<ActionResult<OASISResult<SwapQuoteResponse>>> ExecuteSwap([FromBody] SwapExecuteRequest request)
     {
-        var result = await _swapManager.GetSwapTransactionAsync(request);
+        // Optional client Idempotency-Key. Accepted + plumbed through; the swap
+        // path returns an UNSIGNED tx (client signs + broadcasts) so there is no
+        // server-side irreversible effect to dedupe. Absent ⇒ null (no random
+        // key generated).
+        var idempotencyKey = ReadIdempotencyKey();
+
+        var result = await _swapManager.GetSwapTransactionAsync(request, idempotencyKey);
         if (result.IsError) return BadRequest(result);
         return Ok(result);
+    }
+
+    /// <summary>
+    /// Reads the optional client <c>Idempotency-Key</c> request header.
+    /// Returns null when absent/blank (server falls back to its deterministic
+    /// content key downstream; never a random per-request key).
+    /// </summary>
+    private string? ReadIdempotencyKey()
+    {
+        if (Request.Headers.TryGetValue("Idempotency-Key", out var values))
+        {
+            var key = values.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(key))
+                return key.Trim();
+        }
+        return null;
     }
 }

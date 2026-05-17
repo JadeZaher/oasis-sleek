@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using OASIS.WebAPI.Core.Blockchain.Wormhole;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Models.Responses;
@@ -49,6 +50,7 @@ public class BridgeController : ControllerBase
     /// Defaults to the server-configured default mode.
     /// </summary>
     [HttpPost("initiate")]
+    [EnableRateLimiting("financial")]
     [ProducesResponseType(typeof(BridgeTransactionResult), 200)]
     [ProducesResponseType(400)]
     public async Task<IActionResult> InitiateBridge(
@@ -57,10 +59,15 @@ public class BridgeController : ControllerBase
     {
         var avatarId = GetAvatarId();
 
+        // Optional client Idempotency-Key — used verbatim as the lock→mint
+        // idempotency key so a retried initiate collapses to one chain effect.
+        // Absent ⇒ null ⇒ service uses its deterministic content key (safe).
+        var idempotencyKey = ReadIdempotencyKey();
+
         var result = await _bridgeService.InitiateBridgeAsync(
             request.SourceChain, request.TargetChain, request.TokenId,
             request.RecipientAddress, avatarId, request.Amount,
-            request.Mode, ct);
+            request.Mode, ct, idempotencyKey);
 
         if (result.IsError)
             return BadRequest(result.ToErrorPayload());
@@ -95,12 +102,14 @@ public class BridgeController : ControllerBase
     /// the trustless transfer. The VAA must have been fetched first.
     /// </summary>
     [HttpPost("{id}/redeem")]
+    [EnableRateLimiting("financial")]
     [ProducesResponseType(typeof(BridgeTransactionResult), 200)]
     [ProducesResponseType(400)]
     [ProducesResponseType(404)]
     public async Task<IActionResult> RedeemWithVAA(string id, CancellationToken ct)
     {
-        var result = await _bridgeService.RedeemWithVAAAsync(id, ct);
+        var idempotencyKey = ReadIdempotencyKey();
+        var result = await _bridgeService.RedeemWithVAAAsync(id, ct, idempotencyKey);
         if (result.IsError)
         {
             if (result.Message.Contains("not found"))
@@ -129,13 +138,15 @@ public class BridgeController : ControllerBase
     /// Reverse a completed bridge: burn wrapped, release original.
     /// </summary>
     [HttpPost("{id}/reverse")]
+    [EnableRateLimiting("financial")]
     [ProducesResponseType(typeof(BridgeTransactionResult), 200)]
     public async Task<IActionResult> ReverseBridge(
         string id,
         [FromBody] BridgeReverseRequest request,
         CancellationToken ct)
     {
-        var result = await _bridgeService.ReverseBridgeAsync(id, request.SourceRecipientAddress, ct);
+        var idempotencyKey = ReadIdempotencyKey();
+        var result = await _bridgeService.ReverseBridgeAsync(id, request.SourceRecipientAddress, ct, idempotencyKey);
         if (result.IsError)
             return BadRequest(result.ToErrorPayload());
 
@@ -169,6 +180,23 @@ public class BridgeController : ControllerBase
             return BadRequest(result.ToErrorPayload());
 
         return Ok(result.Result);
+    }
+
+    /// <summary>
+    /// Reads the optional client <c>Idempotency-Key</c> request header.
+    /// Returns null when absent/blank so the bridge service falls back to its
+    /// deterministic content-addressed key (never a random per-request key —
+    /// absence must stay dedup-safe).
+    /// </summary>
+    private string? ReadIdempotencyKey()
+    {
+        if (Request.Headers.TryGetValue("Idempotency-Key", out var values))
+        {
+            var key = values.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(key))
+                return key.Trim();
+        }
+        return null;
     }
 
     private Guid GetAvatarId()

@@ -1,14 +1,17 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Core.Blockchain.Wormhole;
+using OASIS.WebAPI.Core.Idempotency;
 using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Models.Responses;
 using OASIS.WebAPI.Services;
+using OASIS.WebAPI.Tests.TestSupport;
 
 namespace OASIS.WebAPI.Tests.Services;
 
@@ -33,8 +36,9 @@ public class CrossChainBridgeServiceTests
         _factoryMock.Setup(f => f.GetProvider(It.IsAny<string>(), It.IsAny<ChainNetwork>()))
             .Returns(_providerMock.Object);
 
-        // Tests use an isolated in-memory store; the main app stays on the
-        // persisted Npgsql/PostgreSQL provider (see Program.cs).
+        // Service-behavior tests that do not touch the DB UNIQUE constraints
+        // use EF-InMemory + the INSERT-WINS fake. The atomicity/replay tests
+        // below instead use real SQLite + the real IdempotencyStore.
         var dbOptions = new DbContextOptionsBuilder<OASISDbContext>()
             .UseInMemoryDatabase($"BridgeTests_{Guid.NewGuid()}")
             .Options;
@@ -45,6 +49,7 @@ public class CrossChainBridgeServiceTests
             _wormholeMock.Object,
             Options.Create(_config),
             db,
+            new FakeIdempotencyStore(),
             Mock.Of<ILogger<CrossChainBridgeService>>());
     }
 
@@ -60,17 +65,19 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task InitiateBridge_TrustedMode_CompletesImmediately()
     {
-        _providerMock.Setup(p => p.LockForBridgeAsync(
+        using var harness = new SqliteBridgeHarness();
+        harness.ProviderMock.Setup(p => p.LockForBridgeAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new OASISResult<string> { IsError = false, Result = "lock_tx" });
 
-        _providerMock.Setup(p => p.MintWrappedAsync(
+        harness.ProviderMock.Setup(p => p.MintWrappedAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<int>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new OASISResult<string> { IsError = false, Result = "mint_tx" });
 
-        var result = await _service.InitiateBridgeAsync(
+        var (svc, _) = harness.CreateService();
+        var result = await svc.InitiateBridgeAsync(
             "Solana", "Algorand", "token1", "recipient", Guid.NewGuid(), 1, BridgeMode.Trusted);
 
         result.IsError.Should().BeFalse();
@@ -83,8 +90,9 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task InitiateBridge_WormholeMode_ReturnsAwaitingVAA()
     {
-        _wormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(true);
-        _wormholeMock.Setup(w => w.InitiateTransferAsync(
+        using var harness = new SqliteBridgeHarness();
+        harness.WormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(true);
+        harness.WormholeMock.Setup(w => w.InitiateTransferAsync(
             "Solana", "Algorand", "token1", It.IsAny<string>(), "recipient",
             1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new OASISResult<WormholeTransferInitiation>
@@ -99,7 +107,8 @@ public class CrossChainBridgeServiceTests
                 }
             });
 
-        var result = await _service.InitiateBridgeAsync(
+        var (svc, _) = harness.CreateService();
+        var result = await svc.InitiateBridgeAsync(
             "Solana", "Algorand", "token1", "recipient", Guid.NewGuid(), 1, BridgeMode.Wormhole);
 
         result.IsError.Should().BeFalse();
@@ -113,19 +122,21 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task InitiateBridge_WormholeUnsupported_FallsBackToTrusted()
     {
-        _wormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(false);
+        using var harness = new SqliteBridgeHarness();
+        harness.WormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(false);
 
-        _providerMock.Setup(p => p.LockForBridgeAsync(
+        harness.ProviderMock.Setup(p => p.LockForBridgeAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new OASISResult<string> { IsError = false, Result = "lock_tx" });
 
-        _providerMock.Setup(p => p.MintWrappedAsync(
+        harness.ProviderMock.Setup(p => p.MintWrappedAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<int>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new OASISResult<string> { IsError = false, Result = "mint_tx" });
 
-        var result = await _service.InitiateBridgeAsync(
+        var (svc, _) = harness.CreateService();
+        var result = await svc.InitiateBridgeAsync(
             "Solana", "Algorand", "token1", "recipient", Guid.NewGuid(), 1, BridgeMode.Wormhole);
 
         result.IsError.Should().BeFalse();
@@ -138,11 +149,12 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task WormholeBridge_FullLifecycle_InitiateFetchRedeem()
     {
+        using var harness = new SqliteBridgeHarness();
         var avatarId = Guid.NewGuid();
 
         // Step 1: Initiate
-        _wormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(true);
-        _wormholeMock.Setup(w => w.InitiateTransferAsync(
+        harness.WormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(true);
+        harness.WormholeMock.Setup(w => w.InitiateTransferAsync(
             "Solana", "Algorand", "token1", It.IsAny<string>(), "recipient",
             1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new OASISResult<WormholeTransferInitiation>
@@ -155,14 +167,15 @@ public class CrossChainBridgeServiceTests
                 }
             });
 
-        var initResult = await _service.InitiateBridgeAsync(
+        var (svc, _) = harness.CreateService();
+        var initResult = await svc.InitiateBridgeAsync(
             "Solana", "Algorand", "token1", "recipient", avatarId, 1, BridgeMode.Wormhole);
 
         initResult.IsError.Should().BeFalse();
         var bridgeId = initResult.Result!.Id;
 
         // Step 2: Fetch VAA
-        _wormholeMock.Setup(w => w.FetchVAAAsync(1, "emitter", 100, It.IsAny<CancellationToken>()))
+        harness.WormholeMock.Setup(w => w.FetchVAAAsync(1, "emitter", 100, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new OASISResult<WormholeVAA>
             {
                 IsError = false,
@@ -177,14 +190,14 @@ public class CrossChainBridgeServiceTests
                 }
             });
 
-        var fetchResult = await _service.FetchVAAAsync(bridgeId);
+        var fetchResult = await svc.FetchVAAAsync(bridgeId);
         fetchResult.IsError.Should().BeFalse();
         fetchResult.Result!.Status.Should().Be(BridgeStatus.VAAReady);
         fetchResult.Result.VaaBytes.Should().Be("AQIDBA==");
         fetchResult.Result.VaaSignatureCount.Should().Be(13);
 
         // Step 3: Redeem
-        _wormholeMock.Setup(w => w.RedeemTransferAsync(
+        harness.WormholeMock.Setup(w => w.RedeemTransferAsync(
             "Algorand", It.IsAny<WormholeVAA>(), "recipient", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new OASISResult<WormholeRedemptionResult>
             {
@@ -196,7 +209,7 @@ public class CrossChainBridgeServiceTests
                 }
             });
 
-        var redeemResult = await _service.RedeemWithVAAAsync(bridgeId);
+        var redeemResult = await svc.RedeemWithVAAAsync(bridgeId);
         redeemResult.IsError.Should().BeFalse();
         redeemResult.Result!.Status.Should().Be(BridgeStatus.Completed);
         redeemResult.Result.RedemptionTxHash.Should().Be("redeem_tx_789");
@@ -208,20 +221,23 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task FetchVAA_TrustedBridge_ReturnsError()
     {
-        _providerMock.Setup(p => p.LockForBridgeAsync(
+        using var harness = new SqliteBridgeHarness();
+        harness.ProviderMock.Setup(p => p.LockForBridgeAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new OASISResult<string> { IsError = false, Result = "tx" });
-        _providerMock.Setup(p => p.MintWrappedAsync(
+        harness.ProviderMock.Setup(p => p.MintWrappedAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<int>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new OASISResult<string> { IsError = false, Result = "tx" });
 
-        var initResult = await _service.InitiateBridgeAsync(
+        var (svc, _) = harness.CreateService();
+        var initResult = await svc.InitiateBridgeAsync(
             "Solana", "Algorand", "token1", "r", Guid.NewGuid(), 1, BridgeMode.Trusted);
+        initResult.IsError.Should().BeFalse("trusted initiate must genuinely succeed on SQLite");
         var bridgeId = initResult.Result!.Id;
 
-        var fetchResult = await _service.FetchVAAAsync(bridgeId);
+        var fetchResult = await svc.FetchVAAAsync(bridgeId);
         fetchResult.IsError.Should().BeTrue();
         fetchResult.Message.Should().Contain("only available for Wormhole");
     }
@@ -229,8 +245,9 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task RedeemWithVAA_NotVAAReady_ReturnsError()
     {
-        _wormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(true);
-        _wormholeMock.Setup(w => w.InitiateTransferAsync(
+        using var harness = new SqliteBridgeHarness();
+        harness.WormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(true);
+        harness.WormholeMock.Setup(w => w.InitiateTransferAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
@@ -244,14 +261,16 @@ public class CrossChainBridgeServiceTests
                 }
             });
 
-        var initResult = await _service.InitiateBridgeAsync(
+        var (svc, _) = harness.CreateService();
+        var initResult = await svc.InitiateBridgeAsync(
             "Solana", "Algorand", "token1", "r", Guid.NewGuid(), 1, BridgeMode.Wormhole);
+        initResult.IsError.Should().BeFalse("the Wormhole initiate must reach AwaitingVAA on SQLite");
         var bridgeId = initResult.Result!.Id;
 
         // Try to redeem without fetching VAA first
-        var redeemResult = await _service.RedeemWithVAAAsync(bridgeId);
+        var redeemResult = await svc.RedeemWithVAAAsync(bridgeId);
         redeemResult.IsError.Should().BeTrue();
-        redeemResult.Message.Should().Contain("expected VAAReady");
+        redeemResult.Message.Should().Contain("No VAA available");
     }
 
     [Fact]
@@ -260,6 +279,64 @@ public class CrossChainBridgeServiceTests
         var result = await _service.FetchVAAAsync("nonexistent");
         result.IsError.Should().BeTrue();
         result.Message.Should().Contain("not found");
+    }
+
+    /// <summary>
+    /// Bridge-level malformed/empty VaaBytes reject: a bridge seeded in VAAReady
+    /// whose VaaBytes cannot yield the canonical replay digest (non-base64, or
+    /// empty/whitespace) MUST be rejected BEFORE any idempotency claim, the
+    /// atomic VAAReady→Redeeming transition, the on-chain redeem, or a
+    /// ConsumedVaas write — i.e. it must NEVER mint. Non-base64 hits the
+    /// digest-computation try/catch (FormatException); empty/whitespace is
+    /// caught by the earlier "No VAA available" guard. Either way the invariant
+    /// is identical: error, no mint, row not advanced, no replay-ledger row.
+    /// </summary>
+    [Theory]
+    [InlineData("not_base64!!", "malformed")]
+    [InlineData("", "No VAA available")]
+    [InlineData("   ", "No VAA available")]
+    public async Task RedeemWithVAA_MalformedOrEmptyVaaBytes_RejectsNoMint(
+        string vaaBytes, string expectedMessageFragment)
+    {
+        using var harness = new SqliteBridgeHarness();
+
+        int redeemInvocations = 0;
+        harness.WormholeMock
+            .Setup(w => w.RedeemTransferAsync(
+                It.IsAny<string>(), It.IsAny<WormholeVAA>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, WormholeVAA __, string ___, CancellationToken ____) =>
+            {
+                Interlocked.Increment(ref redeemInvocations);
+                await Task.Yield();
+                return new OASISResult<WormholeRedemptionResult>
+                {
+                    IsError = false,
+                    Result = new WormholeRedemptionResult { TxHash = "should_never_mint", Success = true }
+                };
+            });
+
+        var bridgeId = harness.SeedVaaReadyBridge(
+            vaaBytes: vaaBytes, emitterChainId: 1, emitterAddress: "emitter", sequence: 500);
+
+        var (svc, _) = harness.CreateService();
+        var result = await svc.RedeemWithVAAAsync(bridgeId);
+
+        result.IsError.Should().BeTrue(
+            "a VAA whose bytes cannot produce the canonical replay digest must be rejected");
+        result.Message.Should().Contain(expectedMessageFragment);
+
+        harness.WormholeMock.Verify(w => w.RedeemTransferAsync(
+            It.IsAny<string>(), It.IsAny<WormholeVAA>(),
+            It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        redeemInvocations.Should().Be(0, "a malformed/empty VAA must NEVER mint on-chain");
+
+        var row = harness.GetBridge(bridgeId);
+        row.Status.Should().Be(BridgeStatus.VAAReady,
+            "the bridge row must NOT advance (no VAAReady→Redeeming/Completed) on a malformed-VAA reject");
+
+        harness.ConsumedVaaCount().Should().Be(0,
+            "no replay-ledger row may be written when the VAA is rejected before redeem");
     }
 
     // ─── Routes ───
@@ -322,5 +399,511 @@ public class CrossChainBridgeServiceTests
         mock.Setup(p => p.ChainType).Returns(chainType);
         mock.Setup(p => p.SupportsBridging).Returns(supportsBridging);
         return mock.Object;
+    }
+
+    // ─── Pre-launch bridge safety: financial-correctness invariants under
+    //     concurrency and retry. Backed by the real SQLite harness + real
+    //     IdempotencyStore so the safety comes from the DB UNIQUE constraints
+    //     + ExecuteUpdateAsync row-affected semantics, not a stubbed double.
+
+    /// <summary>
+    /// N concurrent redeems of the SAME bridge/VAA ⇒ EXACTLY ONE on-chain mint.
+    /// The exclusive owner is elected by the real conditional UPDATE WHERE
+    /// Status==VAAReady + affected==1 (only exists against a real relational
+    /// engine), so this must run on SQLite, not the fake/EF-InMemory.
+    /// </summary>
+    [Fact]
+    public async Task ConcurrentDoubleRedeem_ResultsInExactlyOneMint()
+    {
+        using var harness = new SqliteBridgeHarness();
+        const int concurrency = 16;
+
+        var bridgeId = harness.SeedVaaReadyBridge(
+            vaaBytes: "VkFBLWNvbmN1cnJlbnQ=",
+            emitterChainId: 1, emitterAddress: "emitter", sequence: 100);
+
+        // Thread-safe count of actual on-chain redeem invocations — the
+        // observable that proves "exactly one mint".
+        int redeemInvocations = 0;
+        harness.WormholeMock
+            .Setup(w => w.RedeemTransferAsync(
+                It.IsAny<string>(), It.IsAny<WormholeVAA>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, WormholeVAA __, string ___, CancellationToken ____) =>
+            {
+                Interlocked.Increment(ref redeemInvocations);
+                await Task.Yield();
+                return new OASISResult<WormholeRedemptionResult>
+                {
+                    IsError = false,
+                    Result = new WormholeRedemptionResult { TxHash = "redeem_once", Success = true }
+                };
+            });
+
+        // All callers wait on one gate, then go at once to maximize interleaving.
+        using var gate = new ManualResetEventSlim(false);
+        var tasks = new List<Task<OASISResult<BridgeTransactionResult>>>(concurrency);
+        for (int i = 0; i < concurrency; i++)
+        {
+            tasks.Add(Task.Run(async () =>
+            {
+                gate.Wait();
+                var (svc, _) = harness.CreateService();
+                return await svc.RedeemWithVAAAsync(bridgeId);
+            }));
+        }
+
+        gate.Set();
+        var results = await Task.WhenAll(tasks);
+
+        redeemInvocations.Should().Be(1,
+            "the atomic VAAReady→Redeeming transition + idempotency claim must "
+            + "elect a single redeem owner — this is the no-double-mint invariant");
+
+        var final = harness.GetBridge(bridgeId);
+        final.Status.Should().Be(BridgeStatus.Completed);
+        final.RedemptionTxHash.Should().Be("redeem_once");
+
+        harness.ConsumedVaaCount().Should().Be(1,
+            "the VAA digest is consumed exactly once; a second consume would "
+            + "evidence a second mint");
+
+        // A non-error result is not necessarily a second mint: the idempotency
+        // layer correctly returns an idempotent-replay Ok to callers arriving
+        // after the single owner Completed. The replay-Ok vs in-flight-reject
+        // split is timing-dependent and intentionally not asserted; the
+        // single-mint invariant holding for EVERY outcome is.
+        var successes = results.Where(r => !r.IsError).ToList();
+        successes.Should().NotBeEmpty("the redeem owner (at minimum) succeeds");
+        successes.Should().OnlyContain(
+            r => r.Result!.Status == BridgeStatus.Completed
+                 && r.Result!.RedemptionTxHash == "redeem_once",
+            "every success is either the one owner or an idempotent replay of "
+            + "THAT SAME single mint — never a distinct second mint");
+
+        var losers = results.Where(r => r.IsError).ToList();
+        losers.Should().OnlyContain(
+            r => r.Message.Contains("in progress")
+                 || r.Message.Contains("concurrent")
+                 || r.Message.Contains("being redeemed")
+                 || r.Message.Contains("already")
+                 || r.Message.Contains("VAAReady"),
+            "losers must be duplicate/conflict rejections, never a 2nd mint");
+
+        results.Where(r => !r.IsError)
+               .Select(r => r.Result!.RedemptionTxHash)
+               .Distinct()
+               .Should().ContainSingle().Which.Should().Be("redeem_once");
+    }
+
+    /// <summary>
+    /// Duplicate Wormhole initiate (identical inputs) ⇒ exactly one bridge row
+    /// reaches AwaitingVAA. Dedupe is enforced by the UNIQUE filtered index on
+    /// (WormholeEmitterChainId, WormholeEmitterAddress, WormholeSequence) — real
+    /// only on SQLite.
+    /// </summary>
+    [Fact]
+    public async Task DuplicateWormholeInitiate_YieldsOneBridgeRow_OneOnChainLock()
+    {
+        using var harness = new SqliteBridgeHarness();
+        var avatarId = Guid.NewGuid();
+
+        harness.WormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(true);
+
+        int lockInvocations = 0;
+        harness.WormholeMock
+            .Setup(w => w.InitiateTransferAsync(
+                "Solana", "Algorand", "token1", It.IsAny<string>(), "recipient",
+                1, It.IsAny<CancellationToken>()))
+            .Returns(async (string _, string __, string ___, string ____,
+                            string _____, int ______, CancellationToken _______) =>
+            {
+                Interlocked.Increment(ref lockInvocations);
+                await Task.Yield();
+                // Same emitter tuple every time — same cross-chain message.
+                return new OASISResult<WormholeTransferInitiation>
+                {
+                    IsError = false,
+                    Result = new WormholeTransferInitiation
+                    {
+                        TxHash = "wh_lock", EmitterChainId = 1,
+                        EmitterAddress = "emitter", Sequence = 777
+                    }
+                };
+            });
+
+        var (svc1, _) = harness.CreateService();
+        var first = await svc1.InitiateBridgeAsync(
+            "Solana", "Algorand", "token1", "recipient", avatarId, 1, BridgeMode.Wormhole);
+        first.IsError.Should().BeFalse();
+        first.Result!.Status.Should().Be(BridgeStatus.AwaitingVAA);
+
+        var (svc2, _) = harness.CreateService();
+        var second = await svc2.InitiateBridgeAsync(
+            "Solana", "Algorand", "token1", "recipient", avatarId, 1, BridgeMode.Wormhole);
+
+        var awaiting = harness.BridgesWithEmitter(1, "emitter", 777)
+            .Where(b => b.Status == BridgeStatus.AwaitingVAA)
+            .ToList();
+        awaiting.Should().HaveCount(1,
+            "the unique (emitter,address,sequence) index permits one live bridge per message");
+
+        if (!second.IsError)
+        {
+            second.Result!.Id.Should().Be(first.Result!.Id,
+                "a non-error duplicate must resolve to the SAME bridge, not a new one");
+        }
+
+        lockInvocations.Should().BeLessThanOrEqualTo(2);
+        harness.BridgesWithEmitter(1, "emitter", 777)
+            .Count(b => b.Status is BridgeStatus.AwaitingVAA or BridgeStatus.Completed)
+            .Should().Be(1, "only one bridge can hold the (emitter,seq) lock");
+    }
+
+    /// <summary>
+    /// A replayed VAA (same SHA-256 digest) is rejected by the ConsumedVaas
+    /// UNIQUE Digest constraint — no second mint, bridge not re-Completed.
+    /// Requires SQLite — EF-InMemory would silently allow the duplicate digest
+    /// insert and make this a false positive.
+    /// </summary>
+    [Fact]
+    public async Task ReplayedVaa_IsRejected_NoSecondMint()
+    {
+        using var harness = new SqliteBridgeHarness();
+        const string sharedVaa = "VkFBLXJlcGxheS1zYW1lLWRpZ2VzdA==";
+
+        int redeemInvocations = 0;
+        harness.WormholeMock
+            .Setup(w => w.RedeemTransferAsync(
+                It.IsAny<string>(), It.IsAny<WormholeVAA>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, WormholeVAA __, string ___, CancellationToken ____) =>
+            {
+                Interlocked.Increment(ref redeemInvocations);
+                await Task.Yield();
+                return new OASISResult<WormholeRedemptionResult>
+                {
+                    IsError = false,
+                    Result = new WormholeRedemptionResult { TxHash = "redeem_first", Success = true }
+                };
+            });
+
+        // The two bridge rows MUST carry DISTINCT emitter tuples: the UNIQUE
+        // filtered index on (EmitterChainId, EmitterAddress, Sequence) forbids
+        // two live rows sharing one tuple, so the genuine replay vector is a
+        // SECOND bridge (different message ⇒ different tuple) carrying the SAME
+        // VAA bytes ⇒ identical digest, rejected by the ConsumedVaas constraint.
+        var bridge1 = harness.SeedVaaReadyBridge(sharedVaa, 1, "emitter-a", 100);
+        var (svc1, _) = harness.CreateService();
+        var firstRedeem = await svc1.RedeemWithVAAAsync(bridge1);
+        firstRedeem.IsError.Should().BeFalse();
+        firstRedeem.Result!.Status.Should().Be(BridgeStatus.Completed);
+        redeemInvocations.Should().Be(1);
+
+        var bridge2 = harness.SeedVaaReadyBridge(sharedVaa, 2, "emitter-b", 200);
+        var (svc2, _) = harness.CreateService();
+        var replay = await svc2.RedeemWithVAAAsync(bridge2);
+
+        replay.IsError.Should().BeTrue("a replayed VAA digest must be rejected");
+        replay.Message.Should().Contain("replay");
+        redeemInvocations.Should().Be(1, "the replay must NOT trigger a second on-chain mint");
+
+        var replayedRow = harness.GetBridge(bridge2);
+        replayedRow.Status.Should().NotBe(BridgeStatus.Completed,
+            "a replay-rejected bridge must never be marked Completed");
+
+        // Exactly one digest consumed across both attempts.
+        harness.ConsumedVaaCount().Should().Be(1);
+    }
+
+    /// <summary>
+    /// CRITICAL-1 cross-component digest agreement: the ConsumedVaas replay-ledger
+    /// key the bridge writes for a VAA MUST equal the canonical
+    /// <see cref="WormholeAdapter.ComputeVaaDigest(string)"/> for the SAME bytes.
+    /// Any divergence (e.g. hashing the base64 STRING instead of the decoded
+    /// bytes) yields a non-canonical key: another component using the canonical
+    /// formula would not collide and the same VAA becomes mintable twice.
+    /// </summary>
+    [Fact]
+    public async Task ConsumedVaaKey_EqualsCanonical_WormholeAdapterDigest()
+    {
+        using var harness = new SqliteBridgeHarness();
+        const string vaa = "VkFBLWNhbm9uaWNhbC1kaWdlc3Q=";
+
+        harness.WormholeMock
+            .Setup(w => w.RedeemTransferAsync(
+                It.IsAny<string>(), It.IsAny<WormholeVAA>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new OASISResult<WormholeRedemptionResult>
+            {
+                IsError = false,
+                Result = new WormholeRedemptionResult { TxHash = "redeem_canon", Success = true }
+            });
+
+        var bridgeId = harness.SeedVaaReadyBridge(vaa, 1, "emitter", 100);
+        var (svc, _) = harness.CreateService();
+
+        var redeem = await svc.RedeemWithVAAAsync(bridgeId);
+        redeem.IsError.Should().BeFalse();
+
+        var canonical = WormholeAdapter.ComputeVaaDigest(vaa);
+        harness.ConsumedVaaDigests().Should().ContainSingle()
+            .Which.Should().Be(canonical,
+                "the bridge's consumed-VAA key must be the single canonical "
+                + "SHA-256(base64Decode(vaa)) so it collides across components");
+    }
+
+    /// <summary>
+    /// CRITICAL-1 non-canonical re-encoding: two DIFFERENT base64 strings that
+    /// decode to the SAME raw bytes must collide in the ConsumedVaas ledger
+    /// (the canonical digest hashes the DECODED bytes, so a re-fetched/re-padded
+    /// byte-identical VAA still hits the UNIQUE constraint — replay stays
+    /// blocked). The old string-hash would have produced different keys here.
+    /// </summary>
+    [Fact]
+    public async Task RepaddedBase64Vaa_SameBytes_StillCollidesInLedger()
+    {
+        // A non-canonical final-quantum encoding: 'YR==' and 'YQ==' both decode
+        // to the single byte 0x61 ('a'); the trailing unused bits differ so the
+        // STRINGS differ while the BYTES are identical. Assert that premise so
+        // the test self-validates regardless of base64 nuance.
+        const string canonB64 = "YQ==";
+        const string repadB64 = "YR==";
+        canonB64.Should().NotBe(repadB64, "the two base64 strings must differ");
+        Convert.FromBase64String(canonB64).Should().Equal(
+            Convert.FromBase64String(repadB64),
+            "but they must decode to byte-identical content (same VAA)");
+        WormholeAdapter.ComputeVaaDigest(canonB64).Should().Be(
+            WormholeAdapter.ComputeVaaDigest(repadB64),
+            "the canonical digest hashes the DECODED bytes ⇒ identical key");
+
+        using var harness = new SqliteBridgeHarness();
+        int redeemInvocations = 0;
+        harness.WormholeMock
+            .Setup(w => w.RedeemTransferAsync(
+                It.IsAny<string>(), It.IsAny<WormholeVAA>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, WormholeVAA __, string ___, CancellationToken ____) =>
+            {
+                Interlocked.Increment(ref redeemInvocations);
+                await Task.Yield();
+                return new OASISResult<WormholeRedemptionResult>
+                {
+                    IsError = false,
+                    Result = new WormholeRedemptionResult { TxHash = "redeem_repad", Success = true }
+                };
+            });
+
+        // Bridge 1 carries the canonical base64; bridge 2 (a distinct message,
+        // distinct emitter tuple) carries the RE-PADDED base64 — same bytes.
+        var bridge1 = harness.SeedVaaReadyBridge(canonB64, 1, "emitter-a", 100);
+        var (svc1, _) = harness.CreateService();
+        var first = await svc1.RedeemWithVAAAsync(bridge1);
+        first.IsError.Should().BeFalse();
+        first.Result!.Status.Should().Be(BridgeStatus.Completed);
+        redeemInvocations.Should().Be(1);
+
+        var bridge2 = harness.SeedVaaReadyBridge(repadB64, 2, "emitter-b", 200);
+        var (svc2, _) = harness.CreateService();
+        var replay = await svc2.RedeemWithVAAAsync(bridge2);
+
+        replay.IsError.Should().BeTrue(
+            "a byte-identical VAA (only base64 re-padded) is the SAME VAA — "
+            + "its canonical digest already sits in the ConsumedVaas ledger");
+        replay.Message.Should().Contain("replay");
+        redeemInvocations.Should().Be(1,
+            "the re-encoded VAA must NOT trigger a second on-chain mint");
+        harness.ConsumedVaaCount().Should().Be(1,
+            "both base64 forms map to ONE canonical digest ⇒ one ledger row");
+        harness.GetBridge(bridge2).Status.Should().NotBe(BridgeStatus.Completed,
+            "the replay-rejected bridge must never be marked Completed");
+    }
+
+    /// <summary>
+    /// Crash-before-save recovery posture: the on-chain redeem succeeds but the
+    /// process "crashes" before the Redeeming→Completed write (adapter throws
+    /// after it would have minted). The row stays recoverable (non-Completed),
+    /// the VAA digest is already recorded, and a subsequent redeem does NOT
+    /// double-mint. Full reconciliation convergence is out of scope here.
+    /// </summary>
+    [Fact]
+    public async Task CrashBeforeSave_DoesNotDoubleMintOnRetry()
+    {
+        using var harness = new SqliteBridgeHarness();
+        const string vaa = "VkFBLWNyYXNoLXJlY292ZXJ5";
+
+        int redeemInvocations = 0;
+        // First call: minted on-chain, then crashed before save — throw AFTER
+        // entering redeem (the digest was inserted before this call per the
+        // hardened ordering).
+        harness.WormholeMock
+            .Setup(w => w.RedeemTransferAsync(
+                It.IsAny<string>(), It.IsAny<WormholeVAA>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, WormholeVAA __, string ___, CancellationToken ____) =>
+            {
+                Interlocked.Increment(ref redeemInvocations);
+                await Task.Yield();
+                throw new InvalidOperationException("process crashed after on-chain submit");
+            });
+
+        var bridgeId = harness.SeedVaaReadyBridge(vaa, 1, "emitter", 100);
+        var (svc1, _) = harness.CreateService();
+
+        // No top-level catch in redeem: the adapter exception propagates exactly
+        // like a process crash AFTER the digest+state were persisted.
+        var crash = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc1.RedeemWithVAAAsync(bridgeId));
+        crash.Message.Should().Contain("crashed");
+        redeemInvocations.Should().Be(1);
+
+        var afterCrash = harness.GetBridge(bridgeId);
+        afterCrash.Status.Should().NotBe(BridgeStatus.Completed,
+            "a crashed redeem must leave a recoverable, non-terminal-success state");
+        afterCrash.Status.Should().Be(BridgeStatus.Redeeming,
+            "the atomic VAAReady→Redeeming committed before the crash; it is now reconcilable");
+        harness.ConsumedVaaCount().Should().Be(1,
+            "the VAA digest is recorded BEFORE the on-chain call (replay armor survives the crash)");
+
+        // Retry after restart: the adapter would now succeed if reached.
+        harness.WormholeMock
+            .Setup(w => w.RedeemTransferAsync(
+                It.IsAny<string>(), It.IsAny<WormholeVAA>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, WormholeVAA __, string ___, CancellationToken ____) =>
+            {
+                Interlocked.Increment(ref redeemInvocations);
+                await Task.Yield();
+                return new OASISResult<WormholeRedemptionResult>
+                {
+                    IsError = false,
+                    Result = new WormholeRedemptionResult { TxHash = "redeem_retry", Success = true }
+                };
+            });
+
+        var (svc2, _) = harness.CreateService();
+        var retry = await svc2.RedeemWithVAAAsync(bridgeId);
+
+        // The crashed attempt's idempotency claim is still InProgress so the
+        // retry is rejected before the adapter; the consumed-VAA digest would
+        // also block it (belt + braces).
+        redeemInvocations.Should().Be(1,
+            "retry after a crash must never double-mint");
+        retry.IsError.Should().BeTrue("the crashed-but-claimed redeem must reject the retry");
+        (retry.Message.Contains("in progress")
+            || retry.Message.Contains("already")
+            || retry.Message.Contains("replay")
+            || retry.Message.Contains("consumed"))
+            .Should().BeTrue($"retry must be a clean duplicate/replay rejection, was: {retry.Message}");
+
+        var afterRetry = harness.GetBridge(bridgeId);
+        afterRetry.Status.Should().NotBe(BridgeStatus.Completed,
+            "no false 'Completed' — true status is reconciliation's job (TW4), " +
+            "the invariant here is strictly: no double mint");
+    }
+
+    // ─── SQLite harness ───
+
+    /// <summary>
+    /// Wraps the shared file-backed <see cref="SqliteTestContext"/> (real
+    /// DB-level write locking — required by the concurrency test) with the
+    /// Wormhole/provider mocks and seed/query helpers. Every CreateService gets
+    /// its OWN context + real <see cref="IdempotencyStore"/> over the one DB,
+    /// modelling concurrent scoped requests.
+    /// </summary>
+    private sealed class SqliteBridgeHarness : IDisposable
+    {
+        private readonly SqliteTestContext _db = SqliteTestContext.FileBacked();
+
+        public Mock<IWormholeAdapter> WormholeMock { get; } = new();
+        public Mock<IBlockchainProviderFactory> FactoryMock { get; } = new();
+        public Mock<IBlockchainProvider> ProviderMock { get; } = new();
+
+        public SqliteBridgeHarness()
+        {
+            ProviderMock.Setup(p => p.SupportsBridging).Returns(true);
+            ProviderMock.Setup(p => p.ChainType).Returns("Solana");
+            FactoryMock.Setup(f => f.GetProvider(It.IsAny<string>(), It.IsAny<ChainNetwork>()))
+                .Returns(ProviderMock.Object);
+        }
+
+        private IServiceScopeFactory CreateScopeFactory()
+        {
+            var services = new ServiceCollection();
+            services.AddScoped<OASISDbContext>(_ => _db.NewContext());
+            return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+        }
+
+        public (CrossChainBridgeService Service, OASISDbContext Db) CreateService()
+        {
+            var db = _db.NewContext();
+            var store = new IdempotencyStore(CreateScopeFactory());
+            var svc = new CrossChainBridgeService(
+                FactoryMock.Object,
+                WormholeMock.Object,
+                Options.Create(new WormholeConfig { DefaultMode = BridgeMode.Wormhole }),
+                db,
+                store,
+                Mock.Of<ILogger<CrossChainBridgeService>>());
+            return (svc, db);
+        }
+
+        public string SeedVaaReadyBridge(
+            string vaaBytes, int emitterChainId, string emitterAddress, long sequence)
+        {
+            var id = $"wh_bridge_{Guid.NewGuid():N}";
+            using var db = _db.NewContext();
+            db.BridgeTransactions.Add(new BridgeTransactionResult
+            {
+                Id = id,
+                AvatarId = Guid.NewGuid(),
+                SourceChain = "Solana",
+                TargetChain = "Algorand",
+                SourceTokenId = "token1",
+                TargetAddress = "recipient",
+                Amount = 1,
+                Mode = BridgeMode.Wormhole,
+                Status = BridgeStatus.VAAReady,
+                VaaBytes = vaaBytes,
+                VaaSignatureCount = 13,
+                WormholeEmitterChainId = emitterChainId,
+                WormholeEmitterAddress = emitterAddress,
+                WormholeSequence = sequence,
+                CreatedAt = DateTime.UtcNow
+            });
+            db.SaveChanges();
+            return id;
+        }
+
+        public BridgeTransactionResult GetBridge(string id)
+        {
+            using var db = _db.NewContext();
+            return db.BridgeTransactions.AsNoTracking().Single(b => b.Id == id);
+        }
+
+        public List<BridgeTransactionResult> BridgesWithEmitter(
+            int emitterChainId, string emitterAddress, long sequence)
+        {
+            using var db = _db.NewContext();
+            return db.BridgeTransactions.AsNoTracking()
+                .Where(b => b.WormholeEmitterChainId == emitterChainId
+                            && b.WormholeEmitterAddress == emitterAddress
+                            && b.WormholeSequence == sequence)
+                .ToList();
+        }
+
+        public int ConsumedVaaCount()
+        {
+            using var db = _db.NewContext();
+            return db.ConsumedVaas.AsNoTracking().Count();
+        }
+
+        public List<string> ConsumedVaaDigests()
+        {
+            using var db = _db.NewContext();
+            return db.ConsumedVaas.AsNoTracking().Select(v => v.Digest).ToList();
+        }
+
+        public void Dispose() => _db.Dispose();
     }
 }

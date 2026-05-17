@@ -33,5 +33,13 @@ public interface IWalletManager
     /// Top-up (faucet-fund) a wallet with test tokens on a dev / test network.
     /// HARD GUARD: never dispenses on mainnet. Requires avatar ownership of the wallet.
     /// </summary>
-    Task<OASISResult<object>> TopUpAsync(Guid walletId, decimal? amount, Guid avatarId, OASISRequest? request = null);
+    /// <param name="clientIdempotencyKey">
+    /// Optional client-supplied idempotency key (e.g. the <c>Idempotency-Key</c>
+    /// request header). When provided it is used verbatim as the faucet dispense
+    /// idempotency key so a retried <c>POST /topup</c> dispenses exactly once.
+    /// When null the faucet derives a deterministic content key from
+    /// (chain, recipient, amount) — so absence is still dedup-safe (no random
+    /// per-request key is ever generated).
+    /// </param>
+    Task<OASISResult<object>> TopUpAsync(Guid walletId, decimal? amount, Guid avatarId, OASISRequest? request = null, string? clientIdempotencyKey = null);
 }

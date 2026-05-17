@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OASIS.WebAPI.Models;
+using OASIS.WebAPI.Models.Idempotency;
 using OASIS.WebAPI.Models.Quest;
 using OASIS.WebAPI.Models.Responses;
 
@@ -23,6 +24,8 @@ public class OASISDbContext : DbContext
     public DbSet<WalletNFTBinding> WalletNFTBindings => Set<WalletNFTBinding>();
     public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
     public DbSet<BridgeTransactionResult> BridgeTransactions => Set<BridgeTransactionResult>();
+    public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+    public DbSet<ConsumedVaaRecord> ConsumedVaas => Set<ConsumedVaaRecord>();
 
     // Quest entities
     public DbSet<Quest> Quests => Set<Quest>();
@@ -207,6 +210,53 @@ public class OASISDbContext : DbContext
             entity.HasIndex(e => e.AvatarId);
             entity.HasIndex(e => e.Status);
             entity.HasIndex(e => new { e.SourceChain, e.TargetChain });
+            entity.Property(e => e.IdempotencyKey).HasMaxLength(200);
+            entity.HasIndex(e => e.IdempotencyKey);
+
+            // Source dedupe: a given on-chain lock tx may back at most one
+            // bridge row. Filtered to non-null so legacy/pre-lock rows coexist.
+            entity.HasIndex(e => e.LockTxHash)
+                  .IsUnique()
+                  .HasFilter("\"LockTxHash\" IS NOT NULL");
+
+            // Wormhole dedupe: a given (emitterChain, emitterAddress, sequence)
+            // identifies exactly one cross-chain message ⇒ one bridge row.
+            entity.HasIndex(e => new { e.WormholeEmitterChainId, e.WormholeEmitterAddress, e.WormholeSequence })
+                  .IsUnique()
+                  .HasFilter("\"WormholeEmitterChainId\" IS NOT NULL AND \"WormholeEmitterAddress\" IS NOT NULL AND \"WormholeSequence\" IS NOT NULL");
+
+            // Optimistic-concurrency token mapped to PostgreSQL system column
+            // xmin (Npgsql idiom). Database-generated, read-only, bumped on
+            // every committed UPDATE; enables atomic conditional transitions.
+            entity.Property(e => e.Version)
+                  .HasColumnName("xmin")
+                  .HasColumnType("xid")
+                  .ValueGeneratedOnAddOrUpdate()
+                  .IsConcurrencyToken();
+        });
+
+        modelBuilder.Entity<IdempotencyRecord>(entity =>
+        {
+            entity.HasKey(e => e.Key);
+            // Uniqueness on Key is the atomicity primitive: insert-wins.
+            entity.HasIndex(e => e.Key).IsUnique();
+            entity.Property(e => e.Key).HasMaxLength(200);
+            entity.Property(e => e.OperationType).HasMaxLength(64);
+            entity.Property(e => e.State).HasConversion<int>();
+            entity.Property(e => e.ResultPayload).HasMaxLength(4096);
+            entity.Property(e => e.Error).HasMaxLength(1024);
+            entity.HasIndex(e => e.OperationType);
+        });
+
+        modelBuilder.Entity<ConsumedVaaRecord>(entity =>
+        {
+            entity.HasKey(e => e.Digest);
+            // Uniqueness on Digest is the VAA replay-protection primitive.
+            entity.HasIndex(e => e.Digest).IsUnique();
+            entity.Property(e => e.Digest).HasMaxLength(128);
+            entity.Property(e => e.EmitterAddress).HasMaxLength(128);
+            entity.Property(e => e.BridgeTransactionId).HasMaxLength(64);
+            entity.HasIndex(e => new { e.EmitterChainId, e.EmitterAddress, e.Sequence });
         });
 
         // Quest configurations

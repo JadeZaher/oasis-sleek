@@ -6,6 +6,7 @@ using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Responses;
+using OASIS.WebAPI.Tests.TestSupport;
 
 namespace OASIS.WebAPI.Tests.Managers;
 
@@ -16,6 +17,7 @@ public class BlockchainOperationManagerExtendedTests
     private readonly Mock<IBlockchainProvider> _solProvider;
     private readonly ProviderContext _providerContext;
     private readonly BlockchainProviderFactory _chainFactory;
+    private readonly FakeIdempotencyStore _idempotency;
     private readonly BlockchainOperationManager _manager;
 
     public BlockchainOperationManagerExtendedTests()
@@ -46,7 +48,8 @@ public class BlockchainOperationManagerExtendedTests
         var config = new ConfigurationBuilder().Build();
         _providerContext = new ProviderContext(new[] { _provider.Object }, config, null);
         _chainFactory = new BlockchainProviderFactory(new[] { _algoProvider.Object, _solProvider.Object }, config);
-        _manager = new BlockchainOperationManager(_providerContext, _chainFactory);
+        _idempotency = new FakeIdempotencyStore();
+        _manager = new BlockchainOperationManager(_providerContext, _chainFactory, _idempotency);
     }
 
     [Fact]

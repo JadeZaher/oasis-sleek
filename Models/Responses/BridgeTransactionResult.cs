@@ -72,6 +72,27 @@ public class BridgeTransactionResult
 
     [MaxLength(256)]
     public string? RedemptionTxHash { get; set; }
+
+    // ─── Exactly-once / atomic-transition safety fields (Wave 1 contract) ───
+
+    /// <summary>
+    /// Idempotency key for the irreversible operation that produced/advances
+    /// this bridge transaction (e.g., the redeem request's Idempotency-Key).
+    /// Nullable for back-compat with rows created before this field existed.
+    /// </summary>
+    [MaxLength(200)]
+    public string? IdempotencyKey { get; set; }
+
+    /// <summary>
+    /// Optimistic-concurrency token. Mapped to PostgreSQL's system column
+    /// <c>xmin</c> (row version) via Npgsql — see <c>OASISDbContext</c>. It is
+    /// read-only/database-generated; every committed UPDATE bumps it. Wave 2
+    /// uses this for atomic conditional state transitions: a stale read causes
+    /// <c>SaveChangesAsync</c> to throw <see cref="Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException"/>,
+    /// OR use <c>ExecuteUpdateAsync</c> with a <c>WHERE Status == expected</c>
+    /// predicate and assert exactly one row was affected.
+    /// </summary>
+    public uint Version { get; set; }
 }
 
 public enum BridgeStatus
@@ -81,7 +102,9 @@ public enum BridgeStatus
     AwaitingVAA,
     VAAReady,
     Redeeming,
-    Minted,
+    // NOTE: 'Minted' was removed (Wave 1) — it was dead code. The lifecycle is
+    // strictly Initiated→Locked→AwaitingVAA→VAAReady→Redeeming→Completed
+    // (Failed/Refunded terminal). No code ever assigned BridgeStatus.Minted.
     Completed,
     Failed,
     Refunded

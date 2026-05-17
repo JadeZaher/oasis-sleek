@@ -208,7 +208,7 @@ public class WalletControllerTests
     public async Task TopUp_Success_ReturnsOk()
     {
         var id = Guid.NewGuid();
-        _walletManager.Setup(m => m.TopUpAsync(id, It.IsAny<decimal?>(), It.IsAny<Guid>(), It.IsAny<OASISRequest?>()))
+        _walletManager.Setup(m => m.TopUpAsync(id, It.IsAny<decimal?>(), It.IsAny<Guid>(), It.IsAny<OASISRequest?>(), It.IsAny<string?>()))
                       .ReturnsAsync(new OASISResult<object> { Result = new { txHash = "abc" } });
 
         var result = await _controller.TopUp(id, new WalletTopUpRequest { Amount = 5m }, null);
@@ -220,7 +220,7 @@ public class WalletControllerTests
     public async Task TopUp_Error_ReturnsBadRequest()
     {
         var id = Guid.NewGuid();
-        _walletManager.Setup(m => m.TopUpAsync(id, It.IsAny<decimal?>(), It.IsAny<Guid>(), It.IsAny<OASISRequest?>()))
+        _walletManager.Setup(m => m.TopUpAsync(id, It.IsAny<decimal?>(), It.IsAny<Guid>(), It.IsAny<OASISRequest?>(), It.IsAny<string?>()))
                       .ReturnsAsync(new OASISResult<object> { IsError = true, Message = "Top-up (faucet) is disabled on mainnet." });
 
         var result = await _controller.TopUp(id, new WalletTopUpRequest(), null);

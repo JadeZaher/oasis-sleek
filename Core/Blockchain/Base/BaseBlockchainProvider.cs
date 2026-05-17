@@ -1,8 +1,36 @@
+using System.Net.Sockets;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Models.Responses;
 
 namespace OASIS.WebAPI.Providers.Blockchain.Base;
+
+/// <summary>
+/// Controls how <see cref="BaseBlockchainProvider.ExecuteWithRetryAsync{T}"/>
+/// treats retryable failures.
+/// </summary>
+public enum RetrySafety
+{
+    /// <summary>
+    /// Default / legacy behaviour. The wrapped operation is idempotent (a
+    /// read, a quote, a status poll, a balance query): re-invoking it on any
+    /// retryable transport error is harmless, so retry on 5xx / 429 / timeout.
+    /// </summary>
+    Idempotent = 0,
+
+    /// <summary>
+    /// The wrapped operation BROADCASTS a transaction (a real, irreversible
+    /// chain submit). After the request leaves the client, a timeout / null
+    /// HTTP status / 5xx is AMBIGUOUS — the node may already have accepted and
+    /// is propagating the tx. Re-invoking <c>operation()</c> in that state
+    /// re-broadcasts ⇒ double spend. In this mode we retry ONLY on errors that
+    /// are PROVABLY pre-broadcast (the request was never put on the wire, e.g.
+    /// TCP connection refused before send). Every ambiguous post-send failure
+    /// is rethrown unretried so the caller can reconcile against chain truth
+    /// instead of silently re-sending.
+    /// </summary>
+    Broadcast = 1,
+}
 
 /// <summary>
 /// Base class for blockchain providers with shared retry, error handling, and configuration logic.
@@ -174,7 +202,8 @@ public abstract class BaseBlockchainProvider : IBlockchainProvider
         Func<Task<T>> operation,
         int maxRetries = 3,
         int initialDelayMs = 1000,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        RetrySafety safety = RetrySafety.Idempotent)
     {
         int retryCount = 0;
         int delayMs = initialDelayMs;
@@ -187,7 +216,7 @@ public abstract class BaseBlockchainProvider : IBlockchainProvider
                 return await operation();
             }
             catch (OperationCanceledException) { throw; }
-            catch (Exception ex) when (retryCount < maxRetries && IsRetryable(ex))
+            catch (Exception ex) when (retryCount < maxRetries && IsRetryable(ex, safety))
             {
                 retryCount++;
                 _logger.LogWarning(
@@ -204,7 +233,8 @@ public abstract class BaseBlockchainProvider : IBlockchainProvider
         Func<Task> operation,
         int maxRetries = 3,
         int initialDelayMs = 1000,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        RetrySafety safety = RetrySafety.Idempotent)
     {
         int retryCount = 0;
         int delayMs = initialDelayMs;
@@ -218,7 +248,7 @@ public abstract class BaseBlockchainProvider : IBlockchainProvider
                 return;
             }
             catch (OperationCanceledException) { throw; }
-            catch (Exception ex) when (retryCount < maxRetries && IsRetryable(ex))
+            catch (Exception ex) when (retryCount < maxRetries && IsRetryable(ex, safety))
             {
                 retryCount++;
                 _logger.LogWarning(
@@ -231,10 +261,61 @@ public abstract class BaseBlockchainProvider : IBlockchainProvider
         }
     }
 
+    /// <summary>
+    /// Idempotent-mode retry classifier (legacy behaviour). Overridable by
+    /// derived providers. Retries on transport ambiguity (null status / 5xx /
+    /// 429) because re-invoking an idempotent operation is harmless.
+    /// </summary>
     protected virtual bool IsRetryable(Exception ex)
     {
         return ex is HttpRequestException httpEx &&
                (httpEx.StatusCode == null || (int)httpEx.StatusCode >= 500 || (int)httpEx.StatusCode == 429);
+    }
+
+    /// <summary>
+    /// Safety-aware retry decision.
+    /// <para>
+    /// <see cref="RetrySafety.Idempotent"/>: defers to the overridable
+    /// <see cref="IsRetryable(Exception)"/> — unchanged legacy behaviour, so
+    /// every existing call site (which omits the parameter) is byte-for-byte
+    /// equivalent.
+    /// </para>
+    /// <para>
+    /// <see cref="RetrySafety.Broadcast"/>: a tx has (or may have) been put on
+    /// the wire. Retrying re-broadcasts ⇒ DOUBLE SPEND. We therefore retry
+    /// ONLY when we can PROVE the request never reached the node — i.e. the
+    /// TCP connection itself failed before/while connecting (connection
+    /// refused / DNS / no route). Any error that occurred after a connection
+    /// was established (HTTP timeout, null status mid-flight, 5xx, 429, or any
+    /// non-socket exception) is AMBIGUOUS: the node may already hold the tx.
+    /// Those are NOT retried — the exception propagates so the caller drives
+    /// reconciliation against chain truth instead of re-sending.
+    /// </para>
+    /// </summary>
+    private bool IsRetryable(Exception ex, RetrySafety safety)
+    {
+        if (safety == RetrySafety.Idempotent)
+            return IsRetryable(ex);
+
+        // RetrySafety.Broadcast — provably pre-broadcast errors only.
+        // A SocketException whose inner cause is a connection-establishment
+        // failure means the HTTP request body was never delivered, so no tx
+        // could have been accepted: safe to retry the broadcast.
+        for (var cur = ex; cur is not null; cur = cur.InnerException)
+        {
+            if (cur is SocketException se)
+            {
+                return se.SocketErrorCode is SocketError.ConnectionRefused
+                    or SocketError.HostNotFound
+                    or SocketError.HostUnreachable
+                    or SocketError.NetworkUnreachable
+                    or SocketError.HostDown;
+            }
+        }
+
+        // Everything else under Broadcast is ambiguous post-send: do NOT
+        // auto-retry an irreversible broadcast. Surface for reconciliation.
+        return false;
     }
 
     protected OASISResult<T> Error<T>(string message, Exception? ex = null)

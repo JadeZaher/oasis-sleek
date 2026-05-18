@@ -23,6 +23,16 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+    <!-- Vetted, pure-managed secp256k1 ECDSA recovery for Wormhole VAA Guardian
+         signature verification (Secp256k1VaaSignatureVerifier). Official Bouncy
+         Castle (owner: LegionOfTheBouncyCastle); no native binaries. This is the
+         single approved external crypto dependency — chosen over homebake curve
+         math for ecrecover correctness. An `extern alias` (BCCrypto2) binds the
+         verifier UNAMBIGUOUSLY to this 2.x assembly: the Algorand2/Solana SDKs
+         transitively bundle the legacy BouncyCastle.Crypto 1.8.8, whose
+         identically-named types (ECPoint/BigInteger/ECCurve) would otherwise
+         collide. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" Aliases="BCCrypto2" />
     <PackageReference Include="Algorand2" Version="2.0.0.2024051911" />
     <PackageReference Include="Solana.Rpc" Version="8.7.0" />
     <PackageReference Include="Solana.Wallet" Version="8.7.0" />

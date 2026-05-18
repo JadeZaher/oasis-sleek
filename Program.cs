@@ -25,6 +25,7 @@ using OASIS.WebAPI.Providers;
 using OASIS.WebAPI.Providers.Blockchain.Algorand;
 using OASIS.WebAPI.Providers.Blockchain.Solana;
 using OASIS.WebAPI.Services;
+using OASIS.WebAPI.Services.Wormhole;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -319,6 +320,13 @@ builder.Services.AddHttpClient<IWormholeAdapter, WormholeAdapter>((sp, client) =
     client.BaseAddress = new Uri(config.GuardianRpcUrl);
     client.Timeout = TimeSpan.FromSeconds(config.VaaTimeoutSeconds + 10);
 });
+
+// Real secp256k1 ecrecover Guardian-signature verifier. Once registered,
+// WormholeAdapter.VerifyVAAAsync performs genuine per-signature verification
+// against the config-driven Guardian set. RequireFullSignatureVerification
+// stays true (default) — the "no verifier ⇒ fail-closed" path is unchanged
+// and still exercised by adapter tests that build it without a verifier.
+builder.Services.AddScoped<IVaaSignatureVerifier, Secp256k1VaaSignatureVerifier>();
 
 // ─── Idempotency store (api-safety-hardening task 9/10/11/12) ───
 // REQUIRED: CrossChainBridgeService & BlockchainOperationManager take

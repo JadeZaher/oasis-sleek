@@ -104,6 +104,28 @@ public class WormholeConfig
     /// <see cref="MinGuardianSignatures"/> is enforced.
     /// </summary>
     public int? ExpectedGuardianSetSize { get; set; }
+
+    /// <summary>
+    /// Config-driven Wormhole Guardian sets used by
+    /// <c>Secp256k1VaaSignatureVerifier</c> to map a recovered signer to its
+    /// expected Guardian address.
+    ///
+    /// <para>Shape: key = Guardian-set index as a string (the VAA header's
+    /// <c>GuardianSetIndex</c>, e.g. <c>"0"</c>); value = an ORDERED list of
+    /// 0x-prefixed, 20-byte (40-hex-char) Ethereum-style Guardian addresses.
+    /// The list <b>position</b> is the Guardian index — element [k] is the
+    /// expected address for <c>GuardianIndex == k</c>.</para>
+    ///
+    /// <para>NEVER hardcode addresses in C#. Populate per network via
+    /// appsettings under <c>Blockchain:Wormhole:GuardianSets</c>: the
+    /// environment-specific appsettings file (e.g.
+    /// appsettings.Development.json for devnet) overrides the base file —
+    /// the same network-switching pattern as <see cref="ChainMappings"/> /
+    /// <see cref="ChainMappingsDevnet"/>. Mainnet/testnet entries MUST be
+    /// filled from the official Wormhole Guardian set before that network is
+    /// enabled for value flow.</para>
+    /// </summary>
+    public Dictionary<string, List<string>> GuardianSets { get; set; } = new();
 }
 
 /// <summary>

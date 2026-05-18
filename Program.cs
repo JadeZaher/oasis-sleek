@@ -340,6 +340,25 @@ builder.Services.AddScoped<OASIS.WebAPI.Interfaces.IReconciliationService,
     OASIS.WebAPI.Services.Reconciliation.ReconciliationService>();
 builder.Services.AddHostedService<OASIS.WebAPI.Services.Reconciliation.ReconciliationHostedService>();
 
+// ─── Durable saga / transactional outbox (durable-saga-orchestration Phase 1) ───
+// Generic, reusable, bridge-agnostic. Mirrors the reconciliation registrations:
+// options-bound section, scoped store/processor (per-tick DI scope), a hosted
+// processor driven by a swappable polling trigger (SurrealDB LIVE-query later).
+builder.Services.AddOptions<OASIS.WebAPI.Sagas.SagaOptions>()
+    .Bind(builder.Configuration.GetSection(
+        OASIS.WebAPI.Sagas.SagaOptions.SectionName));
+builder.Services.AddScoped<OASIS.WebAPI.Sagas.ISagaStore,
+    OASIS.WebAPI.Sagas.EfSagaStore>();
+builder.Services.AddSingleton<OASIS.WebAPI.Sagas.ISagaRegistry,
+    OASIS.WebAPI.Sagas.SagaRegistry>();
+builder.Services.AddScoped<OASIS.WebAPI.Sagas.ISagaCoordinator,
+    OASIS.WebAPI.Sagas.SagaCoordinator>();
+builder.Services.AddScoped<OASIS.WebAPI.Sagas.ISagaProcessor,
+    OASIS.WebAPI.Sagas.SagaProcessor>();
+builder.Services.AddSingleton<OASIS.WebAPI.Sagas.ISagaTrigger,
+    OASIS.WebAPI.Sagas.PollingSagaTrigger>();
+builder.Services.AddHostedService<OASIS.WebAPI.Sagas.SagaProcessorHostedService>();
+
 // ─── Quest DAG system ───
 builder.Services.AddScoped<OASIS.WebAPI.Interfaces.IQuestDagValidator, OASIS.WebAPI.Services.QuestDagValidator>();
 builder.Services.AddScoped<OASIS.WebAPI.Interfaces.IQuestInstantiator, OASIS.WebAPI.Services.Quest.QuestInstantiator>();

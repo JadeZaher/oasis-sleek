@@ -59,6 +59,29 @@ single-`ExecutionOrder`).
 - Injection suite: hostile input through every query path (G3).
 - SDK-pin: build fails if `surrealdb.net` version drifts (G4).
 
+## Carried over (owned here, not in api-safety-hardening)
+- **Integration-test harness rebuild.** `OASIS.WebAPI.IntegrationTests` was
+  built for disposable per-factory EF-InMemory DBs; `api-safety-hardening`
+  exposed that it cannot run correctly against a shared persistent relational
+  DB (destructive `EnsureDeleted`-style teardown + parallel collections racing
+  one DB; `Program.cs` `db.Database.Migrate()` is relational-only). A one-off
+  Postgres patch was **deliberately not done** — Postgres is being deleted by
+  this track. The harness is rebuilt **once, against SurrealDB** here: real
+  test container (task 2), schema via the gated migration job (not app boot),
+  no destructive shared-DB teardown, deterministic isolation. Until then the
+  unit suite (537+ tests incl. all exactly-once / replay / reconciliation
+  safety tests) is the authoritative gate (per the api-safety-hardening
+  runbook).
+- **Saga trigger → LIVE queries.** `durable-saga-orchestration` ships a
+  pluggable `ISagaTrigger` (polling impl now). Replace it with a SurrealDB
+  LIVE-query / change-feed implementation here — zero saga/handler code change
+  (the processor only asks the store "what steps are due?"). Reconciliation
+  (G7) is then a saga-resume concern, not a separate sweep.
+- **api-safety-hardening pre-launch gates.** The gating items in
+  `tracks/api-safety-hardening/RESIDUAL-RISK-RUNBOOK.md` §4 (e.g.
+  `IVaaSignatureVerifier`, migration baseline, distributed rate-limit store)
+  are tracked in that runbook and must be reconfirmed post-migration (G2/G7).
+
 ## Documented fallback (not chosen)
 If G1/G2/G7 fail load/chaos testing: Postgres for the audit ledger only,
 SurrealDB for graph/MCP. The seam makes this contained. Not the target.

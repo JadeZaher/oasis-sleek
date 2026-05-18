@@ -4,7 +4,7 @@
 
 ### Foundation
 1. [ ] Pin `surrealdb.net` exact version; add a build/test check that fails on version drift (G4)
-2. [ ] Stand up SurrealDB locally + as a test container; integration test harness
+2. [ ] Stand up SurrealDB locally + as a test container; **rebuild the integration-test harness here** (carried from `api-safety-hardening`): the existing harness was EF-InMemory-per-factory and cannot run against a shared persistent DB (destructive teardown + parallel collections + relational-only `db.Database.Migrate()`). Rebuild against the SurrealDB container — schema via the gated migration job (task 14), deterministic per-test isolation, no destructive shared-DB teardown. Do NOT one-off-patch it for Postgres (Postgres is deleted by tasks 16–18)
 3. [ ] Define `SCHEMAFULL` schemas for value tables (wallet, bridge tx, swap state, NFT ownership, operation log) with field types + asserts (G6); schemaless for holon/quest flexible attrs
 4. [ ] Build a parameterized SurrealQL query layer; add a lint/review gate banning string-interpolated queries (G3)
 
@@ -13,6 +13,8 @@
 6. [ ] Implement single-field conditional state transitions for bridge/op records (`UPDATE … WHERE status=expected`, assert one row) — preserve G2 semantics from `api-safety-hardening`
 7. [ ] Port the consumed-VAA ledger + idempotency-key store to SurrealDB unique constraints
 8. [ ] Preserve chain reconciliation (G7) against SurrealDB-stored state
+8a. [ ] Replace `durable-saga-orchestration`'s polling `ISagaTrigger` with a SurrealDB LIVE-query / change-feed implementation — zero saga/handler code change; fold reconciliation (G7) into saga-resume
+8b. [ ] Port the saga/outbox tables (`OutboxMessage`/`SagaStepRecord`) to a `SCHEMAFULL` SurrealDB schema (G6); preserve claim-due-step conditional transition semantics (G2)
 
 ### Graph remodel
 9. [ ] Model quest nodes/edges via `RELATE` edges; reimplement DAG validation (acyclicity, reachability) using SurrealDB graph queries or retained iterative validator

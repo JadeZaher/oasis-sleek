@@ -5,6 +5,7 @@ using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Idempotency;
 using OASIS.WebAPI.Models.Quest;
 using OASIS.WebAPI.Models.Responses;
+using OASIS.WebAPI.Models.Sagas;
 
 namespace OASIS.WebAPI.Data;
 
@@ -26,6 +27,10 @@ public class OASISDbContext : DbContext
     public DbSet<BridgeTransactionResult> BridgeTransactions => Set<BridgeTransactionResult>();
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
     public DbSet<ConsumedVaaRecord> ConsumedVaas => Set<ConsumedVaaRecord>();
+
+    // Durable saga / transactional outbox (durable-saga-orchestration Phase 1).
+    // Generic — no bridge coupling; the bridge becomes one consumer later.
+    public DbSet<SagaStepRecord> SagaSteps => Set<SagaStepRecord>();
 
     // Quest entities
     public DbSet<Quest> Quests => Set<Quest>();
@@ -257,6 +262,38 @@ public class OASISDbContext : DbContext
             entity.Property(e => e.EmitterAddress).HasMaxLength(128);
             entity.Property(e => e.BridgeTransactionId).HasMaxLength(64);
             entity.HasIndex(e => new { e.EmitterChainId, e.EmitterAddress, e.Sequence });
+        });
+
+        modelBuilder.Entity<SagaStepRecord>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.CorrelationKey).HasMaxLength(200);
+            entity.Property(e => e.SagaName).HasMaxLength(128);
+            entity.Property(e => e.StepName).HasMaxLength(128);
+            entity.Property(e => e.StepIdempotencyKey).HasMaxLength(200);
+            entity.Property(e => e.Status).HasConversion<int>();
+            entity.Property(e => e.LastError).HasMaxLength(2048);
+            entity.Property(e => e.Output).HasMaxLength(4096);
+
+            // NON-unique: the outbox legitimately holds many rows per
+            // correlation (forward steps + compensation + retries). Exactly-once
+            // is enforced by handlers via IIdempotencyStore, NOT a constraint here.
+            entity.HasIndex(e => e.CorrelationKey);
+            entity.HasIndex(e => e.SagaName);
+            // Drives the "what is due?" scan: claimable rows are
+            // Status==Pending AND NextRunAt<=now.
+            entity.HasIndex(e => new { e.Status, e.NextRunAt });
+            entity.HasIndex(e => e.DeadLettered);
+
+            // Optimistic-concurrency token mapped to PostgreSQL system column
+            // xmin (Npgsql idiom) — identical to BridgeTransactionResult.Version.
+            // The SQLite test context remaps this to a plain INTEGER (see
+            // SqliteTestDbContext), exactly as it already does for the bridge row.
+            entity.Property(e => e.Version)
+                  .HasColumnName("xmin")
+                  .HasColumnType("xid")
+                  .ValueGeneratedOnAddOrUpdate()
+                  .IsConcurrencyToken();
         });
 
         // Quest configurations

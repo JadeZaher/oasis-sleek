@@ -74,6 +74,29 @@ races.
 - Rate limiting + per-API-key metering enforced.
 - `InMemoryStorageProvider` is test-only, not in production composition.
 
+## Residual risk & ops runbook (first-class artifact)
+Implementation + multi-agent code review complete (1 CRITICAL + 4 HIGH + 4
+MEDIUM found, all fixed, closure re-review **APPROVE**; prod build 0 errors;
+537/537 unit tests green incl. concurrent-double-redeem, replayed-VAA,
+idempotency-primitive, faucet single-submit, reconciliation).
+
+**[RESIDUAL-RISK-RUNBOOK.md](RESIDUAL-RISK-RUNBOOK.md)** is the authoritative
+operational companion to this spec — pre-launch gating checklist (§4: e.g.
+`IVaaSignatureVerifier` must be implemented+registered before real Wormhole
+value flow — currently fail-closed by design), stuck/failed-bridge ops
+procedures, and the post-review closure addendum. It is part of this track's
+deliverable, not an orphan note: consult it before any value flow and before
+the `surrealdb-migration` cutover.
+
+## Follow-ups (owned elsewhere, tracked)
+- **Async retries / revocations at scale** → `durable-saga-orchestration`
+  (reusable durable-saga + transactional-outbox module; bridge is consumer #1;
+  the idempotency/reconciliation primitives here carry forward unchanged).
+- **Integration-test harness rebuild** → `surrealdb-migration` (the harness was
+  EF-InMemory-per-factory; rebuilt once against SurrealDB, not patched for
+  Postgres). Unit suite is the authoritative gate until then.
+
 ## Dependencies
 None. Highest priority; precedes all other tracks. Idempotency + reconciliation
-work (G2/G7) carries forward unchanged into `surrealdb-migration`.
+work (G2/G7) carries forward unchanged into `surrealdb-migration`; the same
+primitives underpin `durable-saga-orchestration`.

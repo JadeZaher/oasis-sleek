@@ -8,23 +8,27 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using System.Reflection;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Core.Blockchain;
 using OASIS.WebAPI.Core.Blockchain.Wormhole;
-using OASIS.WebAPI.Core.Decorators;
-using OASIS.WebAPI.Core.ProviderSelection;
 using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
+using OASIS.WebAPI.Interfaces.QuestExecution;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Managers.Dex;
 using OASIS.WebAPI.Models.Responses;
 using FluentValidation;
 using FluentValidation.AspNetCore;
-using OASIS.WebAPI.Providers;
+using OASIS.WebAPI.Observability;
 using OASIS.WebAPI.Providers.Blockchain.Algorand;
 using OASIS.WebAPI.Providers.Blockchain.Solana;
+using OASIS.WebAPI.Providers.Stores;
 using OASIS.WebAPI.Services;
+using OASIS.WebAPI.Services.Quest;
+using OASIS.WebAPI.Services.Quest.Handlers;
 using OASIS.WebAPI.Services.Wormhole;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -230,26 +234,28 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 
+// Retained for /health (StorageHealthCheck / ProviderHealthMonitorHealthCheck).
+// The provider-selection + decorator + routing layer was deleted in Mission B
+// (single-provider reality); managers now inject concrete per-aggregate EF
+// stores directly.
 builder.Services.AddSingleton<IProviderHealthMonitor, ProviderHealthMonitor>();
-builder.Services.AddSingleton<IProviderSelectionStrategy, HealthScoreStrategy>();
-builder.Services.AddScoped<ProviderContext>(sp =>
-{
-    var providers = sp.GetRequiredService<IEnumerable<IOASISStorageProvider>>();
-    var config = sp.GetRequiredService<IConfiguration>();
-    var healthMonitor = sp.GetRequiredService<IProviderHealthMonitor>();
-    var customStrategyName = config.GetValue<string>("OASIS:CustomProviderStrategy");
 
-    IProviderSelectionStrategy? customStrategy = customStrategyName?.ToLowerInvariant() switch
-    {
-        "weighted" => new WeightedStrategy(config),
-        "sticky-session" => new StickySessionStrategy(),
-        _ => null
-    };
+// ─── Per-aggregate EF stores (replace the deleted god storage seam) ───
+// Scoped to match OASISDbContext lifetime. Adding a new aggregate = add one
+// I*Store + Ef*Store pair and one line here.
+builder.Services.AddScoped<IAvatarStore, EfAvatarStore>();
+builder.Services.AddScoped<IWalletStore, EfWalletStore>();
+builder.Services.AddScoped<IHolonStore, EfHolonStore>();
+builder.Services.AddScoped<IBlockchainOperationStore, EfBlockchainOperationStore>();
+builder.Services.AddScoped<ISTARStore, EfStarStore>();
+builder.Services.AddScoped<IQuestStore, EfQuestStore>();
+builder.Services.AddScoped<INftStore, EfNftStore>();
+builder.Services.AddScoped<IBridgeStore, EfBridgeStore>();
 
-    // Decorate each provider with health monitoring
-    var decorated = providers.Select(p => new HealthRecordingProviderDecorator(p, healthMonitor));
-    return new ProviderContext(decorated, config, healthMonitor, customStrategy);
-});
+// SwapManager's quote cache is now an injected, bounded IMemoryCache (was a
+// process-static dictionary). SizeLimit is required because every cache write
+// sets per-entry Size=1; without a limit the SetSize call throws.
+builder.Services.AddMemoryCache(o => o.SizeLimit = 1024);
 
 builder.Services.AddScoped<IAvatarManager, AvatarManager>();
 builder.Services.AddSingleton<WalletKeyService>();
@@ -286,19 +292,6 @@ var connectionString = builder.Configuration.GetConnectionString("OASISDatabase"
 
 builder.Services.AddDbContext<OASISDbContext>(options =>
     options.UseNpgsql(connectionString, b => b.MigrationsAssembly("OASIS.WebAPI")));
-
-// EfStorageProvider (scoped) — the SOLE production IOASISStorageProvider.
-// Standard lifetime matching OASISDbContext, handles PostgreSQL persistence.
-//
-// api-safety-hardening task 19: InMemoryStorageProvider was REMOVED from the
-// production DI path. It has broken asymmetric NFT stubs (silent data loss):
-// some writes are no-ops while reads succeed, so a request served by the
-// InMemory provider could silently lose financial/NFT state. The
-// InMemoryStorageProvider CLASS is intentionally kept intact for test doubles
-// (integration tests register it explicitly), but it must never be reachable
-// in production. EfStorageProvider is now the only registered provider, so
-// the ProviderContext provider enumeration resolves to it deterministically.
-builder.Services.AddScoped<IOASISStorageProvider, EfStorageProvider>();
 
 // ─── Blockchain providers & factory ───
 builder.Services.AddSingleton<IBlockchainProvider, AlgorandProvider>();
@@ -370,7 +363,25 @@ builder.Services.AddHostedService<OASIS.WebAPI.Sagas.SagaProcessorHostedService>
 // ─── Quest DAG system ───
 builder.Services.AddScoped<OASIS.WebAPI.Interfaces.IQuestDagValidator, OASIS.WebAPI.Services.QuestDagValidator>();
 builder.Services.AddScoped<OASIS.WebAPI.Interfaces.IQuestInstantiator, OASIS.WebAPI.Services.Quest.QuestInstantiator>();
-builder.Services.AddScoped<OASIS.WebAPI.Interfaces.IQuestRepository, OASIS.WebAPI.Services.Quest.QuestRepository>();
+
+// Quest node handlers — exactly one per QuestNodeType. Registered Scoped: each
+// handler wraps scoped managers, so Singleton would capture a disposed scope
+// (captive-dependency bug). Discovered by assembly scan over the single sealed
+// Services/Quest/Handlers namespace so adding a handler needs no DI edit; the
+// registry's ctor still fails fast on a duplicate/missing QuestNodeType.
+foreach (var handlerType in typeof(QuestNodeHandlerRegistry).Assembly
+             .GetTypes()
+             .Where(t => t is { IsClass: true, IsAbstract: false }
+                         && t.Namespace == "OASIS.WebAPI.Services.Quest.Handlers"
+                         && typeof(IQuestNodeHandler).IsAssignableFrom(t)))
+{
+    builder.Services.AddScoped(typeof(IQuestNodeHandler), handlerType);
+}
+builder.Services.AddScoped<IQuestNodeHandlerRegistry, QuestNodeHandlerRegistry>();
+
+// ─── Observability (W5): OpenTelemetry tracing/metrics + /health ───
+builder.Services.AddOasisObservability(builder.Configuration);
+builder.Services.AddOasisHealthChecks();
 
 builder.Services.AddCors(options =>
 {
@@ -420,14 +431,19 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+app.UseRouting();
 app.UseCors("Dev");
 app.UseAuthentication();
 app.UseAuthorization();
 // Rate limiter AFTER auth so the partition key can fall back to the
 // authenticated avatar/user when no X-Api-Key header is present.
 app.UseRateLimiter();
+// W5 request correlation: after UseRouting, before MapControllers — attaches
+// the W3C TraceId/SpanId as a structured log scope for every request.
+app.UseOasisRequestCorrelation();
 // ISwapManager + IDexAdapter registrations are above (DEX adapters block)
 app.MapControllers();
+app.MapOasisHealth();
 await app.RunAsync();
 
 public partial class Program { }

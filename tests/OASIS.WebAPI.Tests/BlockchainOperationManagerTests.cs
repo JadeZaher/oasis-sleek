@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Moq;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Idempotency;
@@ -14,17 +15,15 @@ namespace OASIS.WebAPI.Tests;
 
 public class BlockchainOperationManagerTests
 {
-    private readonly Mock<IOASISStorageProvider> _provider;
+    private readonly Mock<IBlockchainOperationStore> _store;
     private readonly Mock<IBlockchainProvider> _algoProvider;
     private readonly Mock<IBlockchainProvider> _solProvider;
-    private readonly ProviderContext _providerContext;
     private readonly FakeIdempotencyStore _idempotency;
     private readonly BlockchainOperationManager _manager;
 
     public BlockchainOperationManagerTests()
     {
-        _provider = new Mock<IOASISStorageProvider>();
-        _provider.Setup(p => p.ProviderName).Returns("InMemory");
+        _store = new Mock<IBlockchainOperationStore>();
 
         _algoProvider = new Mock<IBlockchainProvider>();
         _algoProvider.Setup(p => p.ChainType).Returns("Algorand");
@@ -37,10 +36,9 @@ public class BlockchainOperationManagerTests
                     .ReturnsAsync(new OASISResult<string> { Result = "sol_tx_456" });
 
         var config = new ConfigurationBuilder().Build();
-        _providerContext = new ProviderContext(new[] { _provider.Object }, config, null);
         var factory = new BlockchainProviderFactory(new[] { _algoProvider.Object, _solProvider.Object }, config);
         _idempotency = new FakeIdempotencyStore();
-        _manager = new BlockchainOperationManager(_providerContext, factory, _idempotency);
+        _manager = new BlockchainOperationManager(_store.Object, factory, _idempotency);
     }
 
     [Fact]
@@ -55,7 +53,7 @@ public class BlockchainOperationManagerTests
             Parameters = new Dictionary<string, string> { ["ChainType"] = "Algorand" }
         };
 
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation op, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = op });
 
         var result = await _manager.ExecuteAsync(operation);
@@ -79,7 +77,7 @@ public class BlockchainOperationManagerTests
             Parameters = new Dictionary<string, string> { ["ChainType"] = "Algorand" }
         };
 
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation op, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = op });
 
         var result = await _manager.ExecuteAsync(operation);
@@ -92,7 +90,7 @@ public class BlockchainOperationManagerTests
     [Fact]
     public async Task BuildAndExecuteAsync_ShouldUseBuilderPattern()
     {
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation op, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = op });
 
         var result = await _manager.BuildAndExecuteAsync(builder =>
@@ -108,7 +106,7 @@ public class BlockchainOperationManagerTests
     public async Task GetAsync_ShouldReturnOperation()
     {
         var operation = new BlockchainOperation { Id = Guid.NewGuid(), Status = OperationStatus.Pending };
-        _provider.Setup(p => p.LoadBlockchainOperationAsync(operation.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(operation.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IBlockchainOperation> { Result = operation });
 
         var result = await _manager.GetAsync(operation.Id);
@@ -121,7 +119,7 @@ public class BlockchainOperationManagerTests
     public async Task GetByAvatarAsync_ShouldFilterByAvatarId()
     {
         var avatarId = Guid.NewGuid();
-        _provider.Setup(p => p.LoadBlockchainOperationsByAvatarAsync(avatarId, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByAvatarAsync(avatarId, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IBlockchainOperation>>
                  {
                      Result = new[] { new BlockchainOperation { AvatarId = avatarId } }
@@ -158,7 +156,7 @@ public class BlockchainOperationManagerTests
         var mintCalls = 0;
         _algoProvider.Setup(p => p.MintAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                      .ReturnsAsync(() => { Interlocked.Increment(ref mintCalls); return new OASISResult<string> { Result = "algo_tx_DUP" }; });
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation op, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = op });
 
         // Two SEPARATE operation instances with IDENTICAL logical inputs
@@ -195,7 +193,7 @@ public class BlockchainOperationManagerTests
         // SaveBlockchainOperationAsync is NOT invoked for the deduped call
         // (no second op row written): original wins → 2 saves (initial +
         // settle); duplicate → 0 saves.
-        _provider.Verify(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _store.Verify(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 
     [Fact]
@@ -205,7 +203,7 @@ public class BlockchainOperationManagerTests
         var mintCalls = 0;
         _algoProvider.Setup(p => p.MintAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                      .ReturnsAsync(() => { Interlocked.Increment(ref mintCalls); return new OASISResult<string> { Result = "algo_tx_CONC" }; });
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation op, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = op });
 
         // BlockchainProviderFactory memoizes resolved providers in a plain
@@ -283,7 +281,7 @@ public class BlockchainOperationManagerTests
         var mintCalls = 0;
         _algoProvider.Setup(p => p.MintAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                      .ReturnsAsync(() => { Interlocked.Increment(ref mintCalls); return new OASISResult<string> { Result = "algo_tx_X" }; });
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation op, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = op });
 
         // Two ops that differ ONLY in a value-bearing param (Amount). They
@@ -322,7 +320,7 @@ public class BlockchainOperationManagerTests
                          Result = "op_ref_unsigned",
                          Message = "Requires client-side signing. Sign and submit the returned transaction."
                      });
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation op, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = op });
 
         var op = NewMintOp();

@@ -11,12 +11,6 @@ public class OASISRequestValidator : AbstractValidator<OASISRequest>
         RuleFor(x => x.ProviderType)
             .IsInEnum().WithMessage("ProviderType is not a valid value.");
 
-        RuleFor(x => x.AutoFailOverMode)
-            .IsInEnum().WithMessage("AutoFailOverMode is not a valid value.");
-
-        RuleFor(x => x.AutoReplicationMode)
-            .IsInEnum().WithMessage("AutoReplicationMode is not a valid value.");
-
         RuleFor(x => x.AutoLoadBalanceMode)
             .IsInEnum().WithMessage("AutoLoadBalanceMode is not a valid value.");
 

@@ -14,10 +14,26 @@ fail-closed defaults, and verified trust roots, not compat shims.
 
 ## 0. Status at last update (2026-05-18)
 
-Code gate **GREEN**: prod build 0 errors; 564/564 unit tests; `scripts/passoff.ps1`
-exit 0. Multi-agent review verdict **APPROVE-WITH-SIMPLIFICATIONS** (no
-double-spend/replay/atomicity hole; localized overengineering to clean up — §4).
-What remains is **ops/config sign-off**, not engineering, plus the §4 cleanup.
+Code gate **GREEN**: prod build 0 errors / 17 baseline warnings; unit suite green;
+`scripts/passoff.ps1` exit 0. Multi-agent review verdict
+**APPROVE-WITH-SIMPLIFICATIONS** (no double-spend/replay/atomicity hole).
+
+**§4 cleanup items 1–4: LANDED** (commit `1b25f50`, "api-safety-hardening §4
+pre-launch cleanup"; unit suite 567/567 at that point). **Tier-1
+`architecture-decoupling` track: COMPLETE** — per-aggregate persistence seam (god
+`IOASISStorageProvider` + `IQuestRepository` deleted), 34-handler `QuestManager`
+registry, `ExecutionOrder` dedup, bounded `IMemoryCache`, OpenTelemetry + live
+`/health`; independent review **APPROVE-WITH-SIMPLIFICATIONS** (0 CRITICAL/HIGH);
+unit suite **532/532** (count dropped from 567 only because ~35 tests that
+exclusively exercised the deleted provider-selection/`ProviderContext`/InMemory
+infra were removed — no assertion weakened, the api-safety exactly-once value
+paths + their tests are byte-identical and `passoff.ps1` still exits 0). New
+sibling gate `scripts/passoff-architecture.ps1` GREEN. SurrealDB precondition met.
+
+What remains for launch is **ops/config sign-off** (§1 gates 2–4, 6, 9), not
+engineering. Tracked engineering debt deferred to `surrealdb-migration`: §5
+(M2 store-level test coverage, L1 vestigial provider-health check, L2 inline
+`db.Database.Migrate()`).
 
 ---
 
@@ -32,7 +48,7 @@ What remains is **ops/config sign-off**, not engineering, plus the §4 cleanup.
 | 5 | Target DB provisioned, empty, migrated cleanly (greenfield: start empty) | `db.Database.Migrate()` boot OR gated job; verify tables/indexes | Ops |
 | 6 | `Reconciliation:Enabled=true`, `RateLimiting:Enabled=true`, `Blockchain:Wormhole:RequireFullSignatureVerification=true` | config audit | Ops |
 | 7 | `Sagas:Enabled=false` (no consumer until durable-saga Phase 2) | config audit | Eng |
-| 8 | Review pre-launch simplifications §4 items 1–4 landed | PR + tests | Eng |
+| 8 | Review pre-launch simplifications §4 items 1–4 landed | ✅ LANDED — commit `1b25f50` | Eng |
 | 9 | One SRE has read the RESIDUAL-RISK-RUNBOOK and signed off | sign-off line | Ops |
 
 Wormhole value flow is **fail-closed** until gates 2+3 pass — this is by design,
@@ -57,6 +73,14 @@ not a bug.
 - `RateLimiting` — `Enabled`, `Global{PermitLimit,WindowSeconds,QueueLimit}`, `Financial{...}`. Defaults conservative; tune for expected load.
 - `Reconciliation` — `Enabled=true`, `IntervalSeconds` (300), `Bridge*/Operation*` staleness + hard-stuck thresholds.
 - `Sagas` — `Enabled=false` until durable-saga Phase 2 ships a consumer (see §4).
+- `OpenTelemetry` (added by `architecture-decoupling`; all optional, safe defaults):
+  `OpenTelemetry:ServiceName` (default `"OASIS.WebAPI"`),
+  `OpenTelemetry:Otlp:Endpoint` (none ⇒ SDK default / honours `OTEL_EXPORTER_OTLP_ENDPOINT`;
+  never throws at startup if unset — set to your collector URL to export traces/metrics),
+  `OpenTelemetry:Otlp:Protocol` (`"grpc"` default | `"http/protobuf"`).
+- `Logging:Console:IncludeScopes` = `true` (shipped) — REQUIRED for request
+  correlation (`TraceId`/`SpanId`) to render in console/structured logs; do not
+  set false in prod or the "correlation in logs" guarantee is lost.
 
 **Config validation:** consider `IValidateOptions<WormholeConfig>` + `ValidateOnStart()` so a misconfigured mainnet Guardian set fails at **boot**, not at first value flow (review §F.9).
 
@@ -104,6 +128,9 @@ with the no-overengineering intent):
 | Distributed rate-limit store (multi-instance) | post-launch / scale |
 | API-key usage metering / billing | post-launch |
 | SurrealDB single-engine migration (G1–G7) | `surrealdb-migration` |
+| **M2** — store-level `Ef*Store` test coverage (deleted EfStorageProvider/InMemory tests not replaced; bodies are proven verbatim lifts ⇒ no logic regression) | `surrealdb-migration` / integration suite |
+| **L1** — `ProviderHealthMonitorHealthCheck` vestigial (graceful "no data" Healthy; nothing records scores post-decorator-removal) — rewire or drop | `surrealdb-migration` |
+| **L2** — inline `db.Database.Migrate()` in `Program.cs` → gated job (greenfield-interim; moot once EF removed) | `surrealdb-migration` / ops |
 
 ---
 

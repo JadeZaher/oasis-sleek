@@ -1,24 +1,15 @@
 using System.Collections.Concurrent;
-using OASIS.WebAPI.Core.ProviderSelection;
 using OASIS.WebAPI.Interfaces;
 
 namespace OASIS.WebAPI.Core;
 
+// Mission B: the provider-selection layer was deleted (single-provider reality).
+// This monitor is retained ONLY to feed /health (ProviderHealthMonitorHealthCheck
+// reads GetScores()). The record/mark surface is kept so future degradation
+// signals can still be wired in; provider *selection* is gone.
 public class ProviderHealthMonitor : IProviderHealthMonitor
 {
     private readonly ConcurrentDictionary<string, ProviderHealthScore> _scores = new();
-    private readonly Dictionary<DynamicProviderMode, IProviderSelectionStrategy> _builtInStrategies;
-
-    public ProviderHealthMonitor()
-    {
-        _builtInStrategies = new Dictionary<DynamicProviderMode, IProviderSelectionStrategy>
-        {
-            [DynamicProviderMode.HealthScore] = new HealthScoreStrategy(),
-            [DynamicProviderMode.LowestLatency] = new LowestLatencyStrategy(),
-            [DynamicProviderMode.RoundRobin] = new RoundRobinStrategy(),
-            [DynamicProviderMode.Adaptive] = new HealthScoreStrategy()
-        };
-    }
 
     public void RecordSuccess(string providerName, double latencyMs)
     {
@@ -70,19 +61,6 @@ public class ProviderHealthMonitor : IProviderHealthMonitor
     }
 
     public IReadOnlyDictionary<string, ProviderHealthScore> GetScores() => _scores;
-
-    public string? SelectBestProvider(IProviderSelectionStrategy strategy)
-    {
-        return strategy.SelectProvider(_scores) ?? _scores.Keys.FirstOrDefault();
-    }
-
-    public string? SelectBestProvider(DynamicProviderMode mode)
-    {
-        if (_builtInStrategies.TryGetValue(mode, out var strategy))
-            return SelectBestProvider(strategy);
-
-        return _scores.Keys.FirstOrDefault();
-    }
 
     public void MarkUnhealthy(string providerName)
     {

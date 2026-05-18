@@ -1,6 +1,7 @@
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
@@ -9,19 +10,18 @@ namespace OASIS.WebAPI.Managers;
 
 public class NftManager : INftManager
 {
-    private readonly ProviderContext _providerContext;
+    private readonly IHolonStore _holonStore;
+    private readonly IBlockchainOperationStore _blockchainOperationStore;
 
-    public NftManager(ProviderContext providerContext)
+    public NftManager(IHolonStore holonStore, IBlockchainOperationStore blockchainOperationStore)
     {
-        _providerContext = providerContext;
+        _holonStore = holonStore;
+        _blockchainOperationStore = blockchainOperationStore;
     }
 
     public async Task<OASISResult<INft>> GetAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<INft> { IsError = true, Message = activation.Message };
-
-        var result = await _providerContext.CurrentProvider.LoadHolonAsync(id);
+        var result = await _holonStore.GetByIdAsync(id, default);
         if (result.IsError || result.Result == null) return new OASISResult<INft> { IsError = true, Message = result.Message };
 
         if (!string.Equals(result.Result.AssetType, "NFT", StringComparison.OrdinalIgnoreCase))
@@ -32,10 +32,7 @@ public class NftManager : INftManager
 
     public async Task<OASISResult<IEnumerable<INft>>> QueryAsync(NftQueryRequest query, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<INft>> { IsError = true, Message = activation.Message };
-
-        var all = await _providerContext.CurrentProvider.LoadAllHolonsAsync();
+        var all = await _holonStore.QueryAsync(null, default);
         if (all.IsError || all.Result == null) return new OASISResult<IEnumerable<INft>> { IsError = true, Message = all.Message };
 
         var filtered = all.Result
@@ -55,9 +52,6 @@ public class NftManager : INftManager
 
     public async Task<OASISResult<IBlockchainOperation>> MintAsync(NftMintRequest request, Guid avatarId, OASISRequest? providerRequest = null)
     {
-        var activation = _providerContext.Activate(providerRequest);
-        if (activation.IsError) return new OASISResult<IBlockchainOperation> { IsError = true, Message = activation.Message };
-
         // Build the Holon with AssetType = "NFT"
         var metadata = new Dictionary<string, string>(request.Metadata);
         if (!string.IsNullOrEmpty(request.ImageUri)) metadata["image"] = request.ImageUri;
@@ -72,11 +66,11 @@ public class NftManager : INftManager
             ChainId = request.ChainId,
             TokenId = request.TokenId,
             Metadata = metadata,
-            ProviderName = _providerContext.CurrentProvider.ProviderName,
+            ProviderName = "PostgreSQL",
             IsActive = true
         };
 
-        var saveResult = await _providerContext.CurrentProvider.SaveHolonAsync(holon);
+        var saveResult = await _holonStore.UpsertAsync(holon, default);
         if (saveResult.IsError || saveResult.Result == null)
             return new OASISResult<IBlockchainOperation> { IsError = true, Message = saveResult.Message };
 
@@ -95,16 +89,13 @@ public class NftManager : INftManager
             }
         };
 
-        return await _providerContext.CurrentProvider.SaveBlockchainOperationAsync(operation);
+        return await _blockchainOperationStore.UpsertAsync(operation, default);
     }
 
     public async Task<OASISResult<IBlockchainOperation>> TransferAsync(Guid nftId, NftTransferRequest request, Guid avatarId, OASISRequest? providerRequest = null)
     {
-        var activation = _providerContext.Activate(providerRequest);
-        if (activation.IsError) return new OASISResult<IBlockchainOperation> { IsError = true, Message = activation.Message };
-
         // Load and verify ownership
-        var holonResult = await _providerContext.CurrentProvider.LoadHolonAsync(nftId);
+        var holonResult = await _holonStore.GetByIdAsync(nftId, default);
         if (holonResult.IsError || holonResult.Result == null)
             return new OASISResult<IBlockchainOperation> { IsError = true, Message = "NFT not found." };
 
@@ -119,7 +110,7 @@ public class NftManager : INftManager
         holon.AvatarId = request.TargetAvatarId;
         holon.ModifiedDate = DateTime.UtcNow;
 
-        var saveResult = await _providerContext.CurrentProvider.SaveHolonAsync(holon);
+        var saveResult = await _holonStore.UpsertAsync(holon, default);
         if (saveResult.IsError)
             return new OASISResult<IBlockchainOperation> { IsError = true, Message = saveResult.Message };
 
@@ -139,16 +130,13 @@ public class NftManager : INftManager
             }
         };
 
-        return await _providerContext.CurrentProvider.SaveBlockchainOperationAsync(operation);
+        return await _blockchainOperationStore.UpsertAsync(operation, default);
     }
 
     public async Task<OASISResult<IBlockchainOperation>> BurnAsync(Guid nftId, Guid walletId, Guid avatarId, OASISRequest? providerRequest = null)
     {
-        var activation = _providerContext.Activate(providerRequest);
-        if (activation.IsError) return new OASISResult<IBlockchainOperation> { IsError = true, Message = activation.Message };
-
         // Load and verify ownership
-        var holonResult = await _providerContext.CurrentProvider.LoadHolonAsync(nftId);
+        var holonResult = await _holonStore.GetByIdAsync(nftId, default);
         if (holonResult.IsError || holonResult.Result == null)
             return new OASISResult<IBlockchainOperation> { IsError = true, Message = "NFT not found." };
 
@@ -163,7 +151,7 @@ public class NftManager : INftManager
         holon.IsActive = false;
         holon.ModifiedDate = DateTime.UtcNow;
 
-        var saveResult = await _providerContext.CurrentProvider.SaveHolonAsync(holon);
+        var saveResult = await _holonStore.UpsertAsync(holon, default);
         if (saveResult.IsError)
             return new OASISResult<IBlockchainOperation> { IsError = true, Message = saveResult.Message };
 
@@ -180,15 +168,12 @@ public class NftManager : INftManager
             }
         };
 
-        return await _providerContext.CurrentProvider.SaveBlockchainOperationAsync(operation);
+        return await _blockchainOperationStore.UpsertAsync(operation, default);
     }
 
     public async Task<OASISResult<NftMetadata>> GetMetadataAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<NftMetadata> { IsError = true, Message = activation.Message };
-
-        var result = await _providerContext.CurrentProvider.LoadHolonAsync(id);
+        var result = await _holonStore.GetByIdAsync(id, default);
         if (result.IsError || result.Result == null)
             return new OASISResult<NftMetadata> { IsError = true, Message = "NFT not found." };
 

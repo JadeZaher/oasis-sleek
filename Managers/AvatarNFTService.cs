@@ -1,6 +1,7 @@
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
@@ -9,23 +10,17 @@ namespace OASIS.WebAPI.Managers;
 
 public class AvatarNFTService : IAvatarNFTService
 {
-    private readonly ProviderContext _providerContext;
+    private readonly INftStore _nftStore;
 
-    public AvatarNFTService(ProviderContext providerContext)
+    public AvatarNFTService(INftStore nftStore)
     {
-        _providerContext = providerContext;
+        _nftStore = nftStore;
     }
-
-    private IOASISStorageProviderNFTExtensions NftProvider =>
-        (IOASISStorageProviderNFTExtensions)_providerContext.CurrentProvider;
 
     // ─── Avatar NFT CRUD ───
 
     public async Task<OASISResult<IAvatarNFT>> MintAvatarNFTAsync(Guid avatarId, AvatarNFTMintModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IAvatarNFT> { IsError = true, Message = activation.Message };
-
         var avatarNFT = new AvatarNFT
         {
             AvatarId = avatarId,
@@ -45,39 +40,27 @@ public class AvatarNFTService : IAvatarNFTService
             IsActive = true
         };
 
-        return await NftProvider.SaveAvatarNFTAsync(avatarNFT);
+        return await _nftStore.UpsertAvatarNFTAsync(avatarNFT, default);
     }
 
     public async Task<OASISResult<IAvatarNFT>> GetAvatarNFTAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IAvatarNFT> { IsError = true, Message = activation.Message };
-
-        return await NftProvider.LoadAvatarNFTAsync(id);
+        return await _nftStore.GetAvatarNFTByIdAsync(id, default);
     }
 
     public async Task<OASISResult<IAvatarNFT>> GetAvatarNFTByTokenIdAsync(string chainType, string nftContractAddress, string tokenId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IAvatarNFT> { IsError = true, Message = activation.Message };
-
-        return await NftProvider.LoadAvatarNFTByTokenIdAsync(chainType, nftContractAddress, tokenId);
+        return await _nftStore.GetAvatarNFTByTokenIdAsync(chainType, nftContractAddress, tokenId, default);
     }
 
     public async Task<OASISResult<IEnumerable<IAvatarNFT>>> GetAvatarNFTsByAvatarAsync(Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IAvatarNFT>> { IsError = true, Message = activation.Message };
-
-        return await NftProvider.LoadAvatarNFTsByAvatarAsync(avatarId);
+        return await _nftStore.GetAvatarNFTsByAvatarAsync(avatarId, default);
     }
 
     public async Task<OASISResult<bool>> TransferAvatarNFTAsync(Guid id, string recipientAddress, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        var loadResult = await NftProvider.LoadAvatarNFTAsync(id);
+        var loadResult = await _nftStore.GetAvatarNFTByIdAsync(id, default);
         if (loadResult.IsError || loadResult.Result == null)
             return new OASISResult<bool> { IsError = true, Message = loadResult.Message ?? "Avatar NFT not found." };
 
@@ -91,7 +74,7 @@ public class AvatarNFTService : IAvatarNFTService
         nft.CurrentOwner = recipientAddress;
         nft.LastTransferDate = DateTime.UtcNow;
 
-        var saveResult = await NftProvider.SaveAvatarNFTAsync(nft);
+        var saveResult = await _nftStore.UpsertAvatarNFTAsync(nft, default);
         if (saveResult.IsError)
             return new OASISResult<bool> { IsError = true, Message = saveResult.Message };
 
@@ -100,19 +83,13 @@ public class AvatarNFTService : IAvatarNFTService
 
     public async Task<OASISResult<bool>> BurnAvatarNFTAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        return await NftProvider.DeleteAvatarNFTAsync(id);
+        return await _nftStore.DeleteAvatarNFTAsync(id, default);
     }
 
     // ─── Holon NFT Binding ───
 
     public async Task<OASISResult<IHolonNFTBinding>> BindHolonToAvatarNFTAsync(Guid holonId, Guid avatarNFTId, HolonNFTBindingModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IHolonNFTBinding> { IsError = true, Message = activation.Message };
-
         var binding = new HolonNFTBinding
         {
             HolonId = holonId,
@@ -124,23 +101,17 @@ public class AvatarNFTService : IAvatarNFTService
             IsActive = true
         };
 
-        return await NftProvider.SaveHolonNFTBindingAsync(binding);
+        return await _nftStore.UpsertHolonNFTBindingAsync(binding, default);
     }
 
     public async Task<OASISResult<IEnumerable<IHolonNFTBinding>>> GetHolonBindingsAsync(Guid avatarNFTId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IHolonNFTBinding>> { IsError = true, Message = activation.Message };
-
-        return await NftProvider.LoadHolonNFTBindingsByAvatarNFTAsync(avatarNFTId);
+        return await _nftStore.GetHolonNFTBindingsByAvatarNFTAsync(avatarNFTId, default);
     }
 
     public async Task<OASISResult<bool>> UpdateHolonBindingAsync(Guid id, HolonNFTBindingUpdateModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        var loadResult = await NftProvider.LoadHolonNFTBindingAsync(id);
+        var loadResult = await _nftStore.GetHolonNFTBindingByIdAsync(id, default);
         if (loadResult.IsError || loadResult.Result == null)
             return new OASISResult<bool> { IsError = true, Message = loadResult.Message ?? "Holon binding not found." };
 
@@ -151,7 +122,7 @@ public class AvatarNFTService : IAvatarNFTService
         if (model.IsActive.HasValue) binding.IsActive = model.IsActive.Value;
         binding.LastUpdatedDate = DateTime.UtcNow;
 
-        var saveResult = await NftProvider.SaveHolonNFTBindingAsync(binding);
+        var saveResult = await _nftStore.UpsertHolonNFTBindingAsync(binding, default);
         if (saveResult.IsError)
             return new OASISResult<bool> { IsError = true, Message = saveResult.Message };
 
@@ -160,19 +131,13 @@ public class AvatarNFTService : IAvatarNFTService
 
     public async Task<OASISResult<bool>> RemoveHolonBindingAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        return await NftProvider.DeleteHolonNFTBindingAsync(id);
+        return await _nftStore.DeleteHolonNFTBindingAsync(id, default);
     }
 
     // ─── Wallet NFT Binding ───
 
     public async Task<OASISResult<IWalletNFTBinding>> BindWalletToAvatarNFTAsync(Guid walletId, Guid avatarNFTId, WalletNFTBindingModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IWalletNFTBinding> { IsError = true, Message = activation.Message };
-
         var binding = new WalletNFTBinding
         {
             WalletId = walletId,
@@ -184,23 +149,17 @@ public class AvatarNFTService : IAvatarNFTService
             IsActive = true
         };
 
-        return await NftProvider.SaveWalletNFTBindingAsync(binding);
+        return await _nftStore.UpsertWalletNFTBindingAsync(binding, default);
     }
 
     public async Task<OASISResult<IEnumerable<IWalletNFTBinding>>> GetWalletBindingsAsync(Guid avatarNFTId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IWalletNFTBinding>> { IsError = true, Message = activation.Message };
-
-        return await NftProvider.LoadWalletNFTBindingsByAvatarNFTAsync(avatarNFTId);
+        return await _nftStore.GetWalletNFTBindingsByAvatarNFTAsync(avatarNFTId, default);
     }
 
     public async Task<OASISResult<bool>> UpdateWalletBindingAsync(Guid id, WalletNFTBindingUpdateModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        var loadResult = await NftProvider.LoadWalletNFTBindingAsync(id);
+        var loadResult = await _nftStore.GetWalletNFTBindingByIdAsync(id, default);
         if (loadResult.IsError || loadResult.Result == null)
             return new OASISResult<bool> { IsError = true, Message = loadResult.Message ?? "Wallet binding not found." };
 
@@ -211,7 +170,7 @@ public class AvatarNFTService : IAvatarNFTService
         if (model.IsActive.HasValue) binding.IsActive = model.IsActive.Value;
         binding.LastUpdatedDate = DateTime.UtcNow;
 
-        var saveResult = await NftProvider.SaveWalletNFTBindingAsync(binding);
+        var saveResult = await _nftStore.UpsertWalletNFTBindingAsync(binding, default);
         if (saveResult.IsError)
             return new OASISResult<bool> { IsError = true, Message = saveResult.Message };
 
@@ -220,25 +179,19 @@ public class AvatarNFTService : IAvatarNFTService
 
     public async Task<OASISResult<bool>> RemoveWalletBindingAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        return await NftProvider.DeleteWalletNFTBindingAsync(id);
+        return await _nftStore.DeleteWalletNFTBindingAsync(id, default);
     }
 
     // ─── Composite Operations ───
 
     public async Task<OASISResult<AvatarNFTCompositeResult>> GetAvatarNFTCompositeAsync(Guid avatarNFTId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<AvatarNFTCompositeResult> { IsError = true, Message = activation.Message };
-
-        var nftResult = await NftProvider.LoadAvatarNFTAsync(avatarNFTId);
+        var nftResult = await _nftStore.GetAvatarNFTByIdAsync(avatarNFTId, default);
         if (nftResult.IsError || nftResult.Result == null)
             return new OASISResult<AvatarNFTCompositeResult> { IsError = true, Message = nftResult.Message ?? "Avatar NFT not found." };
 
-        var holonBindingsResult = await NftProvider.LoadHolonNFTBindingsByAvatarNFTAsync(avatarNFTId);
-        var walletBindingsResult = await NftProvider.LoadWalletNFTBindingsByAvatarNFTAsync(avatarNFTId);
+        var holonBindingsResult = await _nftStore.GetHolonNFTBindingsByAvatarNFTAsync(avatarNFTId, default);
+        var walletBindingsResult = await _nftStore.GetWalletNFTBindingsByAvatarNFTAsync(avatarNFTId, default);
 
         var composite = BuildComposite(
             nftResult.Result,
@@ -250,18 +203,15 @@ public class AvatarNFTService : IAvatarNFTService
 
     public async Task<OASISResult<IEnumerable<AvatarNFTCompositeResult>>> GetAvatarNFTCompositesByAvatarAsync(Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<AvatarNFTCompositeResult>> { IsError = true, Message = activation.Message };
-
-        var nftsResult = await NftProvider.LoadAvatarNFTsByAvatarAsync(avatarId);
+        var nftsResult = await _nftStore.GetAvatarNFTsByAvatarAsync(avatarId, default);
         if (nftsResult.IsError || nftsResult.Result == null)
             return new OASISResult<IEnumerable<AvatarNFTCompositeResult>> { IsError = true, Message = nftsResult.Message };
 
         var composites = new List<AvatarNFTCompositeResult>();
         foreach (var nft in nftsResult.Result)
         {
-            var holonBindings = await NftProvider.LoadHolonNFTBindingsByAvatarNFTAsync(nft.Id);
-            var walletBindings = await NftProvider.LoadWalletNFTBindingsByAvatarNFTAsync(nft.Id);
+            var holonBindings = await _nftStore.GetHolonNFTBindingsByAvatarNFTAsync(nft.Id, default);
+            var walletBindings = await _nftStore.GetWalletNFTBindingsByAvatarNFTAsync(nft.Id, default);
             composites.Add(BuildComposite(nft, holonBindings.Result, walletBindings.Result));
         }
 
@@ -272,10 +222,7 @@ public class AvatarNFTService : IAvatarNFTService
 
     public async Task<OASISResult<bool>> VerifyAvatarNFTOwnershipAsync(Guid avatarId, string chainType, string nftContractAddress, string tokenId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        var nftResult = await NftProvider.LoadAvatarNFTByTokenIdAsync(chainType, nftContractAddress, tokenId);
+        var nftResult = await _nftStore.GetAvatarNFTByTokenIdAsync(chainType, nftContractAddress, tokenId, default);
         if (nftResult.IsError || nftResult.Result == null)
             return new OASISResult<bool> { IsError = true, Message = nftResult.Message ?? "Avatar NFT not found." };
 
@@ -285,10 +232,7 @@ public class AvatarNFTService : IAvatarNFTService
 
     public async Task<OASISResult<bool>> VerifyHolonAccessAsync(Guid avatarNFTId, Guid holonId, string requiredPermission, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        var bindingsResult = await NftProvider.LoadHolonNFTBindingsByAvatarNFTAsync(avatarNFTId);
+        var bindingsResult = await _nftStore.GetHolonNFTBindingsByAvatarNFTAsync(avatarNFTId, default);
         if (bindingsResult.IsError || bindingsResult.Result == null)
             return new OASISResult<bool> { IsError = true, Message = bindingsResult.Message ?? "No holon bindings found." };
 
@@ -304,10 +248,7 @@ public class AvatarNFTService : IAvatarNFTService
 
     public async Task<OASISResult<bool>> VerifyWalletAccessAsync(Guid avatarNFTId, Guid walletId, string requiredAccess, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        var bindingsResult = await NftProvider.LoadWalletNFTBindingsByAvatarNFTAsync(avatarNFTId);
+        var bindingsResult = await _nftStore.GetWalletNFTBindingsByAvatarNFTAsync(avatarNFTId, default);
         if (bindingsResult.IsError || bindingsResult.Result == null)
             return new OASISResult<bool> { IsError = true, Message = bindingsResult.Message ?? "No wallet bindings found." };
 

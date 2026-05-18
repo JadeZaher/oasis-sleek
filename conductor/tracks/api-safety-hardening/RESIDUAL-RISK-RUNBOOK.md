@@ -830,3 +830,70 @@ remaining real open items: live-Guardian-network validation + real
 testnet/mainnet Guardian-set config [ops/config gate, not code],
 reconciliation tri-state, distributed rate-limit. 564/564 unit green via
 `scripts/passoff.ps1`; production build 0 errors / 17-baseline warnings.)
+
+---
+
+---
+
+## Addendum 3 — post §4 cleanup + Tier-1 architecture-decoupling (2026-05-18)
+
+**§4 pre-launch cleanup LANDED** (commit `1b25f50`): vestigial `xmin`/`Version`
+token removed; `OperationStatus` constants (stringly-typed divergence killed);
+`Sagas:Enabled=false` default + ADR-0001; explicit `BridgeStatus.Reversing`
+replacing the `IsReversalInFlight` `CompletedAt`-timestamp heuristic
+(`ReverseBridgeAsync` now `Completed→Reversing→Refunded/Failed`; reconciliation
+sweeps `Reversing` and flags MANUAL INTERVENTION without auto-advancing). All
+five §4 items closed; the SHOULD items (WormholeDigest helper, idempotency
+ON CONFLICT, IDbContextFactory) consciously deferred (each sits on the
+safety spine — not low-risk; non-launch-blocking).
+
+**Tier-1 `architecture-decoupling` COMPLETE.** Persistence god interface +
+`IQuestRepository` + `ProviderContext`/selection/decorator infra deleted behind
+8 per-aggregate `I*Store` interfaces (EF adapters interim; SurrealDB swaps them
+behind this one seam). **Exactly-once safety surface is UNCHANGED:**
+`CrossChainBridgeService` and `ReconciliationService` were deliberately kept on
+direct `OASISDbContext` (frozen, byte-identical to `1b25f50`); `IBridgeStore`
+ships as a contract-only seam (`EfBridgeStore` thin pass-through, raw affected-
+row count, never asserts/retries/RMW/auto-advances) for the SurrealDB
+precondition but is NOT yet consumed by the value path. `scripts/passoff.ps1`
+still exits 0 — the api-safety exactly-once / replay / reconciliation / Secp256k1
+tests are the unchanged regression gate and stay green.
+
+**Test-count note (supersedes prior figures for the post-decoupling state):**
+unit suite is now **532/532** (not a regression): §4 took it to 567; the
+decoupling then *removed* ~35 tests that exclusively exercised the now-deleted
+provider-selection/`ProviderContext`/InMemory/`EfStorageProvider` infrastructure
+— architecturally obsolete, zero assertions weakened, no safety/replay/Secp
+coverage lost (those are SQLite-bound and untouched). New sibling gate
+`scripts/passoff-architecture.ps1` (invokes `passoff.ps1` for regression + zero-
+god-iface-refs + warnings≤17 + live `/health` 200) is GREEN.
+
+**Tracked debt carried forward to `surrealdb-migration`** (none launch-blocking):
+1. **M2** — store-level `Ef*Store` test coverage: the deleted
+   `EfStorageProviderTests`/`InMemoryStorageProviderTests` gave the only direct
+   EF CRUD/query-filter coverage; not replaced (manager tests mock the stores).
+   Mitigated: the `Ef*Store` bodies are *proven verbatim lifts* of the deleted
+   provider (diff-verified) ⇒ no logic regression. Add SQLite-backed
+   `Ef*StoreTests` (esp. `EfQuestStore.UpsertQuestAsync` child-collection sync,
+   `EfHolonStore.QueryAsync` filters) in the SurrealDB/integration rebuild.
+2. **L1** — `ProviderHealthMonitorHealthCheck` is vestigial: the decorator that
+   recorded scores was deleted, so it always reports Healthy("No provider data
+   recorded yet."). Graceful and honest (never throws, no false signal);
+   `StorageHealthCheck` (`CanConnectAsync`) is the meaningful `/health` signal.
+   Rewire to a real score source or drop in `surrealdb-migration`.
+3. **L2** — `db.Database.Migrate()` still inline at app start
+   (`Program.cs`); greenfield-interim, moot once EF is removed. Gate it as a
+   migration job in the SurrealDB cutover / ops.
+
+The genuinely-open api-safety items (live-Guardian-network validation + real
+testnet/mainnet Guardian-set config [ops/config], reconciliation tri-state,
+distributed rate-limit store) from the body/Addendum 2 remain exactly as stated
+— this addendum adds no new safety risk; it records the seam landing with the
+value path provably untouched.
+
+---
+
+**Last updated:** 2026-05-18 (Addendum 3 — §4 cleanup landed `1b25f50` +
+Tier-1 architecture-decoupling complete; unit 532/532, `passoff.ps1` exit 0
+[exactly-once regression intact], `passoff-architecture.ps1` GREEN, live
+`/health` 200; M2/L1/L2 debt → `surrealdb-migration`).

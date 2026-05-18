@@ -3,6 +3,7 @@ using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Managers.Dex;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Net.Http;
@@ -23,6 +24,12 @@ public class SwapManagerTests
     private readonly SwapManager _swapManager;
     private readonly HttpClient _httpClient;
 
+    // Mirrors the production registration (AddMemoryCache(o => o.SizeLimit = 1024)).
+    // SwapManager sets per-entry Size=1 on every cache write, which throws if the
+    // cache has no SizeLimit — so the test cache must also be bounded.
+    private static IMemoryCache NewBoundedCache() =>
+        new MemoryCache(new MemoryCacheOptions { SizeLimit = 1024 });
+
     public SwapManagerTests()
     {
         _httpClient = new HttpClient
@@ -42,7 +49,7 @@ public class SwapManagerTests
         var tinyman = new TinymanDexAdapter(config, lf.CreateLogger<TinymanDexAdapter>());
         var jupiter = new JupiterDexAdapter(_httpClient, config, lf.CreateLogger<JupiterDexAdapter>());
         _swapManager = new SwapManager(
-            new IDexAdapter[] { tinyman, jupiter }, lf.CreateLogger<SwapManager>());
+            new IDexAdapter[] { tinyman, jupiter }, NewBoundedCache(), lf.CreateLogger<SwapManager>());
     }
 
     [Fact]
@@ -158,7 +165,7 @@ public class SwapManagerTests
     // ─── Dispatch behavior (in-memory fake adapter, no network) ───
 
     private SwapManager BuildDispatcher(FakeDexAdapter adapter) =>
-        new(new IDexAdapter[] { adapter }, new LoggerFactory().CreateLogger<SwapManager>());
+        new(new IDexAdapter[] { adapter }, NewBoundedCache(), new LoggerFactory().CreateLogger<SwapManager>());
 
     [Fact]
     public async Task GetQuoteAsync_ResolvesAdapterCaseInsensitively_AndAssignsQuoteId()

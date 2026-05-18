@@ -20,16 +20,6 @@ public interface IProviderHealthMonitor
     IReadOnlyDictionary<string, ProviderHealthScore> GetScores();
 
     /// <summary>
-    /// Get the best provider name using the given strategy.
-    /// </summary>
-    string? SelectBestProvider(IProviderSelectionStrategy strategy);
-
-    /// <summary>
-    /// Get the best provider name using a built-in strategy by mode.
-    /// </summary>
-    string? SelectBestProvider(DynamicProviderMode mode);
-
-    /// <summary>
     /// Mark a provider as unhealthy (e.g., after a circuit breaker trips).
     /// </summary>
     void MarkUnhealthy(string providerName);

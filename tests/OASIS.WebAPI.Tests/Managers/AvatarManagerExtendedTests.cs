@@ -1,8 +1,8 @@
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Moq;
-using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
@@ -12,14 +12,12 @@ namespace OASIS.WebAPI.Tests.Managers;
 
 public class AvatarManagerExtendedTests
 {
-    private readonly Mock<IOASISStorageProvider> _provider;
-    private readonly ProviderContext _providerContext;
+    private readonly Mock<IAvatarStore> _store;
     private readonly AvatarManager _manager;
 
     public AvatarManagerExtendedTests()
     {
-        _provider = new Mock<IOASISStorageProvider>();
-        _provider.Setup(p => p.ProviderName).Returns("InMemory");
+        _store = new Mock<IAvatarStore>();
 
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -31,14 +29,13 @@ public class AvatarManagerExtendedTests
             })
             .Build();
 
-        _providerContext = new ProviderContext(new[] { _provider.Object }, config, null);
-        _manager = new AvatarManager(_providerContext, config);
+        _manager = new AvatarManager(_store.Object, config);
     }
 
     [Fact]
     public async Task GetAllAsync_ShouldReturnAllAvatars()
     {
-        _provider.Setup(p => p.LoadAllAvatarsAsync(It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetAllAsync(It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IAvatar>>
                  {
                      Result = new[] { new Avatar { Username = "a1" }, new Avatar { Username = "a2" } }
@@ -52,7 +49,7 @@ public class AvatarManagerExtendedTests
     [Fact]
     public async Task UpdateAsync_WithMissingAvatar_ShouldReturnError()
     {
-        _provider.Setup(p => p.LoadAvatarAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IAvatar> { IsError = true, Message = "Not found" });
 
         var result = await _manager.UpdateAsync(Guid.NewGuid(), new AvatarUpdateModel { FirstName = "X" });
@@ -72,9 +69,9 @@ public class AvatarManagerExtendedTests
             LastName = "Name",
             IsActive = true
         };
-        _provider.Setup(p => p.LoadAvatarAsync(avatar.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(avatar.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IAvatar> { Result = avatar });
-        _provider.Setup(p => p.SaveAvatarAsync(It.IsAny<IAvatar>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IAvatar>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IAvatar a, CancellationToken _) => new OASISResult<IAvatar> { Result = a });
 
         var result = await _manager.UpdateAsync(avatar.Id, new AvatarUpdateModel { FirstName = "New" });
@@ -89,7 +86,7 @@ public class AvatarManagerExtendedTests
     [Fact]
     public async Task DeleteAsync_ShouldReturnProviderResult()
     {
-        _provider.Setup(p => p.DeleteAvatarAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.DeleteAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<bool> { Result = true });
 
         var result = await _manager.DeleteAsync(Guid.NewGuid());
@@ -97,16 +94,8 @@ public class AvatarManagerExtendedTests
         result.Result.Should().BeTrue();
     }
 
-    [Fact]
-    public async Task RegisterAsync_WhenProviderActivationFails_ShouldReturnError()
-    {
-        var config = new ConfigurationBuilder().Build();
-        var emptyContext = new ProviderContext(Array.Empty<IOASISStorageProvider>(), config, null);
-        var manager = new AvatarManager(emptyContext, config);
-
-        var result = await manager.RegisterAsync(new AvatarRegisterModel { Username = "x", Email = "x@test.com", Password = "pass" });
-
-        result.IsError.Should().BeTrue();
-        result.Message.Should().Contain("No storage provider available");
-    }
+    // Deleted in Mission B: RegisterAsync_WhenProviderActivationFails_ShouldReturnError.
+    // Premise is architecturally obsolete — provider-selection/activation guards
+    // were removed (W2); managers now inject a concrete store via DI, so the
+    // "No storage provider available" code path no longer exists.
 }

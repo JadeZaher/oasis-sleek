@@ -1,53 +1,28 @@
-using System.Text.Json;
-using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
-using OASIS.WebAPI.Models;
+using OASIS.WebAPI.Interfaces.QuestExecution;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models.Quest;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
-
-// NftQueryRequest lives in Models.Responses alongside NftResult
+using OASIS.WebAPI.Services.Quest;
 
 namespace OASIS.WebAPI.Managers;
 
 public class QuestManager : IQuestManager
 {
-    private readonly ProviderContext _providerContext;
+    private readonly IQuestStore _questStore;
     private readonly IQuestDagValidator _dagValidator;
-    private readonly IHolonManager _holonManager;
-    private readonly INftManager _nftManager;
-    private readonly IWalletManager _walletManager;
-    private readonly ISTARManager _starManager;
-    private readonly ISearchManager _searchManager;
-    private readonly IBlockchainOperationManager _blockchainManager;
-    private readonly IAvatarNFTService _avatarNFTService;
-
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
+    private readonly IQuestNodeHandlerRegistry _registry;
 
     public QuestManager(
-        ProviderContext providerContext,
+        IQuestStore questStore,
         IQuestDagValidator dagValidator,
-        IHolonManager holonManager,
-        INftManager nftManager,
-        IWalletManager walletManager,
-        ISTARManager starManager,
-        ISearchManager searchManager,
-        IBlockchainOperationManager blockchainManager,
-        IAvatarNFTService avatarNFTService)
+        IQuestNodeHandlerRegistry registry)
     {
-        _providerContext = providerContext;
+        _questStore = questStore;
         _dagValidator = dagValidator;
-        _holonManager = holonManager;
-        _nftManager = nftManager;
-        _walletManager = walletManager;
-        _starManager = starManager;
-        _searchManager = searchManager;
-        _blockchainManager = blockchainManager;
-        _avatarNFTService = avatarNFTService;
+        _registry = registry;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -56,9 +31,6 @@ public class QuestManager : IQuestManager
 
     public async Task<OASISResult<Quest>> CreateAsync(QuestCreateModel model, Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<Quest> { IsError = true, Message = activation.Message };
-
         var quest = new Quest
         {
             Id = Guid.NewGuid(),
@@ -110,31 +82,22 @@ public class QuestManager : IQuestManager
             quest.Edges.Add(edge);
         }
 
-        return await _providerContext.CurrentProvider.SaveQuestAsync(quest);
+        return await _questStore.UpsertQuestAsync(quest);
     }
 
     public async Task<OASISResult<Quest>> GetAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<Quest> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadQuestAsync(id);
+        return await _questStore.GetQuestAsync(id);
     }
 
     public async Task<OASISResult<IEnumerable<Quest>>> GetByAvatarAsync(Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<Quest>> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadQuestsByAvatarAsync(avatarId);
+        return await _questStore.GetQuestsByAvatarAsync(avatarId);
     }
 
     public async Task<OASISResult<Quest>> UpdateAsync(Guid id, QuestUpdateModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<Quest> { IsError = true, Message = activation.Message };
-
-        var existing = await _providerContext.CurrentProvider.LoadQuestAsync(id);
+        var existing = await _questStore.GetQuestAsync(id);
         if (existing.IsError || existing.Result == null) return existing;
 
         var quest = existing.Result;
@@ -147,15 +110,12 @@ public class QuestManager : IQuestManager
                 quest.CompletedDate = DateTime.UtcNow;
         }
 
-        return await _providerContext.CurrentProvider.SaveQuestAsync(quest);
+        return await _questStore.UpsertQuestAsync(quest);
     }
 
     public async Task<OASISResult<bool>> DeleteAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.DeleteQuestAsync(id);
+        return await _questStore.DeleteQuestAsync(id);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -164,14 +124,14 @@ public class QuestManager : IQuestManager
 
     public async Task<OASISResult<bool>> ValidateDAGAsync(Guid questId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        var questResult = await _providerContext.CurrentProvider.LoadQuestAsync(questId);
+        var questResult = await _questStore.GetQuestAsync(questId);
         if (questResult.IsError || questResult.Result == null)
             return new OASISResult<bool> { IsError = true, Message = questResult.Message };
 
         var quest = questResult.Result;
+
+        // QuestDagValidator is the single ExecutionOrder authority — Validate
+        // mutates node.ExecutionOrder in-place on the quest graph.
         var validation = _dagValidator.Validate(quest);
 
         if (!validation.IsValid)
@@ -184,18 +144,7 @@ public class QuestManager : IQuestManager
             };
         }
 
-        // Apply topological order to nodes
-        var orderMap = new Dictionary<Guid, int>();
-        for (int i = 0; i < validation.TopologicalOrder.Count; i++)
-            orderMap[validation.TopologicalOrder[i]] = i;
-
-        foreach (var node in quest.Nodes)
-        {
-            if (orderMap.TryGetValue(node.Id, out var order))
-                node.ExecutionOrder = order;
-        }
-
-        await _providerContext.CurrentProvider.SaveQuestAsync(quest);
+        await _questStore.UpsertQuestAsync(quest);
 
         return new OASISResult<bool> { Result = true, Message = "DAG is valid." };
     }
@@ -206,15 +155,12 @@ public class QuestManager : IQuestManager
 
     public async Task<OASISResult<Quest>> ExecuteAsync(Guid questId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<Quest> { IsError = true, Message = activation.Message };
-
         // Validate DAG first
         var validationResult = await ValidateDAGAsync(questId, request);
         if (validationResult.IsError)
             return new OASISResult<Quest> { IsError = true, Message = validationResult.Message };
 
-        var questResult = await _providerContext.CurrentProvider.LoadQuestAsync(questId);
+        var questResult = await _questStore.GetQuestAsync(questId);
         if (questResult.IsError || questResult.Result == null)
             return new OASISResult<Quest> { IsError = true, Message = questResult.Message };
 
@@ -290,16 +236,13 @@ public class QuestManager : IQuestManager
             quest.CompletedDate = DateTime.UtcNow;
         }
 
-        await _providerContext.CurrentProvider.SaveQuestAsync(quest);
+        await _questStore.UpsertQuestAsync(quest);
         return new OASISResult<Quest> { Result = quest, Message = $"Quest execution {quest.Status}." };
     }
 
     public async Task<OASISResult<QuestNode>> ExecuteNodeAsync(Guid questId, Guid nodeId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<QuestNode> { IsError = true, Message = activation.Message };
-
-        var questResult = await _providerContext.CurrentProvider.LoadQuestAsync(questId);
+        var questResult = await _questStore.GetQuestAsync(questId);
         if (questResult.IsError || questResult.Result == null)
             return new OASISResult<QuestNode> { IsError = true, Message = questResult.Message };
 
@@ -310,331 +253,27 @@ public class QuestManager : IQuestManager
 
         var result = await ExecuteNodeInternalAsync(quest, node);
 
-        await _providerContext.CurrentProvider.SaveQuestAsync(quest);
+        await _questStore.UpsertQuestAsync(quest);
         return result;
     }
 
-    private async Task<OASISResult<QuestNode>> ExecuteNodeInternalAsync(Quest quest, QuestNode node)
+    private async Task<OASISResult<QuestNode>> ExecuteNodeInternalAsync(Quest quest, QuestNode node, CancellationToken ct = default)
     {
         node.State = QuestNodeState.Running;
 
+        if (!_registry.TryGet(node.NodeType, out var handler))
+            return QuestNodeResults.Fail(node, $"Unsupported node type: {node.NodeType}");
+
+        // One thin try/catch wrapper — mirrors the former QuestManager
+        // catch (~:627-630), in one place instead of per node type.
         try
         {
-            string? outputJson = null;
-
-            switch (node.NodeType)
-            {
-                // ─── Holon operations ───
-                case QuestNodeType.HolonCreate:
-                {
-                    var model = JsonSerializer.Deserialize<HolonCreateModel>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.CreateAsync(model, quest.AvatarId);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonUpdate:
-                {
-                    var cfg = JsonSerializer.Deserialize<HolonUpdateNodeConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.UpdateAsync(cfg.HolonId, cfg.Model);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonDelete:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.DeleteAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonGet:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.GetAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonQuery:
-                {
-                    var query = JsonSerializer.Deserialize<HolonQueryRequest>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.QueryAsync(query);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonInteract:
-                {
-                    var cfg = JsonSerializer.Deserialize<HolonInteractNodeConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.InteractAsync(cfg.HolonId, cfg.Request);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonGetChildren:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.GetChildrenAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonGetPeers:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.GetPeersAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonGetAncestors:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.GetAncestorsAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonGetDescendants:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.GetDescendantsAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonPropagate:
-                {
-                    var cfg = JsonSerializer.Deserialize<HolonPropagateNodeConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.PropagateAsync(cfg.HolonId, cfg.Request);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonCompose:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.ComposeAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonClone:
-                {
-                    var cfg = JsonSerializer.Deserialize<HolonCloneNodeConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.CloneAsync(cfg.HolonId, cfg.Request, quest.AvatarId);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.HolonMoveSubtree:
-                {
-                    var cfg = JsonSerializer.Deserialize<HolonMoveNodeConfig>(node.Config, JsonOptions)!;
-                    var r = await _holonManager.MoveSubtreeAsync(cfg.HolonId, cfg.NewParentId);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-
-                // ─── NFT operations ───
-                case QuestNodeType.NftMint:
-                {
-                    var model = JsonSerializer.Deserialize<NftMintRequest>(node.Config, JsonOptions)!;
-                    var r = await _nftManager.MintAsync(model, quest.AvatarId);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.NftTransfer:
-                {
-                    var cfg = JsonSerializer.Deserialize<NftTransferNodeConfig>(node.Config, JsonOptions)!;
-                    var r = await _nftManager.TransferAsync(cfg.NftId, cfg.Request, quest.AvatarId);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.NftBurn:
-                {
-                    var cfg = JsonSerializer.Deserialize<NftBurnNodeConfig>(node.Config, JsonOptions)!;
-                    var r = await _nftManager.BurnAsync(cfg.NftId, cfg.WalletId, quest.AvatarId);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.NftGet:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _nftManager.GetAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.NftQuery:
-                {
-                    var query = JsonSerializer.Deserialize<NftQueryRequest>(node.Config, JsonOptions)!;
-                    var r = await _nftManager.QueryAsync(query);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.NftGetMetadata:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _nftManager.GetMetadataAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-
-                // ─── Wallet operations ───
-                case QuestNodeType.WalletCreate:
-                {
-                    var model = JsonSerializer.Deserialize<WalletCreateModel>(node.Config, JsonOptions)!;
-                    var r = await _walletManager.CreateAsync(model, quest.AvatarId);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.WalletUpdate:
-                {
-                    var cfg = JsonSerializer.Deserialize<WalletUpdateNodeConfig>(node.Config, JsonOptions)!;
-                    var r = await _walletManager.UpdateAsync(cfg.WalletId, cfg.Model);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.WalletDelete:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _walletManager.DeleteAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.WalletGet:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _walletManager.GetAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.WalletQuery:
-                {
-                    var query = JsonSerializer.Deserialize<WalletQueryRequest>(node.Config, JsonOptions)!;
-                    var r = await _walletManager.QueryAsync(query);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.WalletSetDefault:
-                {
-                    var cfg = JsonSerializer.Deserialize<WalletSetDefaultNodeConfig>(node.Config, JsonOptions)!;
-                    var r = await _walletManager.SetDefaultAsync(quest.AvatarId, cfg.WalletId);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.WalletGetPortfolio:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _walletManager.GetPortfolioAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-
-                // ─── STAR operations ───
-                case QuestNodeType.StarGenerate:
-                {
-                    var cfg = JsonSerializer.Deserialize<StarGenerateNodeConfig>(node.Config, JsonOptions)!;
-                    var r = await _starManager.GenerateAsync(cfg.StarId, cfg.Request);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-                case QuestNodeType.StarDeploy:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _starManager.DeployAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-
-                // ─── Search ───
-                case QuestNodeType.Search:
-                {
-                    var searchReq = JsonSerializer.Deserialize<SearchRequest>(node.Config, JsonOptions)!;
-                    var r = await _searchManager.SearchAsync(searchReq);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-
-                // ─── Avatar NFT ───
-                case QuestNodeType.AvatarNFTGetComposite:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _avatarNFTService.GetAvatarNFTCompositeAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-
-                // ─── Blockchain ───
-                case QuestNodeType.BlockchainExecute:
-                {
-                    var cfg = JsonSerializer.Deserialize<IdConfig>(node.Config, JsonOptions)!;
-                    var r = await _blockchainManager.GetAsync(cfg.Id);
-                    outputJson = JsonSerializer.Serialize(r, JsonOptions);
-                    if (r.IsError) return Fail(node, r.Message);
-                    break;
-                }
-
-                // ─── Control-flow ───
-                case QuestNodeType.Condition:
-                {
-                    // Condition nodes evaluate to a pass-through; the edge conditions
-                    // on outgoing edges handle the actual branching.
-                    outputJson = node.Config;
-                    break;
-                }
-                case QuestNodeType.ComposeOutputs:
-                {
-                    // Gather outputs from all upstream nodes
-                    var incomingNodeIds = quest.Edges
-                        .Where(e => e.TargetNodeId == node.Id)
-                        .Select(e => e.SourceNodeId)
-                        .ToHashSet();
-                    var upstreamOutputs = quest.Nodes
-                        .Where(n => incomingNodeIds.Contains(n.Id) && n.Output != null)
-                        .ToDictionary(n => n.Name, n => n.Output!);
-                    outputJson = JsonSerializer.Serialize(upstreamOutputs, JsonOptions);
-                    break;
-                }
-
-                default:
-                    return Fail(node, $"Unsupported node type: {node.NodeType}");
-            }
-
-            node.State = QuestNodeState.Succeeded;
-            node.Output = outputJson;
-            return new OASISResult<QuestNode> { Result = node, Message = "Node executed successfully." };
+            return await handler.HandleAsync(quest, node, ct);
         }
         catch (Exception ex)
         {
-            return Fail(node, ex.Message);
+            return QuestNodeResults.Fail(node, ex.Message);
         }
-    }
-
-    private static OASISResult<QuestNode> Fail(QuestNode node, string message)
-    {
-        node.State = QuestNodeState.Failed;
-        node.Error = message;
-        return new OASISResult<QuestNode> { IsError = true, Result = node, Message = message };
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -643,9 +282,6 @@ public class QuestManager : IQuestManager
 
     public async Task<OASISResult<QuestTemplate>> CreateTemplateAsync(QuestTemplateCreateModel model, Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<QuestTemplate> { IsError = true, Message = activation.Message };
-
         var template = new QuestTemplate
         {
             Id = Guid.NewGuid(),
@@ -696,38 +332,29 @@ public class QuestManager : IQuestManager
             });
         }
 
-        return await _providerContext.CurrentProvider.SaveQuestTemplateAsync(template);
+        return await _questStore.UpsertQuestTemplateAsync(template);
     }
 
     public async Task<OASISResult<QuestTemplate>> GetTemplateAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<QuestTemplate> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadQuestTemplateAsync(id);
+        return await _questStore.GetQuestTemplateAsync(id);
     }
 
     public async Task<OASISResult<IEnumerable<QuestTemplate>>> ListTemplatesAsync(OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<QuestTemplate>> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadAllQuestTemplatesAsync();
+        return await _questStore.GetAllQuestTemplatesAsync();
     }
 
     public async Task<OASISResult<Quest>> InstantiateTemplateAsync(Guid templateId, Guid avatarId, Dictionary<string, string>? parameters = null, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<Quest> { IsError = true, Message = activation.Message };
-
-        var templateResult = await _providerContext.CurrentProvider.LoadQuestTemplateAsync(templateId);
+        var templateResult = await _questStore.GetQuestTemplateAsync(templateId);
         if (templateResult.IsError || templateResult.Result == null)
             return new OASISResult<Quest> { IsError = true, Message = templateResult.Message };
 
         var template = templateResult.Result;
 
         // Load node templates referenced by this quest template
-        var nodeTemplatesResult = await _providerContext.CurrentProvider.LoadAllQuestNodeTemplatesAsync();
+        var nodeTemplatesResult = await _questStore.GetAllQuestNodeTemplatesAsync();
         var nodeTemplates = (nodeTemplatesResult.Result ?? Enumerable.Empty<QuestNodeTemplate>())
             .ToDictionary(nt => nt.Id);
 
@@ -798,7 +425,7 @@ public class QuestManager : IQuestManager
             });
         }
 
-        return await _providerContext.CurrentProvider.SaveQuestAsync(quest);
+        return await _questStore.UpsertQuestAsync(quest);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -807,9 +434,6 @@ public class QuestManager : IQuestManager
 
     public async Task<OASISResult<QuestNodeTemplate>> CreateNodeTemplateAsync(QuestNodeTemplateCreateModel model, Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<QuestNodeTemplate> { IsError = true, Message = activation.Message };
-
         var template = new QuestNodeTemplate
         {
             Id = Guid.NewGuid(),
@@ -826,82 +450,11 @@ public class QuestManager : IQuestManager
             Tags = model.Tags
         };
 
-        return await _providerContext.CurrentProvider.SaveQuestNodeTemplateAsync(template);
+        return await _questStore.UpsertQuestNodeTemplateAsync(template);
     }
 
     public async Task<OASISResult<IEnumerable<QuestNodeTemplate>>> ListNodeTemplatesAsync(OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<QuestNodeTemplate>> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadAllQuestNodeTemplatesAsync();
+        return await _questStore.GetAllQuestNodeTemplatesAsync();
     }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Internal config DTOs for node dispatch deserialization
-// ═══════════════════════════════════════════════════════════════════
-
-internal class IdConfig
-{
-    public Guid Id { get; set; }
-}
-
-internal class HolonUpdateNodeConfig
-{
-    public Guid HolonId { get; set; }
-    public HolonUpdateModel Model { get; set; } = new();
-}
-
-internal class HolonInteractNodeConfig
-{
-    public Guid HolonId { get; set; }
-    public HolonInteractionRequest Request { get; set; } = new();
-}
-
-internal class HolonPropagateNodeConfig
-{
-    public Guid HolonId { get; set; }
-    public HolonPropagateRequest Request { get; set; } = new();
-}
-
-internal class HolonCloneNodeConfig
-{
-    public Guid HolonId { get; set; }
-    public HolonCloneRequest Request { get; set; } = new();
-}
-
-internal class HolonMoveNodeConfig
-{
-    public Guid HolonId { get; set; }
-    public Guid NewParentId { get; set; }
-}
-
-internal class NftTransferNodeConfig
-{
-    public Guid NftId { get; set; }
-    public NftTransferRequest Request { get; set; } = new();
-}
-
-internal class NftBurnNodeConfig
-{
-    public Guid NftId { get; set; }
-    public Guid WalletId { get; set; }
-}
-
-internal class WalletUpdateNodeConfig
-{
-    public Guid WalletId { get; set; }
-    public WalletUpdateModel Model { get; set; } = new();
-}
-
-internal class WalletSetDefaultNodeConfig
-{
-    public Guid WalletId { get; set; }
-}
-
-internal class StarGenerateNodeConfig
-{
-    public Guid StarId { get; set; }
-    public STARDappGenerationRequest Request { get; set; } = new();
 }

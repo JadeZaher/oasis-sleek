@@ -5,7 +5,6 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using OASIS.WebAPI.Interfaces;
-using OASIS.WebAPI.Providers;
 
 namespace OASIS.WebAPI.IntegrationTests.Factories;
 
@@ -44,8 +43,9 @@ public class OASISTestWebApplicationFactory : WebApplicationFactory<Program>
             .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
                 TestAuthHandler.SchemeName, _ => { });
 
-            var inMemoryProvider = services.SingleOrDefault(d => d.ImplementationType == typeof(InMemoryStorageProvider));
-            if (inMemoryProvider != null) services.Remove(inMemoryProvider);
+            // Mission B: InMemoryStorageProvider was deleted (single-provider
+            // reality) — it is no longer registered, so no swap-out is needed.
+            // The host uses the real PostgreSQL EF stores.
         });
     }
 

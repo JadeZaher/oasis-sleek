@@ -1,8 +1,7 @@
 using FluentAssertions;
-using Microsoft.Extensions.Configuration;
 using Moq;
-using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
@@ -12,25 +11,20 @@ namespace OASIS.WebAPI.Tests.Managers;
 
 public class HolonManagerExtendedTests
 {
-    private readonly Mock<IOASISStorageProvider> _provider;
-    private readonly ProviderContext _providerContext;
+    private readonly Mock<IHolonStore> _store;
     private readonly HolonManager _manager;
 
     public HolonManagerExtendedTests()
     {
-        _provider = new Mock<IOASISStorageProvider>();
-        _provider.Setup(p => p.ProviderName).Returns("InMemory");
-
-        var config = new ConfigurationBuilder().Build();
-        _providerContext = new ProviderContext(new[] { _provider.Object }, config, null);
-        _manager = new HolonManager(_providerContext);
+        _store = new Mock<IHolonStore>();
+        _manager = new HolonManager(_store.Object);
     }
 
     [Fact]
     public async Task GetAsync_Existing_ReturnsHolon()
     {
         var holon = new Holon { Id = Guid.NewGuid(), Name = "Test" };
-        _provider.Setup(p => p.LoadHolonAsync(holon.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(holon.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
 
         var result = await _manager.GetAsync(holon.Id);
@@ -41,7 +35,7 @@ public class HolonManagerExtendedTests
     [Fact]
     public async Task GetAsync_NonExisting_ReturnsError()
     {
-        _provider.Setup(p => p.LoadHolonAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { IsError = true, Message = "Not found" });
 
         var result = await _manager.GetAsync(Guid.NewGuid());
@@ -52,7 +46,7 @@ public class HolonManagerExtendedTests
     [Fact]
     public async Task GetAllAsync_ReturnsList()
     {
-        _provider.Setup(p => p.LoadAllHolonsAsync((HolonQueryRequest?)null, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync((HolonQueryRequest?)null, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>>
                  {
                      Result = new[] { new Holon { Name = "A" }, new Holon { Name = "B" } }
@@ -66,7 +60,7 @@ public class HolonManagerExtendedTests
     [Fact]
     public async Task UpdateAsync_NonExisting_ReturnsError()
     {
-        _provider.Setup(p => p.LoadHolonAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { IsError = true, Message = "Not found" });
 
         var result = await _manager.UpdateAsync(Guid.NewGuid(), new HolonUpdateModel { Name = "New" });
@@ -86,9 +80,9 @@ public class HolonManagerExtendedTests
             PeerHolonIds = new List<Guid>(),
             IsActive = true
         };
-        _provider.Setup(p => p.LoadHolonAsync(holon.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(holon.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IHolon h, CancellationToken _) => new OASISResult<IHolon> { Result = h });
 
         var result = await _manager.UpdateAsync(holon.Id, new HolonUpdateModel
@@ -107,7 +101,7 @@ public class HolonManagerExtendedTests
     [Fact]
     public async Task DeleteAsync_ReturnsProviderResult()
     {
-        _provider.Setup(p => p.DeleteHolonAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.DeleteAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<bool> { Result = true });
 
         var result = await _manager.DeleteAsync(Guid.NewGuid());
@@ -118,7 +112,7 @@ public class HolonManagerExtendedTests
     [Fact]
     public async Task InteractAsync_NonExisting_ReturnsError()
     {
-        _provider.Setup(p => p.LoadHolonAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { IsError = true, Message = "Not found" });
 
         var result = await _manager.InteractAsync(Guid.NewGuid(), new HolonInteractionRequest());
@@ -131,9 +125,9 @@ public class HolonManagerExtendedTests
     {
         var holon = new Holon { Id = Guid.NewGuid(), ParentHolonId = null };
         var newParent = Guid.NewGuid();
-        _provider.Setup(p => p.LoadHolonAsync(holon.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(holon.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IHolon h, CancellationToken _) => new OASISResult<IHolon> { Result = h });
 
         var result = await _manager.InteractAsync(holon.Id, new HolonInteractionRequest { NewParentHolonId = newParent });
@@ -146,9 +140,9 @@ public class HolonManagerExtendedTests
     {
         var peer = Guid.NewGuid();
         var holon = new Holon { Id = Guid.NewGuid(), PeerHolonIds = new List<Guid> { peer } };
-        _provider.Setup(p => p.LoadHolonAsync(holon.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(holon.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IHolon h, CancellationToken _) => new OASISResult<IHolon> { Result = h });
 
         var result = await _manager.InteractAsync(holon.Id, new HolonInteractionRequest { RemovePeerHolonIds = new List<Guid> { peer } });
@@ -160,9 +154,9 @@ public class HolonManagerExtendedTests
     public async Task InteractAsync_ShouldRemoveMetadataKeys()
     {
         var holon = new Holon { Id = Guid.NewGuid(), Metadata = new Dictionary<string, string> { ["a"] = "1", ["b"] = "2" } };
-        _provider.Setup(p => p.LoadHolonAsync(holon.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(holon.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IHolon h, CancellationToken _) => new OASISResult<IHolon> { Result = h });
 
         var result = await _manager.InteractAsync(holon.Id, new HolonInteractionRequest { RemoveMetadataKeys = new List<string> { "a" } });
@@ -174,7 +168,7 @@ public class HolonManagerExtendedTests
     [Fact]
     public async Task QueryAsync_WithNoFilters_ShouldReturnAll()
     {
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.IsAny<HolonQueryRequest>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.IsAny<HolonQueryRequest>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { new Holon(), new Holon() } });
 
         var result = await _manager.QueryAsync(new HolonQueryRequest());

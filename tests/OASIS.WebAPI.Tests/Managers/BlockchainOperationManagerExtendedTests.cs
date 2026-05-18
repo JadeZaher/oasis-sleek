@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Moq;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Responses;
@@ -12,18 +13,16 @@ namespace OASIS.WebAPI.Tests.Managers;
 
 public class BlockchainOperationManagerExtendedTests
 {
-    private readonly Mock<IOASISStorageProvider> _provider;
+    private readonly Mock<IBlockchainOperationStore> _store;
     private readonly Mock<IBlockchainProvider> _algoProvider;
     private readonly Mock<IBlockchainProvider> _solProvider;
-    private readonly ProviderContext _providerContext;
     private readonly BlockchainProviderFactory _chainFactory;
     private readonly FakeIdempotencyStore _idempotency;
     private readonly BlockchainOperationManager _manager;
 
     public BlockchainOperationManagerExtendedTests()
     {
-        _provider = new Mock<IOASISStorageProvider>();
-        _provider.Setup(p => p.ProviderName).Returns("InMemory");
+        _store = new Mock<IBlockchainOperationStore>();
 
         _algoProvider = new Mock<IBlockchainProvider>();
         _algoProvider.Setup(p => p.ChainType).Returns("Algorand");
@@ -46,10 +45,9 @@ public class BlockchainOperationManagerExtendedTests
         _solProvider.Setup(p => p.ChainType).Returns("Solana");
 
         var config = new ConfigurationBuilder().Build();
-        _providerContext = new ProviderContext(new[] { _provider.Object }, config, null);
         _chainFactory = new BlockchainProviderFactory(new[] { _algoProvider.Object, _solProvider.Object }, config);
         _idempotency = new FakeIdempotencyStore();
-        _manager = new BlockchainOperationManager(_providerContext, _chainFactory, _idempotency);
+        _manager = new BlockchainOperationManager(_store.Object, _chainFactory, _idempotency);
     }
 
     [Fact]
@@ -60,7 +58,7 @@ public class BlockchainOperationManagerExtendedTests
             OperationType = "Burn",
             Parameters = new Dictionary<string, string> { ["ChainType"] = "Algorand", ["TokenId"] = "123", ["Amount"] = "5", ["WalletAddress"] = "addr" }
         };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         var result = await _manager.ExecuteAsync(op);
@@ -86,7 +84,7 @@ public class BlockchainOperationManagerExtendedTests
                 ["WalletAddress"] = "addr"
             }
         };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         var result = await _manager.ExecuteAsync(op);
@@ -106,7 +104,7 @@ public class BlockchainOperationManagerExtendedTests
             RecipientAddress = "toAddr",
             Parameters = new Dictionary<string, string> { ["ChainType"] = "Algorand", ["WalletAddress"] = "fromAddr" }
         };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         var result = await _manager.ExecuteAsync(op);
@@ -128,7 +126,7 @@ public class BlockchainOperationManagerExtendedTests
                 ["WalletAddress"] = "addr"
             }
         };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         var result = await _manager.ExecuteAsync(op);
@@ -152,7 +150,7 @@ public class BlockchainOperationManagerExtendedTests
                 ["WalletAddress"] = "addr"
             }
         };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         var result = await _manager.ExecuteAsync(op);
@@ -165,7 +163,7 @@ public class BlockchainOperationManagerExtendedTests
     public async Task ExecuteAsync_UnknownOperation_ShouldSetUnknownStatus()
     {
         var op = new BlockchainOperation { OperationType = "Invalid" };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         var result = await _manager.ExecuteAsync(op);
@@ -178,7 +176,7 @@ public class BlockchainOperationManagerExtendedTests
     public async Task ExecuteAsync_Composite_ShouldDoNothing()
     {
         var op = new BlockchainOperation { OperationType = "Composite" };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         var result = await _manager.ExecuteAsync(op);
@@ -198,7 +196,7 @@ public class BlockchainOperationManagerExtendedTests
             OperationType = "Mint",
             Parameters = new Dictionary<string, string> { ["ChainType"] = "Algorand" }
         };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         var result = await _manager.ExecuteAsync(op);
@@ -211,7 +209,7 @@ public class BlockchainOperationManagerExtendedTests
     [Fact]
     public async Task ExecuteAsync_WithSaveError_ShouldReturnError()
     {
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IBlockchainOperation> { IsError = true, Message = "DB Error" });
 
         var result = await _manager.ExecuteAsync(new BlockchainOperation { OperationType = "Mint" });
@@ -230,7 +228,7 @@ public class BlockchainOperationManagerExtendedTests
             OperationType = "Mint",
             Parameters = new Dictionary<string, string> { ["ChainType"] = "Algorand" }
         };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         var result = await _manager.ExecuteAsync(op);
@@ -244,7 +242,7 @@ public class BlockchainOperationManagerExtendedTests
     public async Task ExecuteAsync_UsesDefaultChain_WhenNotSpecified()
     {
         var op = new BlockchainOperation { OperationType = "Mint", TokenUri = "uri", Amount = 1, AssetType = "NFT" };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         await _manager.ExecuteAsync(op);
@@ -260,7 +258,7 @@ public class BlockchainOperationManagerExtendedTests
             OperationType = "Mint",
             Parameters = new Dictionary<string, string> { ["ChainType"] = "Algorand", ["ChainNetwork"] = "Mainnet" }
         };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         await _manager.ExecuteAsync(op);
@@ -276,7 +274,7 @@ public class BlockchainOperationManagerExtendedTests
             OperationType = "Mint",
             Parameters = new Dictionary<string, string> { ["ChainType"] = "Algorand", ["ChainNetwork"] = "Invalid" }
         };
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IBlockchainOperation o, CancellationToken _) => new OASISResult<IBlockchainOperation> { Result = o });
 
         await _manager.ExecuteAsync(op);

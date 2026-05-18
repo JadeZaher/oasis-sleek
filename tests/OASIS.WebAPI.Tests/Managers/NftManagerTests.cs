@@ -1,8 +1,8 @@
 using FluentAssertions;
 using Moq;
-using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
@@ -12,16 +12,15 @@ namespace OASIS.WebAPI.Tests.Managers;
 
 public class NftManagerTests
 {
-    private readonly Mock<IOASISStorageProvider> _provider;
+    private readonly Mock<IHolonStore> _holonStore;
+    private readonly Mock<IBlockchainOperationStore> _blockchainOperationStore;
     private readonly NftManager _manager;
 
     public NftManagerTests()
     {
-        _provider = new Mock<IOASISStorageProvider>();
-        _provider.Setup(p => p.ProviderName).Returns("Test");
-        var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build();
-        var realContext = new ProviderContext(new[] { _provider.Object }, config);
-        _manager = new NftManager(realContext);
+        _holonStore = new Mock<IHolonStore>();
+        _blockchainOperationStore = new Mock<IBlockchainOperationStore>();
+        _manager = new NftManager(_holonStore.Object, _blockchainOperationStore.Object);
     }
 
     private static INft CreateNftMock(Guid id, string name, string assetType = "NFT", Guid? avatarId = null, string? chainId = null) =>
@@ -32,7 +31,7 @@ public class NftManagerTests
     {
         var id = Guid.NewGuid();
         var nft = CreateNftMock(id, "NFT1");
-        _provider.Setup(p => p.LoadHolonAsync(id, default))
+        _holonStore.Setup(p => p.GetByIdAsync(id, default))
             .ReturnsAsync(new OASISResult<IHolon> { Result = nft });
 
         var result = await _manager.GetAsync(id);
@@ -46,7 +45,7 @@ public class NftManagerTests
     {
         var id = Guid.NewGuid();
         var holon = CreateNftMock(id, "Regular", "Document");
-        _provider.Setup(p => p.LoadHolonAsync(id, default))
+        _holonStore.Setup(p => p.GetByIdAsync(id, default))
             .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
 
         var result = await _manager.GetAsync(id);
@@ -58,7 +57,7 @@ public class NftManagerTests
     [Fact]
     public async Task GetAsync_NotFound_ReturnsError()
     {
-        _provider.Setup(p => p.LoadHolonAsync(It.IsAny<Guid>(), default))
+        _holonStore.Setup(p => p.GetByIdAsync(It.IsAny<Guid>(), default))
             .ReturnsAsync(new OASISResult<IHolon> { IsError = true, Message = "Not found" });
 
         var result = await _manager.GetAsync(Guid.NewGuid());
@@ -72,7 +71,7 @@ public class NftManagerTests
         var avatarId = Guid.NewGuid();
         var nft1 = CreateNftMock(Guid.NewGuid(), "A", "NFT", avatarId);
         var nft2 = CreateNftMock(Guid.NewGuid(), "B", "NFT", Guid.NewGuid());
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, default))
+        _holonStore.Setup(p => p.QueryAsync(null, default))
             .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon> { nft1, nft2 } });
 
         var result = await _manager.QueryAsync(new NftQueryRequest { OwnerAvatarId = avatarId });
@@ -85,7 +84,7 @@ public class NftManagerTests
     {
         var nft1 = CreateNftMock(Guid.NewGuid(), "A", "NFT", chainId: "solana");
         var nft2 = CreateNftMock(Guid.NewGuid(), "B", "NFT", chainId: "algorand");
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, default))
+        _holonStore.Setup(p => p.QueryAsync(null, default))
             .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon> { nft1, nft2 } });
 
         var result = await _manager.QueryAsync(new NftQueryRequest { ChainId = "solana" });
@@ -98,7 +97,7 @@ public class NftManagerTests
     {
         var nft = CreateNftMock(Guid.NewGuid(), "NFT", "NFT");
         var holon = CreateNftMock(Guid.NewGuid(), "Doc", "Document");
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, default))
+        _holonStore.Setup(p => p.QueryAsync(null, default))
             .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon> { nft, holon } });
 
         var result = await _manager.QueryAsync(new NftQueryRequest());
@@ -111,15 +110,15 @@ public class NftManagerTests
     {
         var avatarId = Guid.NewGuid();
         var request = new NftMintRequest { Name = "MyNFT", Description = "Desc", ChainId = "solana", WalletId = Guid.NewGuid() };
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), default))
+        _holonStore.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), default))
             .ReturnsAsync(new OASISResult<IHolon> { Result = new Holon { Id = Guid.NewGuid(), AssetType = "NFT" } });
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), default))
+        _blockchainOperationStore.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), default))
             .ReturnsAsync(new OASISResult<IBlockchainOperation> { Result = new BlockchainOperation { OperationType = "Mint" } });
 
         var result = await _manager.MintAsync(request, avatarId);
 
         result.IsError.Should().BeFalse();
-        _provider.Verify(p => p.SaveHolonAsync(It.Is<IHolon>(h => h.AssetType == "NFT" && h.AvatarId == avatarId), default), Times.Once);
+        _holonStore.Verify(p => p.UpsertAsync(It.Is<IHolon>(h => h.AssetType == "NFT" && h.AvatarId == avatarId), default), Times.Once);
     }
 
     [Fact]
@@ -129,11 +128,11 @@ public class NftManagerTests
         var targetId = Guid.NewGuid();
         var nftId = Guid.NewGuid();
         var nft = CreateNftMock(nftId, "NFT", "NFT", avatarId);
-        _provider.Setup(p => p.LoadHolonAsync(nftId, default))
+        _holonStore.Setup(p => p.GetByIdAsync(nftId, default))
             .ReturnsAsync(new OASISResult<IHolon> { Result = nft });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), default))
+        _holonStore.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), default))
             .ReturnsAsync(new OASISResult<IHolon> { Result = nft });
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), default))
+        _blockchainOperationStore.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), default))
             .ReturnsAsync(new OASISResult<IBlockchainOperation> { Result = new BlockchainOperation() });
 
         var result = await _manager.TransferAsync(nftId, new NftTransferRequest { TargetAvatarId = targetId, WalletId = Guid.NewGuid() }, avatarId);
@@ -147,7 +146,7 @@ public class NftManagerTests
     {
         var avatarId = Guid.NewGuid();
         var nft = CreateNftMock(Guid.NewGuid(), "NFT", "NFT", Guid.NewGuid());
-        _provider.Setup(p => p.LoadHolonAsync(nft.Id, default))
+        _holonStore.Setup(p => p.GetByIdAsync(nft.Id, default))
             .ReturnsAsync(new OASISResult<IHolon> { Result = nft });
 
         var result = await _manager.TransferAsync(nft.Id, new NftTransferRequest(), avatarId);
@@ -162,11 +161,11 @@ public class NftManagerTests
         var avatarId = Guid.NewGuid();
         var nft = CreateNftMock(Guid.NewGuid(), "NFT", "NFT", avatarId);
         nft.IsActive = true;
-        _provider.Setup(p => p.LoadHolonAsync(nft.Id, default))
+        _holonStore.Setup(p => p.GetByIdAsync(nft.Id, default))
             .ReturnsAsync(new OASISResult<IHolon> { Result = nft });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), default))
+        _holonStore.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), default))
             .ReturnsAsync(new OASISResult<IHolon> { Result = nft });
-        _provider.Setup(p => p.SaveBlockchainOperationAsync(It.IsAny<IBlockchainOperation>(), default))
+        _blockchainOperationStore.Setup(p => p.UpsertAsync(It.IsAny<IBlockchainOperation>(), default))
             .ReturnsAsync(new OASISResult<IBlockchainOperation> { Result = new BlockchainOperation() });
 
         var result = await _manager.BurnAsync(nft.Id, Guid.NewGuid(), avatarId);
@@ -186,7 +185,7 @@ public class NftManagerTests
             ["image"] = "https://example.com/img.png",
             ["external_url"] = "https://example.com"
         });
-        _provider.Setup(p => p.LoadHolonAsync(nft.Id, default))
+        _holonStore.Setup(p => p.GetByIdAsync(nft.Id, default))
             .ReturnsAsync(new OASISResult<IHolon> { Result = nft });
 
         var result = await _manager.GetMetadataAsync(nft.Id);

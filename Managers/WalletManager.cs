@@ -1,6 +1,7 @@
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
@@ -10,7 +11,8 @@ namespace OASIS.WebAPI.Managers;
 
 public class WalletManager : IWalletManager
 {
-    private readonly ProviderContext _providerContext;
+    private readonly IWalletStore _walletStore;
+    private readonly IHolonStore _holonStore;
     private readonly IBlockchainProviderFactory _chainFactory;
     private readonly WalletKeyService _keyService;
     private readonly IConfiguration _config;
@@ -18,13 +20,15 @@ public class WalletManager : IWalletManager
     private readonly BlockchainConfigurationManager _blockchainConfig;
 
     public WalletManager(
-        ProviderContext providerContext,
+        IWalletStore walletStore,
+        IHolonStore holonStore,
         IBlockchainProviderFactory chainFactory,
         WalletKeyService keyService,
         IConfiguration config,
         IAlgorandFaucet algorandFaucet)
     {
-        _providerContext = providerContext;
+        _walletStore = walletStore;
+        _holonStore = holonStore;
         _chainFactory = chainFactory;
         _keyService = keyService;
         _config = config;
@@ -34,18 +38,12 @@ public class WalletManager : IWalletManager
 
     public async Task<OASISResult<IWallet>> GetAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IWallet> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadWalletAsync(id);
+        return await _walletStore.GetByIdAsync(id, default);
     }
 
     public async Task<OASISResult<IEnumerable<IWallet>>> QueryAsync(WalletQueryRequest query, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IWallet>> { IsError = true, Message = activation.Message };
-
-        var all = await _providerContext.CurrentProvider.LoadAllWalletsAsync();
+        var all = await _walletStore.GetAllAsync(default);
         if (all.IsError || all.Result == null) return all;
 
         var filtered = all.Result.AsEnumerable();
@@ -62,11 +60,8 @@ public class WalletManager : IWalletManager
 
     public async Task<OASISResult<IWallet>> CreateAsync(WalletCreateModel model, Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IWallet> { IsError = true, Message = activation.Message };
-
         // Address uniqueness per chain
-        var all = await _providerContext.CurrentProvider.LoadAllWalletsAsync();
+        var all = await _walletStore.GetAllAsync(default);
         var existing = all.Result?.FirstOrDefault(w =>
             w.Address.Equals(model.Address, StringComparison.OrdinalIgnoreCase) &&
             w.ChainType.Equals(model.ChainType, StringComparison.OrdinalIgnoreCase));
@@ -90,15 +85,12 @@ public class WalletManager : IWalletManager
             await UnsetPreviousDefaultAsync(avatarId, model.ChainType, wallet.Id);
         }
 
-        return await _providerContext.CurrentProvider.SaveWalletAsync(wallet);
+        return await _walletStore.UpsertAsync(wallet, default);
     }
 
     public async Task<OASISResult<IWallet>> UpdateAsync(Guid id, WalletUpdateModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IWallet> { IsError = true, Message = activation.Message };
-
-        var existing = await _providerContext.CurrentProvider.LoadWalletAsync(id);
+        var existing = await _walletStore.GetByIdAsync(id, default);
         if (existing.IsError || existing.Result == null) return existing;
 
         var wallet = (Wallet)existing.Result;
@@ -114,23 +106,17 @@ public class WalletManager : IWalletManager
             wallet.IsDefault = model.IsDefault.Value;
         }
 
-        return await _providerContext.CurrentProvider.SaveWalletAsync(wallet);
+        return await _walletStore.UpsertAsync(wallet, default);
     }
 
     public async Task<OASISResult<bool>> DeleteAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.DeleteWalletAsync(id);
+        return await _walletStore.DeleteAsync(id, default);
     }
 
     public async Task<OASISResult<bool>> SetDefaultAsync(Guid avatarId, Guid walletId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        var walletResult = await _providerContext.CurrentProvider.LoadWalletAsync(walletId);
+        var walletResult = await _walletStore.GetByIdAsync(walletId, default);
         if (walletResult.IsError || walletResult.Result == null)
             return new OASISResult<bool> { IsError = true, Message = "Wallet not found." };
 
@@ -141,7 +127,7 @@ public class WalletManager : IWalletManager
         await UnsetPreviousDefaultAsync(avatarId, wallet.ChainType, walletId);
 
         wallet.IsDefault = true;
-        var saveResult = await _providerContext.CurrentProvider.SaveWalletAsync(wallet);
+        var saveResult = await _walletStore.UpsertAsync(wallet, default);
         if (saveResult.IsError)
             return new OASISResult<bool> { IsError = true, Message = saveResult.Message };
 
@@ -150,17 +136,14 @@ public class WalletManager : IWalletManager
 
     public async Task<OASISResult<PortfolioResult>> GetPortfolioAsync(Guid walletId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<PortfolioResult> { IsError = true, Message = activation.Message };
-
-        var walletResult = await _providerContext.CurrentProvider.LoadWalletAsync(walletId);
+        var walletResult = await _walletStore.GetByIdAsync(walletId, default);
         if (walletResult.IsError || walletResult.Result == null)
             return new OASISResult<PortfolioResult> { IsError = true, Message = "Wallet not found." };
 
         var wallet = walletResult.Result;
 
         // Stub: linked NFT Holons for this avatar
-        var allHolons = await _providerContext.CurrentProvider.LoadAllHolonsAsync();
+        var allHolons = await _holonStore.QueryAsync(null, default);
         var nfts = allHolons.Result?
             .Where(h => h.AvatarId == wallet.AvatarId && h.AssetType == "NFT")
             .Select(h => new NftHolding
@@ -211,15 +194,12 @@ public class WalletManager : IWalletManager
 
     public async Task<OASISResult<IWallet>> GenerateWalletAsync(WalletGenerateRequest model, Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IWallet> { IsError = true, Message = activation.Message };
-
         try
         {
             var (publicKey, privateKeyHex, address, seedPhrase) = _keyService.GenerateKeypair(model.ChainType);
 
             // Check uniqueness
-            var all = await _providerContext.CurrentProvider.LoadAllWalletsAsync();
+            var all = await _walletStore.GetAllAsync(default);
             var existing = all.Result?.FirstOrDefault(w =>
                 w.Address.Equals(address, StringComparison.OrdinalIgnoreCase) &&
                 w.ChainType.Equals(model.ChainType, StringComparison.OrdinalIgnoreCase));
@@ -243,7 +223,7 @@ public class WalletManager : IWalletManager
             if (model.IsDefault)
                 await UnsetPreviousDefaultAsync(avatarId, model.ChainType, wallet.Id);
 
-            return await _providerContext.CurrentProvider.SaveWalletAsync(wallet);
+            return await _walletStore.UpsertAsync(wallet, default);
         }
         catch (NotSupportedException ex)
         {
@@ -255,9 +235,6 @@ public class WalletManager : IWalletManager
 
     public async Task<OASISResult<IWallet>> ConnectWalletAsync(WalletConnectRequest model, Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IWallet> { IsError = true, Message = activation.Message };
-
         if (string.IsNullOrWhiteSpace(model.Address))
             return new OASISResult<IWallet> { IsError = true, Message = "Address is required." };
 
@@ -269,7 +246,7 @@ public class WalletManager : IWalletManager
         }
 
         // Check uniqueness
-        var all = await _providerContext.CurrentProvider.LoadAllWalletsAsync();
+        var all = await _walletStore.GetAllAsync(default);
         var existing = all.Result?.FirstOrDefault(w =>
             w.Address.Equals(model.Address, StringComparison.OrdinalIgnoreCase) &&
             w.ChainType.Equals(model.ChainType, StringComparison.OrdinalIgnoreCase));
@@ -297,17 +274,14 @@ public class WalletManager : IWalletManager
         if (model.IsDefault)
             await UnsetPreviousDefaultAsync(avatarId, model.ChainType, wallet.Id);
 
-        return await _providerContext.CurrentProvider.SaveWalletAsync(wallet);
+        return await _walletStore.UpsertAsync(wallet, default);
     }
 
     // ─── New: Export wallet private key ───
 
     public async Task<OASISResult<WalletExportResult>> ExportWalletAsync(Guid walletId, Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<WalletExportResult> { IsError = true, Message = activation.Message };
-
-        var walletResult = await _providerContext.CurrentProvider.LoadWalletAsync(walletId);
+        var walletResult = await _walletStore.GetByIdAsync(walletId, default);
         if (walletResult.IsError || walletResult.Result == null)
             return new OASISResult<WalletExportResult> { IsError = true, Message = "Wallet not found." };
 
@@ -353,10 +327,7 @@ public class WalletManager : IWalletManager
 
     public async Task<OASISResult<object>> TopUpAsync(Guid walletId, decimal? amount, Guid avatarId, OASISRequest? request = null, string? clientIdempotencyKey = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<object> { IsError = true, Message = activation.Message };
-
-        var walletResult = await _providerContext.CurrentProvider.LoadWalletAsync(walletId);
+        var walletResult = await _walletStore.GetByIdAsync(walletId, default);
         if (walletResult.IsError || walletResult.Result == null)
             return new OASISResult<object> { IsError = true, Message = "Wallet not found." };
 
@@ -441,7 +412,7 @@ public class WalletManager : IWalletManager
 
     private async Task UnsetPreviousDefaultAsync(Guid avatarId, string chainType, Guid exceptWalletId)
     {
-        var all = await _providerContext.CurrentProvider.LoadAllWalletsAsync();
+        var all = await _walletStore.GetAllAsync(default);
         var previous = all.Result?.FirstOrDefault(w =>
             w.AvatarId == avatarId &&
             w.ChainType.Equals(chainType, StringComparison.OrdinalIgnoreCase) &&
@@ -451,7 +422,7 @@ public class WalletManager : IWalletManager
         if (previous != null)
         {
             previous.IsDefault = false;
-            await _providerContext.CurrentProvider.SaveWalletAsync(previous);
+            await _walletStore.UpsertAsync(previous, default);
         }
     }
 }

@@ -1,6 +1,7 @@
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
 
@@ -8,18 +9,28 @@ namespace OASIS.WebAPI.Managers;
 
 public class SearchManager : ISearchManager
 {
-    private readonly ProviderContext _providerContext;
+    private readonly IAvatarStore _avatarStore;
+    private readonly IHolonStore _holonStore;
+    private readonly IWalletStore _walletStore;
+    private readonly IBlockchainOperationStore _blockchainOperationStore;
+    private readonly ISTARStore _starStore;
 
-    public SearchManager(ProviderContext providerContext)
+    public SearchManager(
+        IAvatarStore avatarStore,
+        IHolonStore holonStore,
+        IWalletStore walletStore,
+        IBlockchainOperationStore blockchainOperationStore,
+        ISTARStore starStore)
     {
-        _providerContext = providerContext;
+        _avatarStore = avatarStore;
+        _holonStore = holonStore;
+        _walletStore = walletStore;
+        _blockchainOperationStore = blockchainOperationStore;
+        _starStore = starStore;
     }
 
     public async Task<OASISResult<SearchResult>> SearchAsync(SearchRequest request, OASISRequest? providerRequest = null)
     {
-        var activation = _providerContext.Activate(providerRequest);
-        if (activation.IsError) return new OASISResult<SearchResult> { IsError = true, Message = activation.Message };
-
         // Clamp page size
         var pageSize = Math.Clamp(request.PageSize, 1, 100);
 
@@ -30,7 +41,7 @@ public class SearchManager : ISearchManager
         // ─── Search Avatars ───
         if (request.EntityTypes.HasFlag(SearchableEntityType.Avatar))
         {
-            var avatars = await _providerContext.CurrentProvider.LoadAllAvatarsAsync();
+            var avatars = await _avatarStore.GetAllAsync(default);
             if (!avatars.IsError && avatars.Result != null)
             {
                 var filtered = avatars.Result.Where(a => MatchesAvatar(a, query, request));
@@ -56,7 +67,7 @@ public class SearchManager : ISearchManager
         // ─── Search Holons ───
         if (request.EntityTypes.HasFlag(SearchableEntityType.Holon))
         {
-            var holons = await _providerContext.CurrentProvider.LoadAllHolonsAsync();
+            var holons = await _holonStore.QueryAsync(null, default);
             if (!holons.IsError && holons.Result != null)
             {
                 var filtered = holons.Result.Where(h => MatchesHolon(h, query, request));
@@ -84,8 +95,8 @@ public class SearchManager : ISearchManager
         if (request.EntityTypes.HasFlag(SearchableEntityType.Wallet))
         {
             var walletsResult = request.AvatarId.HasValue
-                ? await _providerContext.CurrentProvider.LoadWalletsByAvatarAsync(request.AvatarId.Value)
-                : await _providerContext.CurrentProvider.LoadAllWalletsAsync();
+                ? await _walletStore.GetByAvatarAsync(request.AvatarId.Value, default)
+                : await _walletStore.GetAllAsync(default);
 
             if (!walletsResult.IsError && walletsResult.Result != null)
             {
@@ -115,19 +126,19 @@ public class SearchManager : ISearchManager
             IEnumerable<IBlockchainOperation> ops;
             if (request.AvatarId.HasValue)
             {
-                var opsResult = await _providerContext.CurrentProvider.LoadBlockchainOperationsByAvatarAsync(request.AvatarId.Value);
+                var opsResult = await _blockchainOperationStore.GetByAvatarAsync(request.AvatarId.Value, default);
                 ops = opsResult.Result ?? Enumerable.Empty<IBlockchainOperation>();
             }
             else
             {
-                // Load all by iterating avatars (provider doesn't expose LoadAllBlockchainOperationsAsync)
+                // Load all by iterating avatars (store doesn't expose a load-all for blockchain operations)
                 var allOps = new List<IBlockchainOperation>();
-                var avatars = await _providerContext.CurrentProvider.LoadAllAvatarsAsync();
+                var avatars = await _avatarStore.GetAllAsync(default);
                 if (!avatars.IsError && avatars.Result != null)
                 {
                     foreach (var avatar in avatars.Result)
                     {
-                        var opsResult = await _providerContext.CurrentProvider.LoadBlockchainOperationsByAvatarAsync(avatar.Id);
+                        var opsResult = await _blockchainOperationStore.GetByAvatarAsync(avatar.Id, default);
                         if (!opsResult.IsError && opsResult.Result != null)
                             allOps.AddRange(opsResult.Result);
                     }
@@ -156,7 +167,7 @@ public class SearchManager : ISearchManager
         // ─── Search STARODKs ───
         if (request.EntityTypes.HasFlag(SearchableEntityType.STARODK))
         {
-            var stars = await _providerContext.CurrentProvider.LoadAllSTARODKsAsync();
+            var stars = await _starStore.GetAllAsync(default);
             if (!stars.IsError && stars.Result != null)
             {
                 var filtered = stars.Result.Where(s => MatchesSTARODK(s, query, request));
@@ -212,24 +223,21 @@ public class SearchManager : ISearchManager
 
     public async Task<OASISResult<List<SearchFacet>>> GetFacetsAsync(OASISRequest? providerRequest = null)
     {
-        var activation = _providerContext.Activate(providerRequest);
-        if (activation.IsError) return new OASISResult<List<SearchFacet>> { IsError = true, Message = activation.Message };
-
         var facets = new List<SearchFacet>();
 
-        var avatars = await _providerContext.CurrentProvider.LoadAllAvatarsAsync();
+        var avatars = await _avatarStore.GetAllAsync(default);
         if (!avatars.IsError && avatars.Result != null)
             facets.Add(new SearchFacet { EntityType = SearchableEntityType.Avatar, Count = avatars.Result.Count(), Label = "Avatars" });
 
-        var holons = await _providerContext.CurrentProvider.LoadAllHolonsAsync();
+        var holons = await _holonStore.QueryAsync(null, default);
         if (!holons.IsError && holons.Result != null)
             facets.Add(new SearchFacet { EntityType = SearchableEntityType.Holon, Count = holons.Result.Count(), Label = "Holons" });
 
-        var wallets = await _providerContext.CurrentProvider.LoadAllWalletsAsync();
+        var wallets = await _walletStore.GetAllAsync(default);
         if (!wallets.IsError && wallets.Result != null)
             facets.Add(new SearchFacet { EntityType = SearchableEntityType.Wallet, Count = wallets.Result.Count(), Label = "Wallets" });
 
-        var stars = await _providerContext.CurrentProvider.LoadAllSTARODKsAsync();
+        var stars = await _starStore.GetAllAsync(default);
         if (!stars.IsError && stars.Result != null)
             facets.Add(new SearchFacet { EntityType = SearchableEntityType.STARODK, Count = stars.Result.Count(), Label = "STAR ODKs" });
 

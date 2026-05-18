@@ -1,8 +1,7 @@
 using FluentAssertions;
-using Microsoft.Extensions.Configuration;
 using Moq;
-using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
@@ -12,25 +11,20 @@ namespace OASIS.WebAPI.Tests;
 
 public class HolonManagerTests
 {
-    private readonly Mock<IOASISStorageProvider> _provider;
-    private readonly ProviderContext _providerContext;
+    private readonly Mock<IHolonStore> _store;
     private readonly HolonManager _manager;
 
     public HolonManagerTests()
     {
-        _provider = new Mock<IOASISStorageProvider>();
-        _provider.Setup(p => p.ProviderName).Returns("InMemory");
-
-        var config = new ConfigurationBuilder().Build();
-        _providerContext = new ProviderContext(new[] { _provider.Object }, config, null);
-        _manager = new HolonManager(_providerContext);
+        _store = new Mock<IHolonStore>();
+        _manager = new HolonManager(_store.Object);
     }
 
     [Fact]
     public async Task CreateAsync_ShouldSetAvatarIdAndSave()
     {
         var holon = new Holon { Id = Guid.NewGuid(), Name = "Test Holon" };
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IHolon h, CancellationToken _) => new OASISResult<IHolon> { Result = h });
 
         var model = new HolonCreateModel { Name = "Test Holon", ProviderName = "InMemory" };
@@ -47,9 +41,9 @@ public class HolonManagerTests
     public async Task UpdateAsync_ShouldApplyPartialChanges()
     {
         var holon = new Holon { Id = Guid.NewGuid(), Name = "Old", Description = "Old Desc", IsActive = true };
-        _provider.Setup(p => p.LoadHolonAsync(holon.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(holon.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IHolon h, CancellationToken _) => new OASISResult<IHolon> { Result = h });
 
         var model = new HolonUpdateModel { Name = "New" };
@@ -69,9 +63,9 @@ public class HolonManagerTests
             PeerHolonIds = new List<Guid>(),
             Metadata = new Dictionary<string, string>()
         };
-        _provider.Setup(p => p.LoadHolonAsync(holon.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(holon.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IHolon h, CancellationToken _) => new OASISResult<IHolon> { Result = h });
 
         var request = new HolonInteractionRequest
@@ -91,7 +85,7 @@ public class HolonManagerTests
     public async Task QueryAsync_WithFilters_ShouldPassQueryToProvider()
     {
         var query = new HolonQueryRequest { Name = "Test", IsActive = true };
-        _provider.Setup(p => p.LoadAllHolonsAsync(query, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(query, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon>() });
 
         var result = await _manager.QueryAsync(query);
@@ -102,7 +96,7 @@ public class HolonManagerTests
     [Fact]
     public async Task DeleteAsync_ShouldReturnProviderResult()
     {
-        _provider.Setup(p => p.DeleteHolonAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.DeleteAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<bool> { Result = true });
 
         var result = await _manager.DeleteAsync(Guid.NewGuid());
@@ -115,7 +109,7 @@ public class HolonManagerTests
     {
         var parentId = Guid.NewGuid();
         var child = new Holon { Id = Guid.NewGuid(), ParentHolonId = parentId, Name = "Child" };
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == parentId), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == parentId), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { child } });
 
         var result = await _manager.GetChildrenAsync(parentId);
@@ -132,9 +126,9 @@ public class HolonManagerTests
         var holon = new Holon { Id = Guid.NewGuid(), PeerHolonIds = new List<Guid> { peerId } };
         var peer = new Holon { Id = peerId, Name = "Peer" };
 
-        _provider.Setup(p => p.LoadHolonAsync(holon.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(holon.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(null, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { peer, new Holon { Id = Guid.NewGuid() } } });
 
         var result = await _manager.GetPeersAsync(holon.Id);
@@ -148,7 +142,7 @@ public class HolonManagerTests
     public async Task GetPeersAsync_NoPeers_ReturnsEmpty()
     {
         var holon = new Holon { Id = Guid.NewGuid(), PeerHolonIds = new List<Guid>() };
-        _provider.Setup(p => p.LoadHolonAsync(holon.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(holon.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
 
         var result = await _manager.GetPeersAsync(holon.Id);
@@ -164,11 +158,11 @@ public class HolonManagerTests
         var parent = new Holon { Id = Guid.NewGuid(), Name = "Parent", ParentHolonId = grandparent.Id };
         var child = new Holon { Id = Guid.NewGuid(), Name = "Child", ParentHolonId = parent.Id };
 
-        _provider.Setup(p => p.LoadHolonAsync(child.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(child.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = child });
-        _provider.Setup(p => p.LoadHolonAsync(parent.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(parent.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = parent });
-        _provider.Setup(p => p.LoadHolonAsync(grandparent.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(grandparent.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = grandparent });
 
         var result = await _manager.GetAncestorsAsync(child.Id);
@@ -185,9 +179,9 @@ public class HolonManagerTests
         var b = new Holon { Id = Guid.NewGuid(), Name = "B", ParentHolonId = a.Id };
         a.ParentHolonId = b.Id; // cycle
 
-        _provider.Setup(p => p.LoadHolonAsync(b.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(b.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = b });
-        _provider.Setup(p => p.LoadHolonAsync(a.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(a.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = a });
 
         var result = await _manager.GetAncestorsAsync(b.Id);
@@ -203,11 +197,11 @@ public class HolonManagerTests
         var child = new Holon { Id = Guid.NewGuid(), Name = "Child", ParentHolonId = root.Id };
         var grandchild = new Holon { Id = Guid.NewGuid(), Name = "Grandchild", ParentHolonId = child.Id };
 
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == root.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == root.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { child } });
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == child.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == child.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { grandchild } });
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == grandchild.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == grandchild.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = Array.Empty<IHolon>() });
 
         var result = await _manager.GetDescendantsAsync(root.Id);
@@ -226,19 +220,19 @@ public class HolonManagerTests
         var child = new Holon { Id = Guid.NewGuid(), Name = "Child", ParentHolonId = root.Id, IsActive = true };
         var grandchild = new Holon { Id = Guid.NewGuid(), Name = "Grandchild", ParentHolonId = child.Id, IsActive = true };
 
-        _provider.Setup(p => p.LoadHolonAsync(root.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(root.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = root });
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == root.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == root.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { child } });
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == child.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == child.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { grandchild } });
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == grandchild.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == grandchild.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = Array.Empty<IHolon>() });
-        _provider.Setup(p => p.LoadHolonAsync(child.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(child.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = child });
-        _provider.Setup(p => p.LoadHolonAsync(grandchild.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(grandchild.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = grandchild });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IHolon h, CancellationToken _) => new OASISResult<IHolon> { Result = h });
 
         var request = new HolonPropagateRequest { Property = "IsActive", Value = false, IncludeSelf = true };
@@ -258,13 +252,13 @@ public class HolonManagerTests
         var child = new Holon { Id = Guid.NewGuid(), Name = "Track1", AssetType = "NFT", ChainId = "algo", IsActive = true, CreatedDate = DateTime.UtcNow.AddDays(-1), Metadata = new Dictionary<string, string> { ["genre"] = "ambient" } };
         var grandchild = new Holon { Id = Guid.NewGuid(), Name = "Stem1", AssetType = "Audio", ChainId = "algo", IsActive = true, CreatedDate = DateTime.UtcNow, Metadata = new Dictionary<string, string> { ["genre"] = "ambient" } };
 
-        _provider.Setup(p => p.LoadHolonAsync(root.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(root.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = root });
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == root.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == root.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { child } });
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == child.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == child.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { grandchild } });
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == grandchild.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == grandchild.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = Array.Empty<IHolon>() });
 
         var result = await _manager.ComposeAsync(root.Id);
@@ -285,9 +279,9 @@ public class HolonManagerTests
     public async Task CloneAsync_ShouldCreateCopyWithoutSubtree()
     {
         var original = new Holon { Id = Guid.NewGuid(), Name = "Original", Description = "Desc", IsActive = true, Metadata = new Dictionary<string, string>(), PeerHolonIds = new List<Guid>() };
-        _provider.Setup(p => p.LoadHolonAsync(original.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(original.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = original });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IHolon h, CancellationToken _) => new OASISResult<IHolon> { Result = h });
 
         var request = new HolonCloneRequest { IncludeSubtree = false };
@@ -305,11 +299,11 @@ public class HolonManagerTests
         var holon = new Holon { Id = Guid.NewGuid(), Name = "Moving", ParentHolonId = Guid.NewGuid() };
         var newParent = Guid.NewGuid();
 
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == holon.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == holon.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = Array.Empty<IHolon>() });
-        _provider.Setup(p => p.LoadHolonAsync(holon.Id, It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.GetByIdAsync(holon.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IHolon> { Result = holon });
-        _provider.Setup(p => p.SaveHolonAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.UpsertAsync(It.IsAny<IHolon>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IHolon h, CancellationToken _) => new OASISResult<IHolon> { Result = h });
 
         var result = await _manager.MoveSubtreeAsync(holon.Id, newParent);
@@ -325,9 +319,9 @@ public class HolonManagerTests
         var a = new Holon { Id = Guid.NewGuid(), Name = "A" };
         var b = new Holon { Id = Guid.NewGuid(), Name = "B", ParentHolonId = a.Id };
 
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == a.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == a.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { b } });
-        _provider.Setup(p => p.LoadAllHolonsAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == b.Id), It.IsAny<CancellationToken>()))
+        _store.Setup(p => p.QueryAsync(It.Is<HolonQueryRequest>(q => q.ParentHolonId == b.Id), It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = Array.Empty<IHolon>() });
 
         var result = await _manager.MoveSubtreeAsync(a.Id, b.Id);

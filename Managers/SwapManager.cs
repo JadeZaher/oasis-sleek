@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Caching.Memory;
 using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
@@ -22,18 +23,21 @@ namespace OASIS.WebAPI.Managers;
 public class SwapManager : ISwapManager
 {
     private readonly IReadOnlyDictionary<string, IDexAdapter> _adapters;
+    private readonly IMemoryCache _cache;
     private readonly ILogger<SwapManager> _logger;
 
-    // In-memory quote cache keyed by QuoteId (valid for ~2 min). Cross-cutting
-    // across chains, so it stays here rather than in any single adapter.
-    private static readonly Dictionary<string, CachedQuote> _quoteCache = new();
-    private static readonly object _cacheLock = new();
+    // Quote cache entries are valid for ~2 min after insert (absolute expiration),
+    // matching the prior static-Dictionary behavior. IMemoryCache is thread-safe;
+    // no external lock is needed. SizeLimit + per-entry Size=1 enforced in Program.cs
+    // via AddMemoryCache(o => o.SizeLimit = …).
+    private static readonly TimeSpan QuoteCacheDuration = TimeSpan.FromMinutes(2);
 
-    public SwapManager(IEnumerable<IDexAdapter> adapters, ILogger<SwapManager> logger)
+    public SwapManager(IEnumerable<IDexAdapter> adapters, IMemoryCache cache, ILogger<SwapManager> logger)
     {
         // Resolve adapters by chain, case-insensitive (mirrors the chain switch
         // that used request.Chain.ToLowerInvariant()).
         _adapters = adapters.ToDictionary(a => a.Chain, StringComparer.OrdinalIgnoreCase);
+        _cache = cache;
         _logger = logger;
     }
 
@@ -103,46 +107,36 @@ public class SwapManager : ISwapManager
         }
     }
 
-    // ─── Quote Cache (simple in-memory, for bridging quote → execute) ───
+    // ─── Quote Cache (IMemoryCache, thread-safe, bounded via SizeLimit in DI) ───
 
-    private static void CacheQuote(string quoteId, string chain, string rawPayload)
+    private void CacheQuote(string quoteId, string chain, string rawPayload)
     {
-        lock (_cacheLock)
-        {
-            _quoteCache[quoteId] = new CachedQuote
-            {
-                Chain = chain,
-                RawPayload = rawPayload,
-                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
-            };
+        var cacheKey = QuoteCacheKey(quoteId);
+        var entry = new CachedQuote { Chain = chain, RawPayload = rawPayload };
 
-            // Cleanup expired entries
-            var expired = _quoteCache.Where(kv => kv.Value.ExpiresAt < DateTime.UtcNow)
-                .Select(kv => kv.Key).ToList();
-            foreach (var key in expired)
-                _quoteCache.Remove(key);
-        }
+        using var cacheEntry = _cache.CreateEntry(cacheKey);
+        cacheEntry.Value = entry;
+        cacheEntry.Size = 1;
+        cacheEntry.AbsoluteExpirationRelativeToNow = QuoteCacheDuration;
     }
 
-    private static bool TryGetCachedQuote(string quoteId, out string rawPayload)
+    private bool TryGetCachedQuote(string quoteId, out string rawPayload)
     {
-        lock (_cacheLock)
+        if (_cache.TryGetValue(QuoteCacheKey(quoteId), out CachedQuote? cached) && cached is not null)
         {
-            if (_quoteCache.TryGetValue(quoteId, out var cached) && cached.ExpiresAt > DateTime.UtcNow)
-            {
-                rawPayload = cached.RawPayload;
-                return true;
-            }
-            rawPayload = "";
-            return false;
+            rawPayload = cached.RawPayload;
+            return true;
         }
+        rawPayload = "";
+        return false;
     }
+
+    private static string QuoteCacheKey(string quoteId) => $"swap:quote:{quoteId}";
 
     private sealed class CachedQuote
     {
         public string Chain { get; set; } = "";
         public string RawPayload { get; set; } = "";
-        public DateTime ExpiresAt { get; set; }
     }
 
     // ─── Result helpers ───

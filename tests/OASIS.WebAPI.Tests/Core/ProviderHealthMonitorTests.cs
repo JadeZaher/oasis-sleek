@@ -56,64 +56,10 @@ public class ProviderHealthMonitorTests
         scores["EfStorage"].IsHealthy.Should().BeTrue();
     }
 
-    [Fact]
-    public void SelectBestProvider_HealthScore_ShouldPickHighest()
-    {
-        _monitor.RecordSuccess("A", 100);
-        _monitor.RecordSuccess("A", 100);
-        _monitor.RecordSuccess("B", 10);
-        _monitor.RecordSuccess("B", 10);
-        _monitor.RecordSuccess("B", 10);
-
-        var best = _monitor.SelectBestProvider(DynamicProviderMode.HealthScore);
-        best.Should().Be("B"); // B has lower latency, higher score
-    }
-
-    [Fact]
-    public void SelectBestProvider_LowestLatency_ShouldPickFastest()
-    {
-        _monitor.RecordSuccess("Slow", 500);
-        _monitor.RecordSuccess("Fast", 10);
-
-        var best = _monitor.SelectBestProvider(DynamicProviderMode.LowestLatency);
-        best.Should().Be("Fast");
-    }
-
-    [Fact]
-    public void SelectBestProvider_RoundRobin_ShouldCycle()
-    {
-        _monitor.RecordSuccess("A", 10);
-        _monitor.RecordSuccess("B", 10);
-
-        var first = _monitor.SelectBestProvider(DynamicProviderMode.RoundRobin);
-        var second = _monitor.SelectBestProvider(DynamicProviderMode.RoundRobin);
-        var third = _monitor.SelectBestProvider(DynamicProviderMode.RoundRobin);
-
-        first.Should().BeOneOf("A", "B");
-        second.Should().BeOneOf("A", "B");
-        third.Should().Be(first); // cycles back
-    }
-
-    [Fact]
-    public void SelectBestProvider_Unhealthy_ShouldBeExcluded()
-    {
-        _monitor.RecordSuccess("Healthy", 10);
-        for (int i = 0; i < 5; i++)
-            _monitor.RecordFailure("Unhealthy");
-
-        var best = _monitor.SelectBestProvider(DynamicProviderMode.HealthScore);
-        best.Should().Be("Healthy");
-    }
-
-    [Fact]
-    public void SelectBestProvider_AllUnhealthy_ShouldFallbackToAny()
-    {
-        for (int i = 0; i < 5; i++)
-            _monitor.RecordFailure("A");
-
-        var best = _monitor.SelectBestProvider(DynamicProviderMode.HealthScore);
-        best.Should().Be("A"); // fallback to any provider
-    }
+    // Deleted in Mission B: the five SelectBestProvider_* tests. Provider
+    // selection (DynamicProviderMode + strategies) was removed — single-provider
+    // reality. The monitor is retained only to feed /health via GetScores();
+    // the record/score/mark coverage below is the meaningful surface.
 
     [Fact]
     public void MarkUnhealthy_ShouldSetIsHealthyFalse()

@@ -1,6 +1,7 @@
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Idempotency;
 using OASIS.WebAPI.Models.Requests;
@@ -10,25 +11,22 @@ namespace OASIS.WebAPI.Managers;
 
 public class BlockchainOperationManager : IBlockchainOperationManager
 {
-    private readonly ProviderContext _providerContext;
+    private readonly IBlockchainOperationStore _blockchainOperationStore;
     private readonly IBlockchainProviderFactory _chainFactory;
     private readonly IIdempotencyStore _idempotencyStore;
 
     public BlockchainOperationManager(
-        ProviderContext providerContext,
+        IBlockchainOperationStore blockchainOperationStore,
         IBlockchainProviderFactory chainFactory,
         IIdempotencyStore idempotencyStore)
     {
-        _providerContext = providerContext;
+        _blockchainOperationStore = blockchainOperationStore;
         _chainFactory = chainFactory;
         _idempotencyStore = idempotencyStore;
     }
 
     public async Task<OASISResult<IBlockchainOperation>> ExecuteAsync(IBlockchainOperation operation, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IBlockchainOperation> { IsError = true, Message = activation.Message };
-
         var chainType = operation.Parameters.GetValueOrDefault("ChainType", _chainFactory.GetDefaultProvider().ChainType);
         var networkStr = operation.Parameters.GetValueOrDefault("ChainNetwork", "Devnet");
         var network = Enum.TryParse<ChainNetwork>(networkStr, true, out var parsed) ? parsed : ChainNetwork.Devnet;
@@ -54,7 +52,7 @@ public class BlockchainOperationManager : IBlockchainOperationManager
 
         // We won the claim: persist the operation row, then perform the effect
         // exactly once.
-        var result = await _providerContext.CurrentProvider.SaveBlockchainOperationAsync(operation);
+        var result = await _blockchainOperationStore.UpsertAsync(operation, default);
         if (result.IsError)
         {
             await _idempotencyStore.FailAsync(idempotencyKey, result.Message, CancellationToken.None);
@@ -107,7 +105,7 @@ public class BlockchainOperationManager : IBlockchainOperationManager
             operation.CompletedDate = DateTime.UtcNow;
         }
 
-        var saved = await _providerContext.CurrentProvider.SaveBlockchainOperationAsync(operation);
+        var saved = await _blockchainOperationStore.UpsertAsync(operation, default);
 
         // Settle the idempotency record from the terminal operation state.
         // NOTE: an "AwaitingSignature" op has NOT been broadcast server-side
@@ -298,18 +296,12 @@ public class BlockchainOperationManager : IBlockchainOperationManager
 
     public async Task<OASISResult<IBlockchainOperation>> GetAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IBlockchainOperation> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadBlockchainOperationAsync(id);
+        return await _blockchainOperationStore.GetByIdAsync(id, default);
     }
 
     public async Task<OASISResult<IEnumerable<IBlockchainOperation>>> GetByAvatarAsync(Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IBlockchainOperation>> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadBlockchainOperationsByAvatarAsync(avatarId);
+        return await _blockchainOperationStore.GetByAvatarAsync(avatarId, default);
     }
 
     private async Task ExecuteMintAsync(IBlockchainOperation operation, IBlockchainProvider chainProvider)

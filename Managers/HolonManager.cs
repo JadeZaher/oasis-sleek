@@ -1,6 +1,7 @@
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
@@ -9,34 +10,25 @@ namespace OASIS.WebAPI.Managers;
 
 public class HolonManager : IHolonManager
 {
-    private readonly ProviderContext _providerContext;
+    private readonly IHolonStore _holonStore;
 
-    public HolonManager(ProviderContext providerContext)
+    public HolonManager(IHolonStore holonStore)
     {
-        _providerContext = providerContext;
+        _holonStore = holonStore;
     }
 
     public async Task<OASISResult<IHolon>> GetAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IHolon> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadHolonAsync(id);
+        return await _holonStore.GetByIdAsync(id, default);
     }
 
     public async Task<OASISResult<IEnumerable<IHolon>>> GetAllAsync(OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IHolon>> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadAllHolonsAsync();
+        return await _holonStore.QueryAsync(null, default);
     }
 
     public async Task<OASISResult<IHolon>> CreateAsync(HolonCreateModel model, Guid avatarId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IHolon> { IsError = true, Message = activation.Message };
-
         var holon = new Holon
         {
             Name = model.Name,
@@ -51,15 +43,12 @@ public class HolonManager : IHolonManager
             PeerHolonIds = model.PeerHolonIds
         };
 
-        return await _providerContext.CurrentProvider.SaveHolonAsync(holon);
+        return await _holonStore.UpsertAsync(holon, default);
     }
 
     public async Task<OASISResult<IHolon>> UpdateAsync(Guid id, HolonUpdateModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IHolon> { IsError = true, Message = activation.Message };
-
-        var existing = await _providerContext.CurrentProvider.LoadHolonAsync(id);
+        var existing = await _holonStore.GetByIdAsync(id, default);
         if (existing.IsError || existing.Result == null) return existing;
 
         var holon = (Holon)existing.Result;
@@ -79,32 +68,23 @@ public class HolonManager : IHolonManager
         if (model.IsActive.HasValue) holon.IsActive = model.IsActive.Value;
         holon.ModifiedDate = DateTime.UtcNow;
 
-        return await _providerContext.CurrentProvider.SaveHolonAsync(holon);
+        return await _holonStore.UpsertAsync(holon, default);
     }
 
     public async Task<OASISResult<bool>> DeleteAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.DeleteHolonAsync(id);
+        return await _holonStore.DeleteAsync(id, default);
     }
 
     public async Task<OASISResult<IEnumerable<IHolon>>> QueryAsync(HolonQueryRequest query, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IHolon>> { IsError = true, Message = activation.Message };
-
-        var result = await _providerContext.CurrentProvider.LoadAllHolonsAsync(query);
+        var result = await _holonStore.QueryAsync(query, default);
         return result;
     }
 
     public async Task<OASISResult<IHolon>> InteractAsync(Guid id, HolonInteractionRequest request, OASISRequest? providerRequest = null)
     {
-        var activation = _providerContext.Activate(providerRequest);
-        if (activation.IsError) return new OASISResult<IHolon> { IsError = true, Message = activation.Message };
-
-        var existing = await _providerContext.CurrentProvider.LoadHolonAsync(id);
+        var existing = await _holonStore.GetByIdAsync(id, default);
         if (existing.IsError || existing.Result == null) return existing;
 
         var holon = (Holon)existing.Result;
@@ -136,30 +116,24 @@ public class HolonManager : IHolonManager
         }
 
         holon.ModifiedDate = DateTime.UtcNow;
-        return await _providerContext.CurrentProvider.SaveHolonAsync(holon);
+        return await _holonStore.UpsertAsync(holon, default);
     }
 
     public async Task<OASISResult<IEnumerable<IHolon>>> GetChildrenAsync(Guid parentId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IHolon>> { IsError = true, Message = activation.Message };
-
         var query = new HolonQueryRequest { ParentHolonId = parentId };
-        return await _providerContext.CurrentProvider.LoadAllHolonsAsync(query);
+        return await _holonStore.QueryAsync(query, default);
     }
 
     public async Task<OASISResult<IEnumerable<IHolon>>> GetPeersAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IHolon>> { IsError = true, Message = activation.Message };
-
-        var existing = await _providerContext.CurrentProvider.LoadHolonAsync(id);
+        var existing = await _holonStore.GetByIdAsync(id, default);
         if (existing.IsError || existing.Result == null) return new OASISResult<IEnumerable<IHolon>> { IsError = true, Message = existing.Message };
 
         var peerIds = existing.Result.PeerHolonIds;
         if (!peerIds.Any()) return new OASISResult<IEnumerable<IHolon>> { Result = Array.Empty<IHolon>(), Message = "No peers." };
 
-        var all = await _providerContext.CurrentProvider.LoadAllHolonsAsync();
+        var all = await _holonStore.QueryAsync(null, default);
         var peers = all.Result?.Where(h => peerIds.Contains(h.Id)).ToList() ?? new List<IHolon>();
 
         return new OASISResult<IEnumerable<IHolon>> { Result = peers, Message = $"Found {peers.Count} peers." };
@@ -167,23 +141,20 @@ public class HolonManager : IHolonManager
 
     public async Task<OASISResult<IEnumerable<IHolon>>> GetAncestorsAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IHolon>> { IsError = true, Message = activation.Message };
-
         var ancestors = new List<IHolon>();
         var currentId = id;
         var visited = new HashSet<Guid> { id };
 
         while (true)
         {
-            var result = await _providerContext.CurrentProvider.LoadHolonAsync(currentId);
+            var result = await _holonStore.GetByIdAsync(currentId, default);
             if (result.IsError || result.Result == null) break;
 
             var parentId = result.Result.ParentHolonId;
             if (!parentId.HasValue) break;
             if (!visited.Add(parentId.Value)) break; // cycle guard
 
-            var parentResult = await _providerContext.CurrentProvider.LoadHolonAsync(parentId.Value);
+            var parentResult = await _holonStore.GetByIdAsync(parentId.Value, default);
             if (parentResult.IsError || parentResult.Result == null) break;
 
             ancestors.Add(parentResult.Result);
@@ -195,9 +166,6 @@ public class HolonManager : IHolonManager
 
     public async Task<OASISResult<IEnumerable<IHolon>>> GetDescendantsAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IHolon>> { IsError = true, Message = activation.Message };
-
         var descendants = new List<IHolon>();
         var queue = new Queue<Guid>();
         queue.Enqueue(id);
@@ -206,7 +174,7 @@ public class HolonManager : IHolonManager
         while (queue.Count > 0)
         {
             var current = queue.Dequeue();
-            var all = await _providerContext.CurrentProvider.LoadAllHolonsAsync(new HolonQueryRequest { ParentHolonId = current });
+            var all = await _holonStore.QueryAsync(new HolonQueryRequest { ParentHolonId = current }, default);
             var children = all.Result?.ToList() ?? new List<IHolon>();
 
             foreach (var child in children)
@@ -228,10 +196,6 @@ public class HolonManager : IHolonManager
 
     public async Task<OASISResult<int>> PropagateAsync(Guid id, HolonPropagateRequest request, OASISRequest? providerRequest = null)
     {
-        var activation = _providerContext.Activate(providerRequest);
-        if (activation.IsError) return new OASISResult<int> { IsError = true, Message = activation.Message };
-
-        var provider = _providerContext.CurrentProvider;
         var count = 0;
         var queue = new Queue<Guid>();
         var visited = new HashSet<Guid>();
@@ -244,7 +208,7 @@ public class HolonManager : IHolonManager
         else
         {
             // Start with children only
-            var childrenResult = await provider.LoadAllHolonsAsync(new HolonQueryRequest { ParentHolonId = id });
+            var childrenResult = await _holonStore.QueryAsync(new HolonQueryRequest { ParentHolonId = id }, default);
             foreach (var child in childrenResult.Result ?? Enumerable.Empty<IHolon>())
             {
                 if (visited.Add(child.Id))
@@ -255,7 +219,7 @@ public class HolonManager : IHolonManager
         while (queue.Count > 0)
         {
             var currentId = queue.Dequeue();
-            var holonResult = await provider.LoadHolonAsync(currentId);
+            var holonResult = await _holonStore.GetByIdAsync(currentId, default);
             if (holonResult.IsError || holonResult.Result == null) continue;
 
             var holon = (Holon)holonResult.Result;
@@ -266,10 +230,10 @@ public class HolonManager : IHolonManager
                 holon.Metadata[$"propagated_{request.Property}"] = request.Value.ToString().ToLowerInvariant();
 
             holon.ModifiedDate = DateTime.UtcNow;
-            await provider.SaveHolonAsync(holon);
+            await _holonStore.UpsertAsync(holon, default);
             count++;
 
-            var childrenResult = await provider.LoadAllHolonsAsync(new HolonQueryRequest { ParentHolonId = currentId });
+            var childrenResult = await _holonStore.QueryAsync(new HolonQueryRequest { ParentHolonId = currentId }, default);
             foreach (var child in childrenResult.Result ?? Enumerable.Empty<IHolon>())
             {
                 if (visited.Add(child.Id))
@@ -282,11 +246,7 @@ public class HolonManager : IHolonManager
 
     public async Task<OASISResult<HolonComposition>> ComposeAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<HolonComposition> { IsError = true, Message = activation.Message };
-
-        var provider = _providerContext.CurrentProvider;
-        var rootResult = await provider.LoadHolonAsync(id);
+        var rootResult = await _holonStore.GetByIdAsync(id, default);
         if (rootResult.IsError || rootResult.Result == null)
             return new OASISResult<HolonComposition> { IsError = true, Message = "Holon not found." };
 
@@ -304,7 +264,7 @@ public class HolonManager : IHolonManager
             var currentDepth = depthMap[currentId];
             maxDepth = Math.Max(maxDepth, currentDepth);
 
-            var childrenResult = await provider.LoadAllHolonsAsync(new HolonQueryRequest { ParentHolonId = currentId });
+            var childrenResult = await _holonStore.QueryAsync(new HolonQueryRequest { ParentHolonId = currentId }, default);
             var children = childrenResult.Result?.ToList() ?? new List<IHolon>();
 
             foreach (var child in children)
@@ -326,7 +286,7 @@ public class HolonManager : IHolonManager
         {
             SourceHolonId = root.Id,
             SourceHolonName = root.Name,
-            ChildCount = (await provider.LoadAllHolonsAsync(new HolonQueryRequest { ParentHolonId = id })).Result?.Count() ?? 0,
+            ChildCount = (await _holonStore.QueryAsync(new HolonQueryRequest { ParentHolonId = id }, default)).Result?.Count() ?? 0,
             TotalDescendantCount = allDescendants.Count,
             Depth = maxDepth,
             AssetTypes = allInSubtree.Where(h => !string.IsNullOrEmpty(h.AssetType)).Select(h => h.AssetType!).Distinct().ToList(),
@@ -342,11 +302,7 @@ public class HolonManager : IHolonManager
 
     public async Task<OASISResult<IHolon>> CloneAsync(Guid id, HolonCloneRequest request, Guid avatarId, OASISRequest? providerRequest = null)
     {
-        var activation = _providerContext.Activate(providerRequest);
-        if (activation.IsError) return new OASISResult<IHolon> { IsError = true, Message = activation.Message };
-
-        var provider = _providerContext.CurrentProvider;
-        var originalResult = await provider.LoadHolonAsync(id);
+        var originalResult = await _holonStore.GetByIdAsync(id, default);
         if (originalResult.IsError || originalResult.Result == null)
             return new OASISResult<IHolon> { IsError = true, Message = "Holon not found." };
 
@@ -371,7 +327,7 @@ public class HolonManager : IHolonManager
         };
 
         idMap[original.Id] = clone.Id;
-        await provider.SaveHolonAsync(clone);
+        await _holonStore.UpsertAsync(clone, default);
 
         if (request.IncludeSubtree)
         {
@@ -383,7 +339,7 @@ public class HolonManager : IHolonManager
             while (queue.Count > 0)
             {
                 var currentOriginalId = queue.Dequeue();
-                var childrenResult = await provider.LoadAllHolonsAsync(new HolonQueryRequest { ParentHolonId = currentOriginalId });
+                var childrenResult = await _holonStore.QueryAsync(new HolonQueryRequest { ParentHolonId = currentOriginalId }, default);
                 var children = childrenResult.Result?.ToList() ?? new List<IHolon>();
 
                 foreach (var child in children)
@@ -407,7 +363,7 @@ public class HolonManager : IHolonManager
                     };
 
                     idMap[child.Id] = childClone.Id;
-                    await provider.SaveHolonAsync(childClone);
+                    await _holonStore.UpsertAsync(childClone, default);
                     queue.Enqueue(child.Id);
                 }
             }
@@ -418,17 +374,12 @@ public class HolonManager : IHolonManager
 
     public async Task<OASISResult<bool>> MoveSubtreeAsync(Guid id, Guid newParentId, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        var provider = _providerContext.CurrentProvider;
-
         // Prevent moving a holon under its own descendant (would create a cycle)
         var descendantsResult = await GetDescendantsAsync(id, request);
         if (descendantsResult.Result?.Any(d => d.Id == newParentId) == true)
             return new OASISResult<bool> { IsError = true, Message = "Cannot move a holon under its own descendant." };
 
-        var holonResult = await provider.LoadHolonAsync(id);
+        var holonResult = await _holonStore.GetByIdAsync(id, default);
         if (holonResult.IsError || holonResult.Result == null)
             return new OASISResult<bool> { IsError = true, Message = "Holon not found." };
 
@@ -436,7 +387,7 @@ public class HolonManager : IHolonManager
         holon.ParentHolonId = newParentId;
         holon.ModifiedDate = DateTime.UtcNow;
 
-        var saveResult = await provider.SaveHolonAsync(holon);
+        var saveResult = await _holonStore.UpsertAsync(holon, default);
         if (saveResult.IsError)
             return new OASISResult<bool> { IsError = true, Message = saveResult.Message };
 

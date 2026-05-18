@@ -2,6 +2,7 @@ using System.Text.Json;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
@@ -10,35 +11,26 @@ namespace OASIS.WebAPI.Managers;
 
 public class STARManager : ISTARManager
 {
-    private readonly ProviderContext _providerContext;
+    private readonly ISTARStore _starStore;
 
-    public STARManager(ProviderContext providerContext)
+    public STARManager(ISTARStore starStore)
     {
-        _providerContext = providerContext;
+        _starStore = starStore;
     }
 
     public async Task<OASISResult<ISTARODK>> GetAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<ISTARODK> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadSTARODKAsync(id);
+        return await _starStore.GetByIdAsync(id, default);
     }
 
     public async Task<OASISResult<IEnumerable<ISTARODK>>> GetAllAsync(OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<ISTARODK>> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadAllSTARODKsAsync();
+        return await _starStore.GetAllAsync(default);
     }
 
     public async Task<OASISResult<ISTARODK>> CreateOrUpdateAsync(STARODKCreateModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<ISTARODK> { IsError = true, Message = activation.Message };
-
-        var existing = await _providerContext.CurrentProvider.LoadAllSTARODKsAsync();
+        var existing = await _starStore.GetAllAsync(default);
         var match = existing.Result?.FirstOrDefault(s => s.Name.Equals(model.Name, StringComparison.OrdinalIgnoreCase));
 
         var odk = match as STARODK ?? new STARODK();
@@ -48,23 +40,17 @@ public class STARManager : ISTARManager
         odk.AvatarId = model.AvatarId;
         odk.ModifiedDate = DateTime.UtcNow;
 
-        return await _providerContext.CurrentProvider.SaveSTARODKAsync(odk);
+        return await _starStore.UpsertAsync(odk, default);
     }
 
     public async Task<OASISResult<bool>> DeleteAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.DeleteSTARODKAsync(id);
+        return await _starStore.DeleteAsync(id, default);
     }
 
     public async Task<OASISResult<ISTARODK>> GenerateAsync(Guid id, STARDappGenerationRequest request, OASISRequest? providerRequest = null)
     {
-        var activation = _providerContext.Activate(providerRequest);
-        if (activation.IsError) return new OASISResult<ISTARODK> { IsError = true, Message = activation.Message };
-
-        var existing = await _providerContext.CurrentProvider.LoadSTARODKAsync(id);
+        var existing = await _starStore.GetByIdAsync(id, default);
         if (existing.IsError || existing.Result == null) return existing;
 
         var odk = (STARODK)existing.Result;
@@ -73,15 +59,12 @@ public class STARManager : ISTARManager
         odk.GeneratedCode = GenerateDappCode(odk, request);
         odk.ModifiedDate = DateTime.UtcNow;
 
-        return await _providerContext.CurrentProvider.SaveSTARODKAsync(odk);
+        return await _starStore.UpsertAsync(odk, default);
     }
 
     public async Task<OASISResult<ISTARODK>> DeployAsync(Guid id, OASISRequest? providerRequest = null)
     {
-        var activation = _providerContext.Activate(providerRequest);
-        if (activation.IsError) return new OASISResult<ISTARODK> { IsError = true, Message = activation.Message };
-
-        var existing = await _providerContext.CurrentProvider.LoadSTARODKAsync(id);
+        var existing = await _starStore.GetByIdAsync(id, default);
         if (existing.IsError || existing.Result == null) return existing;
 
         var odk = (STARODK)existing.Result;
@@ -97,7 +80,7 @@ public class STARManager : ISTARManager
         });
         odk.ModifiedDate = DateTime.UtcNow;
 
-        return await _providerContext.CurrentProvider.SaveSTARODKAsync(odk);
+        return await _starStore.UpsertAsync(odk, default);
     }
 
     private static string GenerateDappCode(ISTARODK odk, STARDappGenerationRequest request)

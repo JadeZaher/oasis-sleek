@@ -5,6 +5,7 @@ using System.IdentityModel.Tokens.Jwt;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
@@ -13,22 +14,19 @@ namespace OASIS.WebAPI.Managers;
 
 public class AvatarManager : IAvatarManager
 {
-    private readonly ProviderContext _providerContext;
+    private readonly IAvatarStore _avatarStore;
     private readonly IConfiguration _config;
 
-    public AvatarManager(ProviderContext providerContext, IConfiguration config)
+    public AvatarManager(IAvatarStore avatarStore, IConfiguration config)
     {
-        _providerContext = providerContext;
+        _avatarStore = avatarStore;
         _config = config;
     }
 
     public async Task<OASISResult<IAvatar>> RegisterAsync(AvatarRegisterModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IAvatar> { IsError = true, Message = activation.Message };
-
         // Check for duplicate email
-        var allAvatars = await _providerContext.CurrentProvider.LoadAllAvatarsAsync();
+        var allAvatars = await _avatarStore.GetAllAsync(default);
         if (allAvatars.Result?.Any(a => a.Email.Equals(model.Email, StringComparison.OrdinalIgnoreCase)) == true)
             return new OASISResult<IAvatar> { IsError = true, Message = "An account with this email already exists." };
 
@@ -46,15 +44,12 @@ public class AvatarManager : IAvatarManager
             LastName = model.LastName
         };
 
-        return await _providerContext.CurrentProvider.SaveAvatarAsync(avatar);
+        return await _avatarStore.UpsertAsync(avatar, default);
     }
 
     public async Task<OASISResult<string>> LoginAsync(AvatarLoginModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<string> { IsError = true, Message = activation.Message };
-
-        var all = await _providerContext.CurrentProvider.LoadAllAvatarsAsync();
+        var all = await _avatarStore.GetAllAsync(default);
         var avatar = all.Result?.FirstOrDefault(a => a.Email.Equals(model.Email, StringComparison.OrdinalIgnoreCase));
 
         if (avatar == null || !BCrypt.Net.BCrypt.Verify(model.Password, avatar.PasswordHash))
@@ -66,26 +61,17 @@ public class AvatarManager : IAvatarManager
 
     public async Task<OASISResult<IAvatar>> GetAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IAvatar> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadAvatarAsync(id);
+        return await _avatarStore.GetByIdAsync(id, default);
     }
 
     public async Task<OASISResult<IEnumerable<IAvatar>>> GetAllAsync(OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IEnumerable<IAvatar>> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.LoadAllAvatarsAsync();
+        return await _avatarStore.GetAllAsync(default);
     }
 
     public async Task<OASISResult<IAvatar>> UpdateAsync(Guid id, AvatarUpdateModel model, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<IAvatar> { IsError = true, Message = activation.Message };
-
-        var existing = await _providerContext.CurrentProvider.LoadAvatarAsync(id);
+        var existing = await _avatarStore.GetByIdAsync(id, default);
         if (existing.IsError || existing.Result == null) return existing;
 
         var avatar = existing.Result;
@@ -96,15 +82,12 @@ public class AvatarManager : IAvatarManager
         if (model.LastName != null) avatar.LastName = model.LastName;
         if (model.IsActive.HasValue) avatar.IsActive = model.IsActive.Value;
 
-        return await _providerContext.CurrentProvider.SaveAvatarAsync(avatar);
+        return await _avatarStore.UpsertAsync(avatar, default);
     }
 
     public async Task<OASISResult<bool>> DeleteAsync(Guid id, OASISRequest? request = null)
     {
-        var activation = _providerContext.Activate(request);
-        if (activation.IsError) return new OASISResult<bool> { IsError = true, Message = activation.Message };
-
-        return await _providerContext.CurrentProvider.DeleteAvatarAsync(id);
+        return await _avatarStore.DeleteAsync(id, default);
     }
 
     private string GenerateJwt(IAvatar avatar)

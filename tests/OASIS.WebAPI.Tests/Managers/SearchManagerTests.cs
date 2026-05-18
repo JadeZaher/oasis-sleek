@@ -2,6 +2,7 @@ using FluentAssertions;
 using Moq;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
@@ -11,29 +12,39 @@ namespace OASIS.WebAPI.Tests.Managers;
 
 public class SearchManagerTests
 {
-    private readonly Mock<IOASISStorageProvider> _provider;
+    private readonly Mock<IAvatarStore> _avatarStore;
+    private readonly Mock<IHolonStore> _holonStore;
+    private readonly Mock<IWalletStore> _walletStore;
+    private readonly Mock<IBlockchainOperationStore> _blockchainOperationStore;
+    private readonly Mock<ISTARStore> _starStore;
     private readonly SearchManager _manager;
 
     public SearchManagerTests()
     {
-        _provider = new Mock<IOASISStorageProvider>();
-        _provider.Setup(p => p.ProviderName).Returns("Test");
-        var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build();
-        var realContext = new ProviderContext(new[] { _provider.Object }, config);
-        _manager = new SearchManager(realContext);
+        _avatarStore = new Mock<IAvatarStore>();
+        _holonStore = new Mock<IHolonStore>();
+        _walletStore = new Mock<IWalletStore>();
+        _blockchainOperationStore = new Mock<IBlockchainOperationStore>();
+        _starStore = new Mock<ISTARStore>();
+        _manager = new SearchManager(
+            _avatarStore.Object,
+            _holonStore.Object,
+            _walletStore.Object,
+            _blockchainOperationStore.Object,
+            _starStore.Object);
     }
 
     [Fact]
     public async Task SearchAsync_ReturnsHitsFromAvatars()
     {
         var avatar = new Avatar { Id = Guid.NewGuid(), Username = "neo", Email = "neo@matrix.com", CreatedDate = DateTime.UtcNow };
-        _provider.Setup(p => p.LoadAllAvatarsAsync(default))
+        _avatarStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IAvatar>> { Result = new List<IAvatar> { avatar } });
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, default))
+        _holonStore.Setup(p => p.QueryAsync(null, default))
             .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon>() });
-        _provider.Setup(p => p.LoadAllWalletsAsync(default))
+        _walletStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new List<IWallet>() });
-        _provider.Setup(p => p.LoadAllSTARODKsAsync(default))
+        _starStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<ISTARODK>> { Result = new List<ISTARODK>() });
 
         var result = await _manager.SearchAsync(new SearchRequest { Query = "neo", EntityTypes = SearchableEntityType.Avatar });
@@ -48,13 +59,13 @@ public class SearchManagerTests
     public async Task SearchAsync_ReturnsHitsFromHolons()
     {
         var holon = new Holon { Id = Guid.NewGuid(), Name = "WorldHolon", Description = "A world", AssetType = "World", CreatedDate = DateTime.UtcNow };
-        _provider.Setup(p => p.LoadAllAvatarsAsync(default))
+        _avatarStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IAvatar>> { Result = new List<IAvatar>() });
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, default))
+        _holonStore.Setup(p => p.QueryAsync(null, default))
             .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon> { holon } });
-        _provider.Setup(p => p.LoadAllWalletsAsync(default))
+        _walletStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new List<IWallet>() });
-        _provider.Setup(p => p.LoadAllSTARODKsAsync(default))
+        _starStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<ISTARODK>> { Result = new List<ISTARODK>() });
 
         var result = await _manager.SearchAsync(new SearchRequest { Query = "world", EntityTypes = SearchableEntityType.Holon });
@@ -68,13 +79,13 @@ public class SearchManagerTests
     public async Task SearchAsync_CaseInsensitiveQuery()
     {
         var avatar = new Avatar { Id = Guid.NewGuid(), Username = "Neo", Email = "neo@matrix.com", CreatedDate = DateTime.UtcNow };
-        _provider.Setup(p => p.LoadAllAvatarsAsync(default))
+        _avatarStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IAvatar>> { Result = new List<IAvatar> { avatar } });
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, default))
+        _holonStore.Setup(p => p.QueryAsync(null, default))
             .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon>() });
-        _provider.Setup(p => p.LoadAllWalletsAsync(default))
+        _walletStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new List<IWallet>() });
-        _provider.Setup(p => p.LoadAllSTARODKsAsync(default))
+        _starStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<ISTARODK>> { Result = new List<ISTARODK>() });
 
         var result = await _manager.SearchAsync(new SearchRequest { Query = "NEO", EntityTypes = SearchableEntityType.Avatar });
@@ -93,13 +104,13 @@ public class SearchManagerTests
             CreatedDate = DateTime.UtcNow
         }).Cast<IAvatar>().ToList();
 
-        _provider.Setup(p => p.LoadAllAvatarsAsync(default))
+        _avatarStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IAvatar>> { Result = avatars });
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, default))
+        _holonStore.Setup(p => p.QueryAsync(null, default))
             .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon>() });
-        _provider.Setup(p => p.LoadAllWalletsAsync(default))
+        _walletStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new List<IWallet>() });
-        _provider.Setup(p => p.LoadAllSTARODKsAsync(default))
+        _starStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<ISTARODK>> { Result = new List<ISTARODK>() });
 
         var result = await _manager.SearchAsync(new SearchRequest { Query = "user", EntityTypes = SearchableEntityType.Avatar, Page = 1, PageSize = 3 });
@@ -119,13 +130,13 @@ public class SearchManagerTests
             new Avatar { Id = Guid.NewGuid(), Username = "bob", Email = "b@x.com", CreatedDate = DateTime.UtcNow }
         };
 
-        _provider.Setup(p => p.LoadAllAvatarsAsync(default))
+        _avatarStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IAvatar>> { Result = avatars });
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, default))
+        _holonStore.Setup(p => p.QueryAsync(null, default))
             .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon>() });
-        _provider.Setup(p => p.LoadAllWalletsAsync(default))
+        _walletStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new List<IWallet>() });
-        _provider.Setup(p => p.LoadAllSTARODKsAsync(default))
+        _starStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<ISTARODK>> { Result = new List<ISTARODK>() });
 
         var result = await _manager.SearchAsync(new SearchRequest { Query = "", EntityTypes = SearchableEntityType.Avatar });
@@ -138,13 +149,13 @@ public class SearchManagerTests
     {
         var nftHolon = new Holon { Id = Guid.NewGuid(), Name = "NFT1", AssetType = "NFT", CreatedDate = DateTime.UtcNow };
         var docHolon = new Holon { Id = Guid.NewGuid(), Name = "Doc1", AssetType = "Document", CreatedDate = DateTime.UtcNow };
-        _provider.Setup(p => p.LoadAllAvatarsAsync(default))
+        _avatarStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IAvatar>> { Result = new List<IAvatar>() });
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, default))
+        _holonStore.Setup(p => p.QueryAsync(null, default))
             .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon> { nftHolon, docHolon } });
-        _provider.Setup(p => p.LoadAllWalletsAsync(default))
+        _walletStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new List<IWallet>() });
-        _provider.Setup(p => p.LoadAllSTARODKsAsync(default))
+        _starStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<ISTARODK>> { Result = new List<ISTARODK>() });
 
         var result = await _manager.SearchAsync(new SearchRequest { Query = "", EntityTypes = SearchableEntityType.Holon, AssetType = "NFT" });
@@ -155,13 +166,13 @@ public class SearchManagerTests
     [Fact]
     public async Task GetFacetsAsync_ReturnsAllEntityCounts()
     {
-        _provider.Setup(p => p.LoadAllAvatarsAsync(default))
+        _avatarStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IAvatar>> { Result = new List<IAvatar> { new Avatar() } });
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, default))
+        _holonStore.Setup(p => p.QueryAsync(null, default))
             .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new List<IHolon> { new Holon(), new Holon() } });
-        _provider.Setup(p => p.LoadAllWalletsAsync(default))
+        _walletStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new List<IWallet> { new Wallet() } });
-        _provider.Setup(p => p.LoadAllSTARODKsAsync(default))
+        _starStore.Setup(p => p.GetAllAsync(default))
             .ReturnsAsync(new OASISResult<IEnumerable<ISTARODK>> { Result = new List<ISTARODK>() });
 
         var result = await _manager.GetFacetsAsync();

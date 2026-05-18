@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Moq;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Requests;
@@ -12,8 +13,8 @@ namespace OASIS.WebAPI.Tests;
 
 public class WalletManagerTests
 {
-    private readonly Mock<IOASISStorageProvider> _provider;
-    private readonly ProviderContext _providerContext;
+    private readonly Mock<IWalletStore> _walletStore;
+    private readonly Mock<IHolonStore> _holonStore;
     private readonly WalletManager _manager;
     private readonly WalletKeyService _keyService;
     private readonly Mock<IAlgorandFaucet> _algorandFaucet;
@@ -21,8 +22,8 @@ public class WalletManagerTests
 
     public WalletManagerTests()
     {
-        _provider = new Mock<IOASISStorageProvider>();
-        _provider.Setup(p => p.ProviderName).Returns("InMemory");
+        _walletStore = new Mock<IWalletStore>();
+        _holonStore = new Mock<IHolonStore>();
 
         _config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -32,19 +33,18 @@ public class WalletManagerTests
                 ["Blockchain:Faucet:DefaultAmount"] = "5"
             })
             .Build();
-        _providerContext = new ProviderContext(new[] { _provider.Object }, _config, null);
         var chainFactory = new Mock<IBlockchainProviderFactory>();
         _keyService = new WalletKeyService(_config);
         _algorandFaucet = new Mock<IAlgorandFaucet>();
-        _manager = new WalletManager(_providerContext, chainFactory.Object, _keyService, _config, _algorandFaucet.Object);
+        _manager = new WalletManager(_walletStore.Object, _holonStore.Object, chainFactory.Object, _keyService, _config, _algorandFaucet.Object);
     }
 
     [Fact]
     public async Task CreateAsync_ShouldSetAvatarIdAndSave()
     {
-        _provider.Setup(p => p.LoadAllWalletsAsync(It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetAllAsync(It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = Array.Empty<IWallet>() });
-        _provider.Setup(p => p.SaveWalletAsync(It.IsAny<IWallet>(), It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.UpsertAsync(It.IsAny<IWallet>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IWallet w, CancellationToken _) => new OASISResult<IWallet> { Result = w });
 
         var model = new WalletCreateModel { ChainType = "Solana", Address = "addr1", IsDefault = false };
@@ -61,7 +61,7 @@ public class WalletManagerTests
     public async Task CreateAsync_DuplicateAddressPerChain_ReturnsError()
     {
         var existing = new Wallet { Id = Guid.NewGuid(), ChainType = "Solana", Address = "addr1" };
-        _provider.Setup(p => p.LoadAllWalletsAsync(It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetAllAsync(It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new[] { existing } });
 
         var model = new WalletCreateModel { ChainType = "Solana", Address = "addr1" };
@@ -75,25 +75,25 @@ public class WalletManagerTests
     public async Task CreateAsync_WithDefault_ShouldUnsetPreviousDefault()
     {
         var prev = new Wallet { Id = Guid.NewGuid(), AvatarId = Guid.NewGuid(), ChainType = "Solana", Address = "old", IsDefault = true };
-        _provider.Setup(p => p.LoadAllWalletsAsync(It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetAllAsync(It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new[] { prev } });
-        _provider.Setup(p => p.SaveWalletAsync(It.IsAny<IWallet>(), It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.UpsertAsync(It.IsAny<IWallet>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IWallet w, CancellationToken _) => new OASISResult<IWallet> { Result = w });
 
         var model = new WalletCreateModel { ChainType = "Solana", Address = "new", IsDefault = true };
         var result = await _manager.CreateAsync(model, prev.AvatarId);
 
         result.IsError.Should().BeFalse();
-        _provider.Verify(p => p.SaveWalletAsync(It.Is<IWallet>(w => w.Id == prev.Id && !w.IsDefault), It.IsAny<CancellationToken>()), Times.Once);
+        _walletStore.Verify(p => p.UpsertAsync(It.Is<IWallet>(w => w.Id == prev.Id && !w.IsDefault), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
     public async Task UpdateAsync_ShouldApplyPartialChanges()
     {
         var wallet = new Wallet { Id = Guid.NewGuid(), AvatarId = Guid.NewGuid(), ChainType = "Solana", Address = "addr", Label = "Old", IsDefault = false };
-        _provider.Setup(p => p.LoadWalletAsync(wallet.Id, It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetByIdAsync(wallet.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IWallet> { Result = wallet });
-        _provider.Setup(p => p.SaveWalletAsync(It.IsAny<IWallet>(), It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.UpsertAsync(It.IsAny<IWallet>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IWallet w, CancellationToken _) => new OASISResult<IWallet> { Result = w });
 
         var result = await _manager.UpdateAsync(wallet.Id, new WalletUpdateModel { Label = "New" });
@@ -110,11 +110,11 @@ public class WalletManagerTests
         var prev = new Wallet { Id = Guid.NewGuid(), AvatarId = avatarId, ChainType = "Solana", Address = "old", IsDefault = true };
         var current = new Wallet { Id = Guid.NewGuid(), AvatarId = avatarId, ChainType = "Solana", Address = "new", IsDefault = false };
 
-        _provider.Setup(p => p.LoadWalletAsync(current.Id, It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetByIdAsync(current.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IWallet> { Result = current });
-        _provider.Setup(p => p.LoadAllWalletsAsync(It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetAllAsync(It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new[] { prev } });
-        _provider.Setup(p => p.SaveWalletAsync(It.IsAny<IWallet>(), It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.UpsertAsync(It.IsAny<IWallet>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((IWallet w, CancellationToken _) => new OASISResult<IWallet> { Result = w });
 
         var result = await _manager.SetDefaultAsync(avatarId, current.Id);
@@ -122,14 +122,14 @@ public class WalletManagerTests
         result.IsError.Should().BeFalse();
         result.Result.Should().BeTrue();
         current.IsDefault.Should().BeTrue();
-        _provider.Verify(p => p.SaveWalletAsync(It.Is<IWallet>(w => w.Id == prev.Id && !w.IsDefault), It.IsAny<CancellationToken>()), Times.Once);
+        _walletStore.Verify(p => p.UpsertAsync(It.Is<IWallet>(w => w.Id == prev.Id && !w.IsDefault), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
     public async Task SetDefaultAsync_WrongAvatar_ReturnsError()
     {
         var wallet = new Wallet { Id = Guid.NewGuid(), AvatarId = Guid.NewGuid(), ChainType = "Solana", Address = "addr" };
-        _provider.Setup(p => p.LoadWalletAsync(wallet.Id, It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetByIdAsync(wallet.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IWallet> { Result = wallet });
 
         var result = await _manager.SetDefaultAsync(Guid.NewGuid(), wallet.Id);
@@ -145,9 +145,9 @@ public class WalletManagerTests
         var wallet = new Wallet { Id = Guid.NewGuid(), AvatarId = avatarId, ChainType = "Solana", Address = "addr1" };
         var nft = new Holon { Id = Guid.NewGuid(), AvatarId = avatarId, AssetType = "NFT", Name = "MyNFT", TokenId = "123", Metadata = new Dictionary<string, string> { ["image"] = "ipfs://img" } };
 
-        _provider.Setup(p => p.LoadWalletAsync(wallet.Id, It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetByIdAsync(wallet.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IWallet> { Result = wallet });
-        _provider.Setup(p => p.LoadAllHolonsAsync(null, It.IsAny<CancellationToken>()))
+        _holonStore.Setup(p => p.QueryAsync(null, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IHolon>> { Result = new[] { nft } });
 
         var result = await _manager.GetPortfolioAsync(wallet.Id);
@@ -165,7 +165,7 @@ public class WalletManagerTests
         var w1 = new Wallet { Id = Guid.NewGuid(), AvatarId = Guid.NewGuid(), ChainType = "Solana", IsDefault = true };
         var w2 = new Wallet { Id = Guid.NewGuid(), AvatarId = w1.AvatarId, ChainType = "Algorand", IsDefault = false };
 
-        _provider.Setup(p => p.LoadAllWalletsAsync(It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetAllAsync(It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IEnumerable<IWallet>> { Result = new[] { w1, w2 } });
 
         var result = await _manager.QueryAsync(new WalletQueryRequest { AvatarId = w1.AvatarId, IsDefault = true });
@@ -186,7 +186,7 @@ public class WalletManagerTests
             Address = "RECIPIENTADDRESSALGORAND234567ABCDEFGHIJKLMNOPQRSTUVWXYZ23",
             WalletType = WalletType.Platform
         };
-        _provider.Setup(p => p.LoadWalletAsync(wallet.Id, It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetByIdAsync(wallet.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IWallet> { Result = wallet });
         return wallet;
     }
@@ -195,7 +195,7 @@ public class WalletManagerTests
     public async Task TopUpAsync_WalletNotFound_ReturnsError()
     {
         var id = Guid.NewGuid();
-        _provider.Setup(p => p.LoadWalletAsync(id, It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetByIdAsync(id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IWallet> { IsError = true, Result = null });
 
         var result = await _manager.TopUpAsync(id, null, Guid.NewGuid());
@@ -226,7 +226,7 @@ public class WalletManagerTests
             })
             .Build();
         var chainFactory = new Mock<IBlockchainProviderFactory>();
-        var manager = new WalletManager(_providerContext, chainFactory.Object,
+        var manager = new WalletManager(_walletStore.Object, _holonStore.Object, chainFactory.Object,
             new WalletKeyService(mainnetConfig), mainnetConfig, _algorandFaucet.Object);
 
         var avatarId = Guid.NewGuid();
@@ -299,7 +299,7 @@ public class WalletManagerTests
             Address = "SoLaNaAddr1111111111111111111111111111111111",
             WalletType = WalletType.Platform
         };
-        _provider.Setup(p => p.LoadWalletAsync(wallet.Id, It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetByIdAsync(wallet.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IWallet> { Result = wallet });
 
         var result = await _manager.TopUpAsync(wallet.Id, 1m, avatarId);
@@ -320,7 +320,7 @@ public class WalletManagerTests
             Address = "0xabc",
             WalletType = WalletType.Platform
         };
-        _provider.Setup(p => p.LoadWalletAsync(wallet.Id, It.IsAny<CancellationToken>()))
+        _walletStore.Setup(p => p.GetByIdAsync(wallet.Id, It.IsAny<CancellationToken>()))
                  .ReturnsAsync(new OASISResult<IWallet> { Result = wallet });
 
         var result = await _manager.TopUpAsync(wallet.Id, 1m, avatarId);

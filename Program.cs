@@ -252,6 +252,16 @@ builder.Services.AddScoped<IQuestStore, EfQuestStore>();
 builder.Services.AddScoped<INftStore, EfNftStore>();
 builder.Services.AddScoped<IBridgeStore, EfBridgeStore>();
 
+// <quest-temporal-fork-model>
+// Per-attempt runtime stores for QuestRun + QuestNodeExecution. InMemory is
+// the default during the transition window; the SurrealDB-backed adapter
+// arrives with surrealdb-migration tasks 9–10 (see SURREAL-SCHEMA-HINTS.md).
+// Singleton is appropriate for InMemory (process-lifetime state); EF stubs
+// (EfQuestRunStore/EfQuestNodeExecutionStore) are [Obsolete] and not wired.
+builder.Services.AddSingleton<IQuestRunStore, InMemoryQuestRunStore>();
+builder.Services.AddSingleton<IQuestNodeExecutionStore, InMemoryQuestNodeExecutionStore>();
+// </quest-temporal-fork-model>
+
 // SwapManager's quote cache is now an injected, bounded IMemoryCache (was a
 // process-static dictionary). SizeLimit is required because every cache write
 // sets per-entry Size=1; without a limit the SetSize call throws.

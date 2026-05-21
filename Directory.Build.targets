@@ -1,0 +1,32 @@
+<Project>
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       Directory.Build.targets — imported AFTER the project file and AFTER
+       the SDK glob expansion. This is the right place to remove items that
+       the SDK glob would otherwise sweep into the build.
+
+       OASIS.WebAPI.csproj sits at the repo root and uses Microsoft.NET.Sdk.Web,
+       whose default `Compile` glob is `**/*.cs` rooted at the project
+       directory. That sweeps in:
+         - packages/Oasis.SurrealDb.*/** (Phase 1 of surrealdb-client-package)
+         - tests/Oasis.SurrealDb.*Tests/** (Phase 1 of surrealdb-client-package)
+         - tests/** (already removed inside OASIS.WebAPI.csproj)
+         - analyzers/** (already removed inside OASIS.WebAPI.csproj)
+
+       Without removing packages/** here, CS0579 duplicate-attribute errors
+       fire when each package's auto-generated AssemblyInfo collides with
+       OASIS.WebAPI's own. The existing per-project Remove for tests/** and
+       analyzers/** runs in the .csproj; we move the new exclusions here so
+       Phase 1 does not need to edit OASIS.WebAPI.csproj (A5 owns that file
+       and only touches it in Phase 6).
+
+       The condition is anchored on the project file name so the exclusion
+       only fires for the root WebAPI project; packages and their tests
+       still pick up their own sources unconditionally.
+       ═══════════════════════════════════════════════════════════════════════ -->
+  <ItemGroup Condition="'$(MSBuildProjectFile)' == 'OASIS.WebAPI.csproj'">
+    <Compile Remove="packages/**/*.cs" />
+    <Content Remove="packages/**" />
+    <None Remove="packages/**" />
+    <EmbeddedResource Remove="packages/**" />
+  </ItemGroup>
+</Project>

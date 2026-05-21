@@ -70,15 +70,23 @@ public enum QuestNodeType
 }
 
 /// <summary>
-/// Execution state of a QuestNode.
+/// Execution state of a per-(run, node) execution row (<see cref="QuestNodeExecution"/>).
+/// Lives on <see cref="QuestNodeExecution.State"/>; the duplicate <see cref="QuestNode.State"/>
+/// definition-side field is being retired by the quest-temporal-fork-model track.
 /// </summary>
+/// <remarks>
+/// Preserve order: existing rows persisted as <c>(int)QuestNodeState</c> rely on it.
+/// <c>Cancelled</c> was added by quest-temporal-fork-model for the
+/// fork-cancels-parent-in-flight-nodes semantic (see ADR §2.3).
+/// </remarks>
 public enum QuestNodeState
 {
     Pending,
     Running,
     Succeeded,
     Failed,
-    Skipped
+    Skipped,
+    Cancelled
 }
 
 /// <summary>

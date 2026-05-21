@@ -18,12 +18,28 @@ public class QuestNode
     /// </summary>
     public string Config { get; set; } = "{}";
 
+    /// <summary>
+    /// Per-node runtime state. Moved to <see cref="QuestNodeExecution.State"/>
+    /// by the quest-temporal-fork-model track (per-(run, node) keyed). Kept
+    /// here only until QuestManager (B2's task 10–13) writes to QuestNodeExecution
+    /// instead. See ADR §2.2.
+    /// </summary>
+    [Obsolete("Moved to QuestNodeExecution.State by quest-temporal-fork-model — see ADR §2.2")]
     public QuestNodeState State { get; set; } = QuestNodeState.Pending;
 
     /// <summary>
     /// Serialized OASISResult&lt;T&gt; from the manager call.
+    /// Moved to <see cref="QuestNodeExecution.Output"/> by the
+    /// quest-temporal-fork-model track. See ADR §2.2.
     /// </summary>
+    [Obsolete("Moved to QuestNodeExecution.Output by quest-temporal-fork-model — see ADR §2.2")]
     public string? Output { get; set; }
+
+    /// <summary>
+    /// Per-node failure message. Moved to <see cref="QuestNodeExecution.Error"/>
+    /// by the quest-temporal-fork-model track. See ADR §2.2.
+    /// </summary>
+    [Obsolete("Moved to QuestNodeExecution.Error by quest-temporal-fork-model — see ADR §2.2")]
     public string? Error { get; set; }
 
     /// <summary>

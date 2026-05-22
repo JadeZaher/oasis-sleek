@@ -35,11 +35,35 @@ public sealed class RecordIdJsonConverter : JsonConverter<RecordId>
                 if (reader.TokenType != JsonTokenType.PropertyName) continue;
                 var prop = reader.GetString();
                 reader.Read();
+                // MEDIUM #M5: previously the converter called reader.GetString()
+                // on whatever token followed the property name. If the value was
+                // a non-string token (StartObject / Number / Bool / Null), the
+                // reader state diverged silently — GetString throws on the wrong
+                // token, but more subtly, downstream parsing would skip the
+                // wrong number of tokens. Gate by token type explicitly so
+                // shape violations surface with a descriptive error.
                 switch (prop)
                 {
-                    case "tb": case "table": tb = reader.GetString(); break;
-                    case "id":               id = reader.GetString(); break;
-                    default: reader.Skip(); break;
+                    case "tb":
+                    case "table":
+                        if (reader.TokenType != JsonTokenType.String)
+                        {
+                            throw new JsonException(
+                                $"RecordId object form expects '{prop}' to be a string but got {reader.TokenType}.");
+                        }
+                        tb = reader.GetString();
+                        break;
+                    case "id":
+                        if (reader.TokenType != JsonTokenType.String)
+                        {
+                            throw new JsonException(
+                                $"RecordId object form expects '{prop}' to be a string but got {reader.TokenType}.");
+                        }
+                        id = reader.GetString();
+                        break;
+                    default:
+                        reader.Skip();
+                        break;
                 }
             }
             if (string.IsNullOrEmpty(tb) || string.IsNullOrEmpty(id))

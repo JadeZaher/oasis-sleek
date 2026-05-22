@@ -1,8 +1,6 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Text.Json;
 using Oasis.SurrealDb.Client.Json;
 
@@ -43,17 +41,12 @@ public sealed class SurrealResponse : IReadOnlyList<SurrealStatementResult>
         return FromJsonDocument(doc.RootElement, opts);
     }
 
-    /// <summary>
-    /// Parse a SurrealDB HTTP <c>/sql</c> response stream directly (no full
-    /// string materialisation for large payloads).
-    /// </summary>
-    public static SurrealResponse FromStream(Stream stream, JsonSerializerOptions? options = null)
-    {
-        if (stream is null) throw new ArgumentNullException(nameof(stream));
-        var opts = options ?? SurrealJsonOptions.Default;
-        using var doc = JsonDocument.Parse(stream);
-        return FromJsonDocument(doc.RootElement, opts);
-    }
+    // LOW #L5: FromStream was unused dead code (HttpSurrealConnection reads
+    // the response body to a string before parsing — there was no streaming
+    // call site anywhere in the package or its integration tests). Removed
+    // to shrink the API surface; if streaming becomes a requirement later,
+    // restore the method together with the corresponding
+    // HttpCompletionOption.ResponseHeadersRead path in the transport.
 
     private static SurrealResponse FromJsonDocument(JsonElement root, JsonSerializerOptions opts)
     {

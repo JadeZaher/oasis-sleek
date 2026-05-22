@@ -29,11 +29,14 @@ public sealed class SurrealConnectionOptions
     public string Database { get; set; } = "oasis";
 
     /// <summary>Basic-auth user. Optional — if both User and Password are
-    /// empty, no Authorization header is sent (root anonymous dev mode).</summary>
-    public string User { get; set; } = "root";
+    /// empty, no Authorization header is sent (root anonymous dev mode).
+    /// MEDIUM #M6: defaults are intentionally empty so that consumers who do
+    /// not configure auth get the documented no-header behaviour rather than
+    /// hard-coded root/root credentials being sent on the wire.</summary>
+    public string User { get; set; } = string.Empty;
 
     /// <summary>Basic-auth password. See <see cref="User"/>.</summary>
-    public string Password { get; set; } = "root";
+    public string Password { get; set; } = string.Empty;
 
     /// <summary>
     /// Maximum simultaneous in-flight HTTP requests against a single

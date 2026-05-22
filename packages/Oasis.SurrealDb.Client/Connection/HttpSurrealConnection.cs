@@ -281,7 +281,10 @@ public sealed class HttpSurrealConnection : ISurrealConnection
             }
         }
 
-        req.Content = new StringContent(sql, Encoding.UTF8, "application/json");
+        // LOW #L1: the body is raw SurrealQL, not JSON. Surreal v1.5.4 accepts
+        // text/plain on /sql (verified by the LiveHttpRoundTripTests live
+        // round-trip in the IntegrationTests project).
+        req.Content = new StringContent(sql, Encoding.UTF8, "text/plain");
         return req;
     }
 
@@ -289,14 +292,24 @@ public sealed class HttpSurrealConnection : ISurrealConnection
     {
         // Exponential backoff with ± jitter ratio.
         var baseMs   = _options.BaseRetryDelay.TotalMilliseconds * Math.Pow(2, attempt);
-        var jitter   = (_random.NextDouble() * 2 - 1) * _options.JitterRatio; // [-ratio, +ratio]
+        var jitter   = (GetRandom().NextDouble() * 2 - 1) * _options.JitterRatio; // [-ratio, +ratio]
         var totalMs  = Math.Max(0, baseMs * (1 + jitter));
         await Task.Delay(TimeSpan.FromMilliseconds(totalMs), ct).ConfigureAwait(false);
     }
 
-    // System.Random is not thread-safe pre-net6; for net8 it is, but we keep
-    // the field-scoped one and rely on attempt count being small (<= 5).
-    private readonly Random _random = new();
+    // LOW #L2: System.Random is NOT thread-safe on netstandard2.0. Concurrent
+    // callers hitting DelayWithJitterAsync on a shared HttpSurrealConnection
+    // (e.g. via the connection pool) could mutate the internal state racily
+    // and observe correlated / zero NextDouble outcomes. Use Random.Shared on
+    // net8.0 (built-in thread-safe singleton) and a [ThreadStatic] fallback
+    // on netstandard2.0 so every calling thread gets its own instance.
+#if NET8_0_OR_GREATER
+    private static Random GetRandom() => Random.Shared;
+#else
+    [ThreadStatic]
+    private static Random? _threadRandom;
+    private static Random GetRandom() => _threadRandom ??= new Random();
+#endif
 
     private static string Truncate(string s) =>
         s.Length <= 512 ? s : s.Substring(0, 512) + "...[truncated]";

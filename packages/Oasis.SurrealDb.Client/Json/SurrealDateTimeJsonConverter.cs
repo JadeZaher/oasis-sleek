@@ -52,13 +52,21 @@ public sealed class SurrealDateTimeJsonConverter : JsonConverter<DateTime>
 
     public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
     {
-        // Force UTC so the K format specifier emits 'Z' (not a numeric offset).
-        var utc = value.Kind switch
+        // MEDIUM #M1: silently relabelling Kind=Unspecified as UTC produced
+        // offset-sized drift (server-local time was being stamped with Z),
+        // which corrupted the lexicographic ordering SurrealDB <datetime>
+        // ASSERT clauses rely on. Reject the ambiguous case up-front; callers
+        // MUST normalise to UTC explicitly before serialisation.
+        if (value.Kind == DateTimeKind.Unspecified)
         {
-            DateTimeKind.Unspecified => DateTime.SpecifyKind(value, DateTimeKind.Utc),
-            DateTimeKind.Local       => value.ToUniversalTime(),
-            _                        => value,
-        };
+            throw new JsonException(
+                "Refusing to serialize DateTime with Kind=Unspecified — convert to UTC explicitly before passing to SurrealDB to avoid silent timezone drift.");
+        }
+
+        // Force UTC so the K format specifier emits 'Z' (not a numeric offset).
+        var utc = value.Kind == DateTimeKind.Local
+            ? value.ToUniversalTime()
+            : value;
         writer.WriteStringValue(utc.ToString(WireFormat, CultureInfo.InvariantCulture));
     }
 }

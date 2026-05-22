@@ -237,7 +237,7 @@ namespace Oasis.SurrealDb.Schema.Mermaid
 
                 bool isKey = false;
                 ctx.SkipInlineSpaces();
-                int keyStart = ctx.Position;
+                var keyStartSp = ctx.Save();
                 var keyTok = ctx.TryReadIdentifier();
                 if (keyTok != null && (keyTok == "PK" || keyTok == "FK" || keyTok == "UK"))
                 {
@@ -246,7 +246,7 @@ namespace Oasis.SurrealDb.Schema.Mermaid
                 else if (keyTok != null)
                 {
                     // Not a key flag -- rewind so the optional comment scan can claim it.
-                    ctx.Rewind(keyStart);
+                    ctx.Restore(keyStartSp);
                 }
 
                 string? comment = null;
@@ -401,9 +401,15 @@ namespace Oasis.SurrealDb.Schema.Mermaid
                 else { Column++; }
             }
 
+            // LOW #L3: O(N) per call, so chained-rewind hot paths inside the
+            // parser were O(N^2) across the file. The Savepoint-based
+            // Save/Restore variants below stash Line/Column alongside Position
+            // so internal callers restore in constant time; this method is
+            // kept as a compat shim for any external code that still calls it
+            // by raw position (it always re-scans from 0 to recompute
+            // Line/Column).
             public void Rewind(int targetPosition)
             {
-                // Re-scan from the start to keep Line/Column accurate.
                 Line = 1; Column = 1;
                 for (int i = 0; i < targetPosition; i++)
                 {
@@ -411,6 +417,37 @@ namespace Oasis.SurrealDb.Schema.Mermaid
                     else { Column++; }
                 }
                 Position = targetPosition;
+            }
+
+            /// <summary>
+            /// Capture a constant-time-restorable snapshot of the cursor
+            /// (position + line + column). Pair with <see cref="Restore"/> to
+            /// walk back over speculative reads without re-scanning the
+            /// source from offset 0.
+            /// </summary>
+            public Savepoint Save() => new Savepoint(Position, Line, Column);
+
+            /// <summary>
+            /// Restore a previously captured <see cref="Savepoint"/> in O(1).
+            /// </summary>
+            public void Restore(Savepoint sp)
+            {
+                Position = sp.Position;
+                Line = sp.Line;
+                Column = sp.Column;
+            }
+
+            public readonly struct Savepoint
+            {
+                public Savepoint(int position, int line, int column)
+                {
+                    Position = position;
+                    Line = line;
+                    Column = column;
+                }
+                public int Position { get; }
+                public int Line { get; }
+                public int Column { get; }
             }
 
             public void SkipInlineSpaces()
@@ -435,7 +472,7 @@ namespace Oasis.SurrealDb.Schema.Mermaid
                 int start = Position;
                 while (!IsEnd)
                 {
-                    int saved = Position;
+                    var saved = Save();
                     SkipInlineSpaces();
                     if (IsEnd) break;
                     char c = Source[Position];
@@ -443,15 +480,15 @@ namespace Oasis.SurrealDb.Schema.Mermaid
                     if (c == '%' && PeekAt(1) == '%')
                     {
                         // Could be an annotation. Peek for the `@surreal.` marker.
-                        if (LooksLikeAnnotation(saved))
+                        if (LooksLikeAnnotation(saved.Position))
                         {
-                            Rewind(saved);
+                            Restore(saved);
                             return Position != start;
                         }
                         ConsumeRestOfLine();
                         continue;
                     }
-                    Rewind(saved);
+                    Restore(saved);
                     break;
                 }
                 return Position != start;
@@ -461,22 +498,22 @@ namespace Oasis.SurrealDb.Schema.Mermaid
             {
                 while (!IsEnd)
                 {
-                    int saved = Position;
+                    var saved = Save();
                     SkipInlineSpaces();
                     if (IsEnd) break;
                     char c = Source[Position];
                     if (c == '\n' || c == '\r') { Advance(); continue; }
                     if (c == '%' && PeekAt(1) == '%')
                     {
-                        if (allowAnnotationCollection && LooksLikeAnnotation(saved))
+                        if (allowAnnotationCollection && LooksLikeAnnotation(saved.Position))
                         {
-                            Rewind(saved);
+                            Restore(saved);
                             return;
                         }
                         ConsumeRestOfLine();
                         continue;
                     }
-                    Rewind(saved);
+                    Restore(saved);
                     break;
                 }
             }
@@ -498,20 +535,18 @@ namespace Oasis.SurrealDb.Schema.Mermaid
             public bool TryCollectAnnotation(out MermaidAnnotation annotation)
             {
                 annotation = null!;
-                int saved = Position;
-                int savedLine = Line, savedCol = Column;
+                var saved = Save();
                 SkipInlineSpaces();
-                if (IsEnd || Peek() != '%' || PeekAt(1) != '%') { Rewind(saved); return false; }
+                if (IsEnd || Peek() != '%' || PeekAt(1) != '%') { Restore(saved); return false; }
                 Advance(); Advance();
                 SkipInlineSpaces();
-                if (Peek() != '@') { Rewind(saved); return false; }
+                if (Peek() != '@') { Restore(saved); return false; }
 
-                int markerStart = Position;
                 int markerLine = Line, markerCol = Column;
                 // Read '@surreal.<directive>'
                 if (!StartsWithAtPosition("@surreal."))
                 {
-                    Rewind(saved);
+                    Restore(saved);
                     return false;
                 }
                 Position += "@surreal.".Length;
@@ -665,19 +700,18 @@ namespace Oasis.SurrealDb.Schema.Mermaid
 
             public bool TryReadKeyword(string kw)
             {
-                int saved = Position;
-                int savedLine = Line, savedCol = Column;
+                var saved = Save();
                 SkipInlineSpaces();
                 if (Position + kw.Length > Source.Length || !StartsWithAtPosition(kw))
                 {
-                    Rewind(saved);
+                    Restore(saved);
                     return false;
                 }
                 // Ensure word boundary.
                 char next = (Position + kw.Length < Source.Length) ? Source[Position + kw.Length] : '\0';
                 if (char.IsLetterOrDigit(next) || next == '_')
                 {
-                    Rewind(saved);
+                    Restore(saved);
                     return false;
                 }
                 Position += kw.Length;

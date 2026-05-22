@@ -45,14 +45,39 @@ namespace Oasis.SurrealDb.Client.Query
         /// semicolon guard.</summary>
         public bool IsMultiStatement { get; }
 
+        // MEDIUM #M3: clause-presence is tracked structurally via dedicated
+        // flags that are set by the builder methods (or by a literal-stripped
+        // scan when an opaque body is supplied via Of). The old approach used
+        // \bWHERE\b regex against the entire SQL body, which produced
+        // false-positives whenever the keyword appeared inside a string
+        // literal (e.g. `CREATE wallet CONTENT { note: "check WHERE field" }`).
+        private readonly bool _hasWhere;
+        private readonly bool _hasOrderBy;
+        private readonly bool _hasLimit;
+        private readonly bool _hasStart;
+        private readonly bool _hasReturn;
+        private readonly bool _hasFetch;
+
         private SurrealQuery(
             string sql,
             IReadOnlyDictionary<string, object?> @params,
-            bool isMultiStatement)
+            bool isMultiStatement,
+            bool hasWhere,
+            bool hasOrderBy,
+            bool hasLimit,
+            bool hasStart,
+            bool hasReturn,
+            bool hasFetch)
         {
             Sql = sql;
             Params = @params;
             IsMultiStatement = isMultiStatement;
+            _hasWhere   = hasWhere;
+            _hasOrderBy = hasOrderBy;
+            _hasLimit   = hasLimit;
+            _hasStart   = hasStart;
+            _hasReturn  = hasReturn;
+            _hasFetch   = hasFetch;
         }
 
         // ─── Factory ─────────────────────────────────────────────────────────
@@ -90,10 +115,25 @@ namespace Oasis.SurrealDb.Client.Query
                     "code-review C5).",
                     nameof(sql));
 
+            // M3: conservatively scan the raw SQL for already-present clauses
+            // so a subsequent .Where() on `Of("... WHERE x = 1")` still emits
+            // AND (not WHERE). String literals are stripped first so a stray
+            // "WHERE" inside a string does not flip the flag.
+            ScanClauseFlagsFromLiteral(
+                sql,
+                out var hasWhere, out var hasOrderBy, out var hasLimit,
+                out var hasStart, out var hasReturn, out var hasFetch);
+
             return new SurrealQuery(
                 sql,
                 new ReadOnlyDictionary<string, object?>(new Dictionary<string, object?>(StringComparer.Ordinal)),
-                isMultiStatement: false);
+                isMultiStatement: false,
+                hasWhere: hasWhere,
+                hasOrderBy: hasOrderBy,
+                hasLimit: hasLimit,
+                hasStart: hasStart,
+                hasReturn: hasReturn,
+                hasFetch: hasFetch);
         }
 
         // ─── Typed convenience factories ─────────────────────────────────────
@@ -150,10 +190,7 @@ namespace Oasis.SurrealDb.Client.Query
             var newParams = CloneParams(Params);
             newParams[key] = value;
 
-            return new SurrealQuery(
-                Sql,
-                new ReadOnlyDictionary<string, object?>(newParams),
-                IsMultiStatement);
+            return CloneWith(Sql, new ReadOnlyDictionary<string, object?>(newParams));
         }
 
         /// <summary>
@@ -171,10 +208,7 @@ namespace Oasis.SurrealDb.Client.Query
                     throw new ArgumentException("A parameter key must not be empty.");
                 newParams[kv.Key] = kv.Value;
             }
-            return new SurrealQuery(
-                Sql,
-                new ReadOnlyDictionary<string, object?>(newParams),
-                IsMultiStatement);
+            return CloneWith(Sql, new ReadOnlyDictionary<string, object?>(newParams));
         }
 
         // ─── Builder — fluent clauses ────────────────────────────────────────
@@ -199,15 +233,15 @@ namespace Oasis.SurrealDb.Client.Query
             if (string.IsNullOrWhiteSpace(predicate))
                 throw new ArgumentException("WHERE predicate must not be empty.", nameof(predicate));
 
-            var newSql = HasClause(Sql, "WHERE")
+            var newSql = _hasWhere
                 ? Sql + " AND " + predicate
                 : Sql + " WHERE " + predicate;
 
             var merged = MergeParams(Params, paramObj);
-            return new SurrealQuery(
+            return CloneWith(
                 newSql,
                 new ReadOnlyDictionary<string, object?>(merged),
-                IsMultiStatement);
+                setHasWhere: true);
         }
 
         /// <summary>
@@ -218,10 +252,10 @@ namespace Oasis.SurrealDb.Client.Query
         {
             var safeField = ValidateFieldPath(field, nameof(field));
             var dir = direction == OrderDirection.Desc ? "DESC" : "ASC";
-            return new SurrealQuery(
+            return CloneWith(
                 Sql + " ORDER BY " + safeField + " " + dir,
                 Params,
-                IsMultiStatement);
+                setHasOrderBy: true);
         }
 
         /// <summary>Appends a <c>LIMIT n</c> clause. <paramref name="n"/> must
@@ -230,10 +264,10 @@ namespace Oasis.SurrealDb.Client.Query
         {
             if (n < 0)
                 throw new ArgumentOutOfRangeException(nameof(n), "LIMIT must be non-negative.");
-            return new SurrealQuery(
+            return CloneWith(
                 Sql + " LIMIT " + n.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 Params,
-                IsMultiStatement);
+                setHasLimit: true);
         }
 
         /// <summary>Appends a <c>START n</c> clause (page offset).
@@ -242,10 +276,10 @@ namespace Oasis.SurrealDb.Client.Query
         {
             if (n < 0)
                 throw new ArgumentOutOfRangeException(nameof(n), "START must be non-negative.");
-            return new SurrealQuery(
+            return CloneWith(
                 Sql + " START " + n.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 Params,
-                IsMultiStatement);
+                setHasStart: true);
         }
 
         /// <summary>
@@ -264,7 +298,7 @@ namespace Oasis.SurrealDb.Client.Query
                 default:
                     throw new ArgumentOutOfRangeException(nameof(clause), clause, "Unknown ReturnClause value.");
             }
-            return new SurrealQuery(Sql + " RETURN " + token, Params, IsMultiStatement);
+            return CloneWith(Sql + " RETURN " + token, Params, setHasReturn: true);
         }
 
         /// <summary>
@@ -298,7 +332,7 @@ namespace Oasis.SurrealDb.Client.Query
         public SurrealQuery Fetch(string path)
         {
             var safePath = ValidateFieldPath(path, nameof(path));
-            return new SurrealQuery(Sql + " FETCH " + safePath, Params, IsMultiStatement);
+            return CloneWith(Sql + " FETCH " + safePath, Params, setHasFetch: true);
         }
 
         // ─── G2 — UpdateOnly(...).Where(...).Set(...) ────────────────────────
@@ -412,7 +446,13 @@ namespace Oasis.SurrealDb.Client.Query
             return new SurrealQuery(
                 sb.ToString(),
                 new ReadOnlyDictionary<string, object?>(merged),
-                isMultiStatement: true);
+                isMultiStatement: true,
+                // Flags are not meaningful on a multi-statement composite —
+                // chaining .Where() / .OrderBy() etc. onto a Combine() result
+                // would produce ill-formed SurrealQL regardless. Default-false
+                // is the safe stance.
+                hasWhere: false, hasOrderBy: false, hasLimit: false,
+                hasStart: false, hasReturn: false, hasFetch: false);
         }
 
         // ─── Validation ──────────────────────────────────────────────────────
@@ -477,10 +517,25 @@ namespace Oasis.SurrealDb.Client.Query
             string sql,
             IReadOnlyDictionary<string, object?> @params)
         {
+            // M3: builders (UpdateOnly, Relate, ...) produce SurrealQL bodies
+            // that may already contain WHERE / RETURN / etc. Scan once at
+            // construction so any subsequent fluent .Where() etc. routes
+            // through the correct branch.
+            ScanClauseFlagsFromLiteral(
+                sql,
+                out var hasWhere, out var hasOrderBy, out var hasLimit,
+                out var hasStart, out var hasReturn, out var hasFetch);
+
             return new SurrealQuery(
                 sql,
                 new ReadOnlyDictionary<string, object?>(CloneParams(@params)),
-                isMultiStatement: false);
+                isMultiStatement: false,
+                hasWhere: hasWhere,
+                hasOrderBy: hasOrderBy,
+                hasLimit: hasLimit,
+                hasStart: hasStart,
+                hasReturn: hasReturn,
+                hasFetch: hasFetch);
         }
 
         private static Dictionary<string, object?> CloneParams(
@@ -491,12 +546,95 @@ namespace Oasis.SurrealDb.Client.Query
             return clone;
         }
 
-        private static bool HasClause(string sql, string keyword)
+        // MEDIUM #M3 — flag-threaded immutable clone. Each fluent method
+        // produces a new SurrealQuery via this helper so existing flag state
+        // is preserved AND the appropriate flag for the clause being added is
+        // set to true. The optional setHas* parameters default to false so
+        // helpers that only mutate params (WithParam / WithParams) leave the
+        // flag set untouched.
+        private SurrealQuery CloneWith(
+            string sql,
+            IReadOnlyDictionary<string, object?> @params,
+            bool setHasWhere = false,
+            bool setHasOrderBy = false,
+            bool setHasLimit = false,
+            bool setHasStart = false,
+            bool setHasReturn = false,
+            bool setHasFetch = false)
         {
-            // Naive whitespace-bounded keyword check. Acceptable because the
-            // SQL body is itself constrained — it comes from validated
-            // identifiers + parameter tokens, never user-supplied text.
-            return Regex.IsMatch(sql, @"\b" + keyword + @"\b", RegexOptions.IgnoreCase);
+            return new SurrealQuery(
+                sql,
+                @params,
+                IsMultiStatement,
+                hasWhere:   _hasWhere   || setHasWhere,
+                hasOrderBy: _hasOrderBy || setHasOrderBy,
+                hasLimit:   _hasLimit   || setHasLimit,
+                hasStart:   _hasStart   || setHasStart,
+                hasReturn:  _hasReturn  || setHasReturn,
+                hasFetch:   _hasFetch   || setHasFetch);
+        }
+
+        /// <summary>
+        /// One-time scan of a raw SurrealQL body to detect already-present
+        /// clauses (WHERE / ORDER BY / LIMIT / START / RETURN / FETCH).
+        ///
+        /// Strips single- and double-quoted string literals before scanning so
+        /// the keyword inside <c>"check WHERE field"</c> no longer flips the
+        /// WHERE flag — that false-positive is the exact defect M3 closes.
+        /// </summary>
+        private static void ScanClauseFlagsFromLiteral(
+            string sql,
+            out bool hasWhere,
+            out bool hasOrderBy,
+            out bool hasLimit,
+            out bool hasStart,
+            out bool hasReturn,
+            out bool hasFetch)
+        {
+            var stripped = StripStringLiterals(sql);
+            hasWhere   = ContainsKeyword(stripped, "WHERE");
+            hasOrderBy = ContainsKeyword(stripped, "ORDER BY");
+            hasLimit   = ContainsKeyword(stripped, "LIMIT");
+            hasStart   = ContainsKeyword(stripped, "START");
+            hasReturn  = ContainsKeyword(stripped, "RETURN");
+            hasFetch   = ContainsKeyword(stripped, "FETCH");
+        }
+
+        private static string StripStringLiterals(string sql)
+        {
+            // Simple state machine: copy chars unless inside a "..." or '...'
+            // span. Escape sequences inside literals are handled by tracking
+            // the previous char and skipping the escaped quote.
+            var sb = new StringBuilder(sql.Length);
+            char quote = '\0';
+            for (int i = 0; i < sql.Length; i++)
+            {
+                char c = sql[i];
+                if (quote == '\0')
+                {
+                    if (c == '"' || c == '\'') { quote = c; continue; }
+                    sb.Append(c);
+                }
+                else
+                {
+                    // Inside literal: skip everything except the matching
+                    // close-quote, and handle backslash-escaped quotes.
+                    if (c == '\\' && i + 1 < sql.Length) { i++; continue; }
+                    if (c == quote) { quote = '\0'; continue; }
+                }
+            }
+            return sb.ToString();
+        }
+
+        private static bool ContainsKeyword(string sql, string keyword)
+        {
+            // Word-boundary scan (case-insensitive). Multi-word keywords such
+            // as "ORDER BY" use a single regex with \s+ between the parts so
+            // arbitrary whitespace between them still matches.
+            var pattern = keyword.Contains(' ')
+                ? @"\b" + keyword.Replace(" ", @"\s+") + @"\b"
+                : @"\b" + keyword + @"\b";
+            return Regex.IsMatch(sql, pattern, RegexOptions.IgnoreCase);
         }
 
         // Field-path validator used by OrderBy / Fetch. Permits dotted paths

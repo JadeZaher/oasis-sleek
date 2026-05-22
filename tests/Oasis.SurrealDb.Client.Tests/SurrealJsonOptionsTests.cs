@@ -30,6 +30,9 @@ public class SurrealJsonOptionsTests
         {
             Id     = "bridge_tx:1",
             Status = BridgeStatus.Confirmed,
+            // M1: DateTime fields must be UTC-kind explicitly; the converter
+            // refuses Kind=Unspecified to prevent silent TZ drift.
+            ObservedAt = new DateTime(2026, 5, 21, 0, 0, 0, DateTimeKind.Utc),
         };
 
         var json = JsonSerializer.Serialize(row, SurrealJsonOptions.Default);

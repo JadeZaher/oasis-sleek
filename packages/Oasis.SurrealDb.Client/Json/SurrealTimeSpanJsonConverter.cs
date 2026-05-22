@@ -87,12 +87,21 @@ public sealed class SurrealTimeSpanJsonConverter : JsonConverter<TimeSpan>
 
     internal static string FormatSurrealDuration(TimeSpan ts)
     {
-        // Compact representation: emit only non-zero components, largest unit first.
-        var negative = ts.Ticks < 0;
-        if (negative) ts = -ts;
+        // MEDIUM #M2: the SurrealQL duration grammar rejects negative
+        // literals; previously this converter both (a) emitted "-..." which
+        // SurrealDB would refuse, and (b) overflowed on TimeSpan.MinValue
+        // because -TimeSpan.MinValue has no positive representation. Reject
+        // negative inputs explicitly with a descriptive message; do not
+        // attempt to silently negate.
+        if (ts.Ticks < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ts),
+                $"SurrealDB duration literals do not accept negative values; the input TimeSpan {ts} cannot be serialized.");
+        }
 
+        // Compact representation: emit only non-zero components, largest unit first.
         var sb = new StringBuilder();
-        if (negative) sb.Append('-');
 
         int days  = ts.Days;
         int hours = ts.Hours;
@@ -116,7 +125,7 @@ public sealed class SurrealTimeSpanJsonConverter : JsonConverter<TimeSpan>
 
         // Always emit at least one component, even for zero spans, so the
         // SurrealQL parser sees a syntactically valid literal.
-        if (sb.Length == 0 || (negative && sb.Length == 1)) sb.Append("0ns");
+        if (sb.Length == 0) sb.Append("0ns");
 
         return sb.ToString();
     }

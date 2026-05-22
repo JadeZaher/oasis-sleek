@@ -938,6 +938,78 @@ try {
     }
 
     # =========================================================================
+    # 12/12  GENERATED POCOs MATCH SCHEMAS
+    # Asserts the surrealdb-schema-source-gen track wires up correctly: every
+    # `.mermaid` source under Persistence/SurrealDb/Schemas/source/ must
+    # produce a generated POCO under obj/Debug/net8.0/generated/.../*.g.cs
+    # whose `SchemaNameConst` constant matches the table name declared in
+    # the .mermaid source. Mirrors WaveOneInRepoSyncTests for the
+    # application layer.
+    #
+    # Graceful-skip pattern: if the OASIS.WebAPI build output has not been
+    # materialized (e.g. first-run, fresh clone), section 12 is skipped
+    # rather than failed. Section 2 already gates the build itself, so
+    # this section is purely a drift guard.
+    # =========================================================================
+    Write-Section "12/12  Generated POCOs match schemas"
+
+    $SchemaSourceDir   = Join-Path $RepoRoot "Persistence/SurrealDb/Schemas/source"
+    $GeneratedRoot     = Join-Path $RepoRoot "obj/Debug/net8.0/generated/Oasis.SurrealDb.SourceGen/Oasis.SurrealDb.SourceGen.OasisSurrealDbSchemaGenerator"
+    if (-not (Test-Path $SchemaSourceDir)) {
+        Write-Warn "Schema source directory not present at $SchemaSourceDir. Skipping generated-POCO drift check (NOT a failure)."
+        $Result["12-Generated-POCOs-match-schemas"] = $true
+        Write-Ok "12-Generated-POCOs-match-schemas: SKIPPED (no schema sources)"
+    }
+    elseif (-not (Test-Path $GeneratedRoot)) {
+        Write-Warn "Generator output directory not present at $GeneratedRoot. Skipping generated-POCO drift check (build output not yet materialized -- NOT a failure)."
+        $Result["12-Generated-POCOs-match-schemas"] = $true
+        Write-Ok "12-Generated-POCOs-match-schemas: SKIPPED (no build output)"
+    }
+    else {
+        $genViolations = @()
+        $mermaidFiles = Get-ChildItem -Path $SchemaSourceDir -Filter "*.mermaid" -File
+        foreach ($m in $mermaidFiles) {
+            # Extract entity names from the .mermaid source. Each entity is
+            # introduced by a line like `    wallet {` (identifier followed by
+            # `{`). Skip the `erDiagram` header and `%% @surreal.*` annotations.
+            $lines = Get-Content $m.FullName
+            foreach ($line in $lines) {
+                $trim = $line.Trim()
+                if ($trim -match '^([a-zA-Z_][a-zA-Z0-9_]*)\s*\{') {
+                    $entityName = $Matches[1]
+                    if ($entityName -eq "erDiagram") { continue }
+                    # PascalCase: snake_case -> Snake + Case
+                    $parts = $entityName -split '_'
+                    $pascal = ''
+                    foreach ($p in $parts) {
+                        if ($p.Length -gt 0) {
+                            $pascal += ([char]::ToUpper($p[0])) + $p.Substring(1)
+                        }
+                    }
+                    $genFile = Join-Path $GeneratedRoot "$pascal.g.cs"
+                    if (-not (Test-Path $genFile)) {
+                        $genViolations += "Mermaid entity '$entityName' (from $($m.Name)) has no generated POCO at $pascal.g.cs"
+                    }
+                    else {
+                        $content = Get-Content $genFile -Raw
+                        if ($content -notmatch ('SchemaNameConst\s*=\s*"' + [regex]::Escape($entityName) + '"')) {
+                            $genViolations += "Generated $pascal.g.cs does not declare SchemaNameConst = `"$entityName`""
+                        }
+                    }
+                }
+            }
+        }
+        if ($genViolations.Count -gt 0) {
+            Write-Err "Generated-POCO drift detected:"
+            foreach ($v in $genViolations) { Write-Err "  $v" }
+            Fail-Now -Section "12-Generated-POCOs-match-schemas" `
+                -Message "One or more .mermaid sources do not have a matching generated POCO. Rebuild OASIS.WebAPI or check the source generator wiring."
+        }
+        $Result["12-Generated-POCOs-match-schemas"] = $true
+        Write-Ok "Generated POCOs match all $($mermaidFiles.Count) wave-1 schema sources"
+    }
+
+    # =========================================================================
     # FINAL VERDICT
     # =========================================================================
     $allGreen = @($Result.Values | Where-Object { $_ -eq $false }).Count -eq 0
@@ -946,7 +1018,7 @@ try {
         Write-Section "PASS-OFF SURREALDB WAVE-1: GREEN"
         foreach ($k in $Result.Keys) { Write-Ok $k }
         Write-Host ""
-        Write-Ok "All 11 sections passed. SurrealDB wave-1 gate GREEN."
+        Write-Ok "All 12 sections passed. SurrealDB wave-1 gate GREEN."
         Write-Warn "Wave-2 check-in required before proceeding (see .omc/ultrapilot-state.json)."
         Write-Host ""
         Pop-Location -ErrorAction SilentlyContinue

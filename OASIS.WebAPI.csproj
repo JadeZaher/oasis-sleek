@@ -3,6 +3,11 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Emit generated source to obj/Debug/net8.0/generated/... so pass-off
+         section 12 + drift checks can grep the materialized .g.cs files
+         directly without re-running the Roslyn host. -->
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)$(Configuration)\$(TargetFramework)\generated</CompilerGeneratedFilesOutputPath>
   </PropertyGroup>
   <ItemGroup>
     <!-- Quest models are included (no longer excluded) -->
@@ -70,5 +75,64 @@
       Include="packages\Oasis.SurrealDb.Analyzer\Oasis.SurrealDb.Analyzer.csproj"
       OutputItemType="Analyzer"
       ReferenceOutputAssembly="false" />
+    <!-- ═══════════════════════════════════════════════════════════════
+         Source generator (surrealdb-schema-source-gen track). Loads as a
+         Roslyn analyzer asset; the AdditionalFiles entry below feeds it
+         the .mermaid schema sources. The generator emits one
+         OASIS.WebAPI.Generated.SurrealDb.<Entity> partial class per
+         entity per .mermaid file into obj/Debug/.../generated/
+         Oasis.SurrealDb.SourceGen/.../<Entity>.g.cs at compile time.
+
+         The Schema package DLL must ALSO load into the Roslyn host (the
+         generator depends on its Mermaid parser at compile time). With
+         ProjectReference + OutputItemType=Analyzer, MSBuild forwards the
+         generator DLL but NOT its transitive runtime dependencies, so
+         the Schema DLL is added directly as an analyzer asset below.
+         Without this, the Roslyn host raises CS8785
+         "FileNotFoundException: Could not load file or assembly
+         Oasis.SurrealDb.Schema" and the generator silently emits no
+         .g.cs files.
+         ═══════════════════════════════════════════════════════════════ -->
+    <ProjectReference
+      Include="packages\Oasis.SurrealDb.SourceGen\Oasis.SurrealDb.SourceGen.csproj"
+      OutputItemType="Analyzer"
+      ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <!-- Pull the Schema DLL into the analyzer-load path alongside the
+       generator. Build-order is preserved by a SCHEMA-first ProjectReference
+       (added immediately below) so the .dll exists before the OASIS.WebAPI
+       build step needs it as an analyzer asset. -->
+  <ItemGroup>
+    <ProjectReference
+      Include="packages\Oasis.SurrealDb.Schema\Oasis.SurrealDb.Schema.csproj"
+      ReferenceOutputAssembly="false"
+      PrivateAssets="all" />
+  </ItemGroup>
+  <Target Name="AddSurrealDbSchemaAnalyzer"
+          BeforeTargets="CoreCompile"
+          DependsOnTargets="ResolveProjectReferences">
+    <PropertyGroup>
+      <_OasisSurrealDbSchemaAssemblyPath>$(MSBuildThisFileDirectory)packages\Oasis.SurrealDb.Schema\bin\$(Configuration)\netstandard2.0\Oasis.SurrealDb.Schema.dll</_OasisSurrealDbSchemaAssemblyPath>
+    </PropertyGroup>
+    <ItemGroup Condition="Exists('$(_OasisSurrealDbSchemaAssemblyPath)')">
+      <Analyzer Include="$(_OasisSurrealDbSchemaAssemblyPath)" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Mermaid ER schema sources visible to the source generator. The
+       generator filters by .mermaid extension on AdditionalTextsProvider. -->
+  <ItemGroup>
+    <AdditionalFiles Include="Persistence\SurrealDb\Schemas\source\*.mermaid" />
+  </ItemGroup>
+
+  <!-- Target namespace into which the source generator emits the per-entity
+       POCO classes. Picked up by the generator via AnalyzerConfigOptions.
+       Must match the consumer's `using` directives. -->
+  <ItemGroup>
+    <CompilerVisibleProperty Include="OasisSurrealDbModelsNamespace" />
+  </ItemGroup>
+  <PropertyGroup>
+    <OasisSurrealDbModelsNamespace>OASIS.WebAPI.Generated.SurrealDb</OasisSurrealDbModelsNamespace>
+  </PropertyGroup>
 </Project>

@@ -67,12 +67,11 @@ namespace Oasis.SurrealDb.SourceGen
             sb.AppendLine("namespace " + _namespace);
             sb.AppendLine("{");
 
-            // First emit enums (referenced by properties below).
+            // Collect ASSERT INSIDE enums (referenced by properties below).
+            // They are emitted as NESTED enums inside the partial class so the
+            // `<ClassName>.<EnumName>` references in property declarations
+            // resolve without extra namespace traversal.
             var enums = CollectAssertInsideEnums(entity, className);
-            foreach (var en in enums)
-            {
-                EmitEnum(sb, en);
-            }
 
             // Class.
             sb.AppendLine(IndentUnit + "/// <summary>");
@@ -81,6 +80,13 @@ namespace Oasis.SurrealDb.SourceGen
             sb.AppendLine(IndentUnit + "/// </summary>");
             sb.AppendLine(IndentUnit + "public partial class " + className + " : global::Oasis.SurrealDb.Client.ISurrealRecord");
             sb.AppendLine(IndentUnit + "{");
+
+            // Nested enums first, so property declarations below can refer to
+            // them via the unqualified short name within the class body.
+            foreach (var en in enums)
+            {
+                EmitEnum(sb, en);
+            }
 
             // SchemaName: static for type-level lookup; instance shim for the
             // ISurrealRecord interface contract (netstandard2.0 has no
@@ -181,11 +187,13 @@ namespace Oasis.SurrealDb.SourceGen
 
         private static void EmitEnum(StringBuilder sb, AssertInsideEnum en)
         {
-            sb.AppendLine(IndentUnit + "/// <summary>");
-            sb.AppendLine(IndentUnit + "/// Enum derived from <c>ASSERT INSIDE [...]</c> on field <c>" + en.SourceFieldName + "</c>.");
-            sb.AppendLine(IndentUnit + "/// </summary>");
-            sb.AppendLine(IndentUnit + "public enum " + en.EnumName);
-            sb.AppendLine(IndentUnit + "{");
+            // Nested enums inside the partial class -- emit at one indent level
+            // deeper than the class body itself.
+            sb.AppendLine(IndentUnit + IndentUnit + "/// <summary>");
+            sb.AppendLine(IndentUnit + IndentUnit + "/// Enum derived from <c>ASSERT INSIDE [...]</c> on field <c>" + en.SourceFieldName + "</c>.");
+            sb.AppendLine(IndentUnit + IndentUnit + "/// </summary>");
+            sb.AppendLine(IndentUnit + IndentUnit + "public enum " + en.EnumName);
+            sb.AppendLine(IndentUnit + IndentUnit + "{");
             for (int i = 0; i < en.Members.Count; i++)
             {
                 var member = en.Members[i];
@@ -194,9 +202,9 @@ namespace Oasis.SurrealDb.SourceGen
                 // the C# identifier is sanitized; mapping to the underlying string
                 // happens at JSON ser/deser. The string values match enum identifier
                 // by convention; for verbatim mapping consumers can adjust.
-                sb.AppendLine(IndentUnit + IndentUnit + member + sep);
+                sb.AppendLine(IndentUnit + IndentUnit + IndentUnit + member + sep);
             }
-            sb.AppendLine(IndentUnit + "}");
+            sb.AppendLine(IndentUnit + IndentUnit + "}");
             sb.AppendLine();
         }
 
@@ -244,7 +252,13 @@ namespace Oasis.SurrealDb.SourceGen
                     var values = ExtractInsideValues(ann.RawArguments);
                     if (values == null || values.Count == 0) continue;
 
-                    var enumName = CSharpTypeMapper.ToPascalCase(attr.Name);
+                    // Enum name = PascalCase(field) with a `Kind` suffix to
+                    // avoid the C# "type 'X' already contains a definition
+                    // for 'X'" diagnostic when the property and its (nested)
+                    // enum type would otherwise share the same identifier
+                    // (e.g. property `WalletType` of nested enum `WalletType`).
+                    var propertyName = CSharpTypeMapper.ToPascalCase(attr.Name);
+                    var enumName = propertyName + "Kind";
                     var members = values.Select(SanitizeEnumMember).Distinct(StringComparer.Ordinal).ToList();
                     result.Add(new AssertInsideEnum(attr.Name, enumName, members));
                     break;
@@ -289,18 +303,27 @@ namespace Oasis.SurrealDb.SourceGen
 
         private static string SanitizeEnumMember(string literal)
         {
-            // Replace any non-identifier char with underscore; ensure first char
-            // is a letter or underscore.
-            var sb = new StringBuilder(literal.Length);
-            for (int i = 0; i < literal.Length; i++)
+            // First strip any leading / trailing escape-quote sequences that
+            // survived the Mermaid annotation parse (e.g. `\"External\"` becomes
+            // `External`). Then replace any remaining non-identifier char with
+            // underscore. Identifiers may not start with a digit -- prepend `_`
+            // in that case.
+            var trimmed = literal;
+            // Strip surrounding \"...\" (backslash-quote pairs).
+            if (trimmed.Length >= 4 && trimmed.StartsWith("\\\"", StringComparison.Ordinal) && trimmed.EndsWith("\\\"", StringComparison.Ordinal))
             {
-                char c = literal[i];
-                if (i == 0 && !(char.IsLetter(c) || c == '_'))
-                {
-                    sb.Append('_');
-                    sb.Append(c);
-                }
-                else if (char.IsLetterOrDigit(c) || c == '_')
+                trimmed = trimmed.Substring(2, trimmed.Length - 4);
+            }
+            // Strip surrounding "..." too in case the parser already unescaped.
+            else if (trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[trimmed.Length - 1] == '"')
+            {
+                trimmed = trimmed.Substring(1, trimmed.Length - 2);
+            }
+            var sb = new StringBuilder(trimmed.Length);
+            for (int i = 0; i < trimmed.Length; i++)
+            {
+                char c = trimmed[i];
+                if (char.IsLetterOrDigit(c) || c == '_')
                 {
                     sb.Append(c);
                 }
@@ -309,7 +332,10 @@ namespace Oasis.SurrealDb.SourceGen
                     sb.Append('_');
                 }
             }
-            return sb.Length == 0 ? "_" : sb.ToString();
+            if (sb.Length == 0) return "_";
+            // Identifiers may not start with a digit.
+            if (char.IsDigit(sb[0])) sb.Insert(0, '_');
+            return sb.ToString();
         }
 
         // ─── Helpers ─────────────────────────────────────────────────────────

@@ -63,6 +63,7 @@
                       PrivateAssets="all" />
   </ItemGroup>
 
+
   <!-- Companion-package wiring: the generator DLL plus the Schema parser
        (compile-time dependency loaded in the same Roslyn host process) ship
        as analyzer assets under analyzers/dotnet/cs/ inside the .nupkg.

@@ -121,10 +121,12 @@ public class CSharpEmitterTests
         var emitter = new CSharpEmitter("X");
         var output = emitter.Emit(entity);
 
-        output.Should().Contain("public enum WalletType");
+        // Enum name carries a `Kind` suffix so the nested enum does not
+        // collide with the property of the same identifier.
+        output.Should().Contain("public enum WalletTypeKind");
         output.Should().Contain("External");
         output.Should().Contain("Platform");
-        output.Should().Contain("public Wallet.WalletType WalletType { get; set; }");
+        output.Should().Contain("public Wallet.WalletTypeKind WalletType { get; set; }");
         output.Should().Contain("[JsonConverter(typeof(JsonStringEnumConverter))]");
     }
 

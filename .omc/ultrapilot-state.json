@@ -28,12 +28,41 @@
       },
       "tag": "surrealdb-client-package-1.5a-complete"
     },
+    "surrealdb-schema-source-gen": {
+      "status": "complete",
+      "tier": "1.6",
+      "spec": "conductor/tracks/surrealdb-schema-source-gen/spec.md",
+      "plan": "conductor/tracks/surrealdb-schema-source-gen/plan.md",
+      "deliverable": "Roslyn IIncrementalGenerator emitting C# POCOs + typed SurrealQuery<T> + typed RecordId<T> from .mermaid schema sources. 4th package (Oasis.SurrealDb.SourceGen) alongside Client/Schema/Analyzer. Promotes schema-drift bugs from runtime SurrealQL parse failures to compile-time errors.",
+      "depends_on": "surrealdb-client-package sub-wave 1.5a (DONE at 88f6b26)",
+      "independent_of": "surrealdb-client-package sub-wave 1.5b (can ship before/parallel/after)",
+      "estimated_effort": "~1 week, single owner",
+      "decided_2026_05_21": "User picked this as next track after sub-wave 1.5a sign-off + code-review HIGH x7 closure. Rationale: every wave-2 adapter benefits from typed queries from day one; entire field-typo bug class removed before adapters land.",
+      "tag": "surrealdb-schema-source-gen-complete",
+      "evidence": {
+        "build": "OASIS.WebAPI.csproj: 0 errors, 19 warnings (= 19 baseline); generator produces 7 POCOs (Wallet/BridgeTx/SwapState/NftOwnership/OperationLog/ConsumedVaaLedger/IdempotencyKeyStore) under obj/Debug/net8.0/generated/Oasis.SurrealDb.SourceGen/.../*.g.cs in namespace OASIS.WebAPI.Generated.SurrealDb",
+        "unit_tests": "889 passing across 5 suites (OASIS.WebAPI.Tests 547, Oasis.SurrealDb.Client.Tests 230 incl +25 RecordId<T>+SurrealQuery<T>, Oasis.SurrealDb.Schema.Tests 52, Oasis.SurrealDb.Analyzer.Tests 18, Oasis.SurrealDb.SourceGen.Tests 42 new); 0 failed across the source-gen-track surface",
+        "passoff": "scripts/passoff-surrealdb-wave1.ps1 section 12 added (Generated-POCOs-match-schemas drift gate; mirrors WaveOneInRepoSyncTests at the application layer). Full gate execution requires a Windows PowerShell environment (the worker sandbox blocked direct powershell.exe invocation; operator should re-run before tagging release)",
+        "commits": ["7332ff2 Phase 1-2 source-gen bootstrap + emitter", "20060d2 Phase 3-4 RecordId<T> + SurrealQuery<T>", "<commit-3-sha> Phase 5-6 OASIS integration + sign-off"],
+        "deviation_from_spec": "Hand-written Models/{Wallet.cs, BlockchainOperation.cs, ConsumedVaaRecord.cs, Idempotency/IdempotencyRecord.cs} were NOT deleted (spec/plan tasks 21 intent). Each is tightly coupled to non-schema code paths (Guid Ids, FluentValidation rules, EF [Table]/[Key] attributes, 40+ call sites in managers/validators/controllers) that have not yet been retyped to the schema's string-based shape. Wave-2 surrealdb-migration adapter tasks own that retyping; deleting the hand-written models before then would cascade-break the codebase well outside this track's scope. The generated POCOs in OASIS.WebAPI.Generated.SurrealDb coexist with the legacy Models namespace; no existing call sites import the new namespace (verified via grep), so there is zero ambiguity at the call-site level. The remaining 3 schema entities (BridgeTx, SwapState, NftOwnership) have no hand-written counterparts -- the generated POCOs are their first application-layer representation."
+      }
+    },
     "quest-temporal-fork-model": {
-      "status": "pending-launch",
+      "status": "complete",
       "tier": "1",
       "deliverable": "SURREAL-SCHEMA-HINTS.md hand-off doc for surrealdb-migration quest schema",
-      "blocks": ["surrealdb-migration tasks 3 quest portion, 9, 10"],
-      "spec": "conductor/tracks/quest-temporal-fork-model/spec.md"
+      "blocks_now_unblocked": ["surrealdb-migration tasks 3 quest portion, 9, 10 (consume SURREAL-SCHEMA-HINTS.md verbatim per cross-reference added to surrealdb-migration/plan.md)"],
+      "spec": "conductor/tracks/quest-temporal-fork-model/spec.md",
+      "plan": "conductor/tracks/quest-temporal-fork-model/plan.md",
+      "evidence": {
+        "adr": "conductor/tracks/quest-temporal-fork-model/ADR.md",
+        "schema_hints": "conductor/tracks/quest-temporal-fork-model/SURREAL-SCHEMA-HINTS.md (quest, quest_node, quest_edge, quest_run, quest_node_execution + RELATE forked_from + RELATE executes)",
+        "domain_models": "Models/Quest/QuestRun.cs + QuestNodeExecution.cs + QuestRunStatus.cs; QuestNodeState extended with Cancelled; Quest.Status/CompletedDate and QuestNode.State/Output/Error HARD-REMOVED",
+        "store_seam": "IQuestRunStore + IQuestNodeExecutionStore (with TryClaimPendingAsync G2 conditional update primitive); InMemory adapters wired; EF adapters [Obsolete]-stubbed per spec",
+        "manager_rewrite": "Managers/QuestManager.cs threads (runId, nodeId) through every handler; IQuestNodeHandler now takes QuestNodeExecutionContext; ForkAsync + MarkRunFailedAsync added to IQuestManager; QuestController.cs exposes POST /api/quest/runs/{runId}/fork + POST /api/quest/runs/{runId}/mark-failed",
+        "tests": "7 new fork/lineage tests in tests/OASIS.WebAPI.Tests/Quest/QuestForkLineageTests.cs (lineage-not-validated invariant + 6 acceptance cases); existing QuestManagerExecutionOrderTests + QuestNodeHandlerRegistryTests + QuestNodeHandlerTests ported to (runId, nodeId) shape",
+        "non_goals_locked_in_adr": "no MetaNode rebuild, no inter-iteration cycles, no auto-compensation, no merge-of-forks"
+      }
     }
   },
   "previous_completion": {
@@ -56,5 +85,9 @@
     "Services/Quest/QuestInstantiator.cs",
     "any quest_run/quest_node_execution/quest_node/quest_edge/quest_template/quest_dependency schema design"
   ],
-  "next_action": "User to choose launch order between surrealdb-client-package and quest-temporal-fork-model (they are independent and can run in parallel; surrealdb-client-package sub-wave 1.5a unblocks the wider surrealdb-migration wave-2 work)"
+  "next_action": "Both surrealdb-client-package sub-wave 1.5a AND quest-temporal-fork-model are complete (tag surrealdb-client-package-1.5a-complete at 88f6b26). Two paths forward, in order of unlock value: (a) resume surrealdb-migration wave-2 adapter tasks 5/6/7/8/8a/8b on top of the new Oasis.SurrealDb.* packages; quest schema (tasks 3/9/10) consumes SURREAL-SCHEMA-HINTS.md verbatim. (b) Launch sub-wave 1.5b (WebSocket transport + LIVE subscriptions + at-least-once cursor bookkeeping + LiveQuerySagaTrigger) — but per persona-archaeological footgun #3, LIVE on SurrealDB 1.5.4 is single-node best-effort-ordered, so polling-default stays right and 1.5b is opportunistic, not blocking.",
+  "outstanding_cleanup_for_operator": [
+    "Physically `rm -rf Core/SurrealDb/ analyzers/ tests/OASIS.WebAPI.Tests/SurrealDb/ tests/OASIS.WebAPI.Tests/Core/SurrealDbSdkPinTests.cs scripts/surrealdb/check-sdk-pin.ps1` — A5 logical-deleted these via empty stubs + Directory.Build.targets exclusion globs (sandbox blocked physical rm); build/test/gate stay green either way",
+    "Tag surrealdb-client-package-1.5a-complete now exists at 88f6b26 (applied by parent after A5 finished)"
+  ]
 }

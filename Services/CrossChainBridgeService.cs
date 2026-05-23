@@ -1,10 +1,10 @@
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Core.Blockchain.Wormhole;
-using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
+using OASIS.WebAPI.Models.Bridge;
 using OASIS.WebAPI.Models.Idempotency;
 using OASIS.WebAPI.Models.Responses;
 
@@ -16,15 +16,15 @@ namespace OASIS.WebAPI.Services;
 /// Trusted mode: OASIS server coordinates lock→mint (fast, custodial).
 /// Wormhole mode: Guardian network produces VAAs for trustless proof verification.
 ///
-/// Bridge transactions are persisted via EF Core to the PostgreSQL database.
-/// Service is Scoped (tied to request DbContext).
+/// Bridge transactions are persisted via IBridgeStore. Service is Scoped
+/// (tied to request scope).
 /// </summary>
 public class CrossChainBridgeService : ICrossChainBridgeService
 {
     private readonly IBlockchainProviderFactory _factory;
     private readonly IWormholeAdapter _wormhole;
     private readonly WormholeConfig _wormholeConfig;
-    private readonly OASISDbContext _db;
+    private readonly IBridgeStore _bridgeStore;
     private readonly IIdempotencyStore _idempotency;
     private readonly ILogger<CrossChainBridgeService> _logger;
 
@@ -32,14 +32,14 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         IBlockchainProviderFactory factory,
         IWormholeAdapter wormhole,
         IOptions<WormholeConfig> wormholeConfig,
-        OASISDbContext db,
+        IBridgeStore bridgeStore,
         IIdempotencyStore idempotency,
         ILogger<CrossChainBridgeService> logger)
     {
         _factory = factory;
         _wormhole = wormhole;
         _wormholeConfig = wormholeConfig.Value;
-        _db = db;
+        _bridgeStore = bridgeStore;
         _idempotency = idempotency;
         _logger = logger;
     }
@@ -82,7 +82,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
     public async Task<OASISResult<BridgeTransactionResult>> FetchVAAAsync(
         string bridgeTransactionId, CancellationToken ct = default)
     {
-        var tx = await _db.BridgeTransactions.FindAsync(new object[] { bridgeTransactionId }, ct);
+        var tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
         if (tx == null)
             return Error<BridgeTransactionResult>("Bridge transaction not found");
 
@@ -103,17 +103,18 @@ public class CrossChainBridgeService : ICrossChainBridgeService
 
         if (vaaResult.IsError)
         {
-            tx.ErrorMessage = vaaResult.Message;
-            await _db.SaveChangesAsync(ct);
+            await _bridgeStore.RecordVaaFetchErrorAsync(tx.Id, vaaResult.Message, ct);
             return Error<BridgeTransactionResult>($"VAA fetch failed: {vaaResult.Message}");
         }
 
         var vaa = vaaResult.Result!;
-        tx.VaaBytes = vaa.VaaBytes;
-        tx.VaaSignatureCount = vaa.SignatureCount;
-        tx.ProofData = vaa.Digest;
-        tx.Status = BridgeStatus.VAAReady;
-        await _db.SaveChangesAsync(ct);
+        await _bridgeStore.SaveVaaFetchResultAsync(
+            tx.Id, vaa.VaaBytes, vaa.SignatureCount, vaa.Digest, BridgeStatus.VAAReady, ct);
+
+        // Re-fetch to return the updated snapshot.
+        tx = await _bridgeStore.GetBridgeAsync(tx.Id, ct);
+        if (tx == null)
+            return Error<BridgeTransactionResult>("Bridge transaction vanished after VAA save");
 
         _logger.LogInformation(
             "VAA ready for bridge {Id}: seq={Sequence} sigs={Sigs}",
@@ -126,7 +127,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         string bridgeTransactionId, CancellationToken ct = default,
         string? clientIdempotencyKey = null)
     {
-        var tx = await _db.BridgeTransactions.FindAsync(new object[] { bridgeTransactionId }, ct);
+        var tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
         if (tx == null)
             return Error<BridgeTransactionResult>("Bridge transaction not found");
 
@@ -170,8 +171,10 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             switch (claim.Record.State)
             {
                 case IdempotencyState.Completed:
-                    // Re-read the now-terminal row and replay the prior success.
-                    await _db.Entry(tx).ReloadAsync(ct);
+                    // Re-fetch the now-terminal row and replay the prior success.
+                    tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
+                    if (tx == null)
+                        return Error<BridgeTransactionResult>("Bridge transaction not found during idempotent replay");
                     return Ok(tx,
                         $"Redeem already completed (idempotent replay): redeemTx={claim.Record.ResultPayload}");
                 case IdempotencyState.Failed:
@@ -186,17 +189,15 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         // ── Step 2: atomic VAAReady → Redeeming. Persisted BEFORE any on-chain
         // call. The WHERE Status==VAAReady predicate makes this the single point
         // that elects the exclusive redeem owner. ──
-        int affected = await _db.BridgeTransactions
-            .Where(b => b.Id == tx.Id && b.Status == BridgeStatus.VAAReady)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, BridgeStatus.Redeeming)
-                .SetProperty(b => b.IdempotencyKey, idempotencyKey), ct);
+        int affected = await _bridgeStore.TryTransitionBridgeStatusAsync(
+            tx.Id, BridgeStatus.VAAReady, BridgeStatus.Redeeming,
+            new BridgeStatusMutation { IdempotencyKey = idempotencyKey }, ct);
 
         if (affected != 1)
         {
             // Lost the race or not in VAAReady. Re-read to decide; never mint.
-            await _db.Entry(tx).ReloadAsync(ct);
-            if (tx.Status is BridgeStatus.Redeeming or BridgeStatus.Completed)
+            tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
+            if (tx != null && (tx.Status is BridgeStatus.Redeeming or BridgeStatus.Completed))
             {
                 await _idempotency.FailAsync(idempotencyKey,
                     $"Concurrent redeem already advanced bridge to {tx.Status}", ct);
@@ -204,14 +205,16 @@ public class CrossChainBridgeService : ICrossChainBridgeService
                     $"Bridge already being redeemed by a concurrent request (state {tx.Status}) — rejected to prevent double-mint");
             }
 
-            var rejectMsg = $"Bridge is in {tx.Status} state, expected VAAReady";
+            var rejectMsg = tx != null
+                ? $"Bridge is in {tx.Status} state, expected VAAReady"
+                : "Bridge transaction not found";
             await _idempotency.FailAsync(idempotencyKey, rejectMsg, ct);
             return Error<BridgeTransactionResult>(rejectMsg);
         }
 
         // ── Step 3: VAA replay ledger. Insert-before-redeem; a duplicate digest
         // means this VAA was already consumed elsewhere ⇒ reject, never mint. ──
-        _db.ConsumedVaas.Add(new ConsumedVaaRecord
+        var vaaRecord = new ConsumedVaaRecord
         {
             Digest = vaaDigest,
             EmitterChainId = tx.WormholeEmitterChainId ?? 0,
@@ -219,44 +222,29 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             Sequence = tx.WormholeSequence ?? 0,
             BridgeTransactionId = tx.Id,
             ConsumedAt = DateTime.UtcNow
-        });
-        try
+        };
+        bool inserted = await _bridgeStore.TryInsertConsumedVaaAsync(vaaRecord, ct);
+        if (!inserted)
         {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateException)
-        {
-            var dupEntry = _db.ChangeTracker.Entries<ConsumedVaaRecord>()
-                .FirstOrDefault(e => e.Entity.Digest == vaaDigest);
-            if (dupEntry != null)
-                dupEntry.State = EntityState.Detached;
-
-            var dup = await _db.ConsumedVaas.AsNoTracking()
-                .FirstOrDefaultAsync(v => v.Digest == vaaDigest, ct);
-            if (dup is not null)
-            {
-                const string replayMsg = "VAA already consumed — replay rejected, no mint performed";
-                // No on-chain effect on this path (replay is rejected BEFORE the
-                // redeem call). Only force the idempotency record to Failed if we
-                // actually moved the bridge Redeeming→Failed; otherwise the row
-                // already advanced under a concurrent path — mirror its true
-                // state instead of stamping a possibly-wrong "failed".
-                var failedRows = await FailRedeemAsync(tx.Id, replayMsg, ct);
-                if (failedRows == 1)
-                    await _idempotency.FailAsync(idempotencyKey, replayMsg, ct);
-                else
-                    await SettleIdempotencyToBridgeStateAsync(
-                        tx.Id, idempotencyKey, "no on-chain redeem (VAA replay rejected)", ct);
-                _logger.LogWarning(
-                    "VAA replay rejected for bridge {Id}: digest {Digest} already consumed by {OtherBridge}",
-                    tx.Id, vaaDigest, dup.BridgeTransactionId);
-                return Error<BridgeTransactionResult>(replayMsg);
-            }
-
-            throw; // genuine DB error, not a replay
+            const string replayMsg = "VAA already consumed — replay rejected, no mint performed";
+            // No on-chain effect on this path (replay is rejected BEFORE the
+            // redeem call). Only force the idempotency record to Failed if we
+            // actually moved the bridge Redeeming→Failed; otherwise the row
+            // already advanced under a concurrent path — mirror its true
+            // state instead of stamping a possibly-wrong "failed".
+            var failedRows = await FailRedeemAsync(tx.Id, replayMsg, ct);
+            if (failedRows == 1)
+                await _idempotency.FailAsync(idempotencyKey, replayMsg, ct);
+            else
+                await SettleIdempotencyToBridgeStateAsync(
+                    tx.Id, idempotencyKey, "no on-chain redeem (VAA replay rejected)", ct);
+            _logger.LogWarning(
+                "VAA replay rejected for bridge {Id}: digest {Digest}",
+                tx.Id, vaaDigest);
+            return Error<BridgeTransactionResult>(replayMsg);
         }
 
-        var vaa = new WormholeVAA
+        var vaaObj = new WormholeVAA
         {
             VaaBytes = tx.VaaBytes,
             EmitterChainId = tx.WormholeEmitterChainId ?? 0,
@@ -269,7 +257,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         // ── Step 4: the single irreversible on-chain effect. Reached only by the
         // claim winner that also won the atomic transition and passed replay. ──
         var redeemResult = await _wormhole.RedeemTransferAsync(
-            tx.TargetChain, vaa, tx.TargetAddress, ct);
+            tx.TargetChain, vaaObj, tx.TargetAddress, ct);
 
         if (redeemResult.IsError)
         {
@@ -297,13 +285,14 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         var redemption = redeemResult.Result!;
 
         // ── Step 5: atomic Redeeming → Completed (only the Redeeming owner). ──
-        int completed = await _db.BridgeTransactions
-            .Where(b => b.Id == tx.Id && b.Status == BridgeStatus.Redeeming)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, BridgeStatus.Completed)
-                .SetProperty(b => b.RedemptionTxHash, redemption.TxHash)
-                .SetProperty(b => b.MintTxHash, redemption.TxHash)
-                .SetProperty(b => b.CompletedAt, DateTime.UtcNow), ct);
+        int completed = await _bridgeStore.TryTransitionBridgeStatusAsync(
+            tx.Id, BridgeStatus.Redeeming, BridgeStatus.Completed,
+            new BridgeStatusMutation
+            {
+                RedemptionTxHash = redemption.TxHash,
+                MintTxHash = redemption.TxHash,
+                SetCompletedAtUtcNow = true,
+            }, ct);
 
         if (completed == 1)
         {
@@ -324,7 +313,10 @@ public class CrossChainBridgeService : ICrossChainBridgeService
                 $"redeem tx {redemption.TxHash}", ct);
         }
 
-        await _db.Entry(tx).ReloadAsync(ct);
+        // Re-fetch final state for the response.
+        tx = await _bridgeStore.GetBridgeAsync(tx.Id, ct);
+        if (tx == null)
+            return Error<BridgeTransactionResult>("Bridge transaction vanished after completion");
 
         _logger.LogInformation(
             "Wormhole bridge completed: {Id} {Source}→{Target} redeemTx={TxHash}",
@@ -343,11 +335,9 @@ public class CrossChainBridgeService : ICrossChainBridgeService
     /// </summary>
     private async Task<int> FailRedeemAsync(string bridgeId, string? errorMessage, CancellationToken ct)
     {
-        return await _db.BridgeTransactions
-            .Where(b => b.Id == bridgeId && b.Status == BridgeStatus.Redeeming)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, BridgeStatus.Failed)
-                .SetProperty(b => b.ErrorMessage, errorMessage), ct);
+        return await _bridgeStore.TryTransitionBridgeStatusAsync(
+            bridgeId, BridgeStatus.Redeeming, BridgeStatus.Failed,
+            new BridgeStatusMutation { ErrorMessage = errorMessage }, ct);
     }
 
     /// <summary>
@@ -363,8 +353,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
     private async Task SettleIdempotencyToBridgeStateAsync(
         string bridgeId, string idempotencyKey, string onChainRef, CancellationToken ct)
     {
-        var row = await _db.BridgeTransactions.AsNoTracking()
-            .FirstOrDefaultAsync(b => b.Id == bridgeId, ct);
+        var row = await _bridgeStore.GetBridgeAsync(bridgeId, ct);
         var actual = row?.Status;
 
         switch (actual)
@@ -401,25 +390,32 @@ public class CrossChainBridgeService : ICrossChainBridgeService
     public async Task<OASISResult<BridgeTransactionResult>> CompleteBridgeAsync(
         string bridgeTransactionId, CancellationToken ct = default)
     {
-        var tx = await _db.BridgeTransactions.FindAsync(new object[] { bridgeTransactionId }, ct);
+        var tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
         if (tx == null)
             return Error<BridgeTransactionResult>("Bridge transaction not found");
 
         if (tx.Status == BridgeStatus.Completed)
             return Ok(tx, "Bridge already completed");
 
-        tx.Status = BridgeStatus.Completed;
-        tx.CompletedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        var affected = await _bridgeStore.ForceCompleteBridgeAsync(bridgeTransactionId, ct);
+        if (affected == 0)
+        {
+            // Raced — re-fetch and report the actual terminal state.
+            tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
+            if (tx?.Status == BridgeStatus.Completed) return Ok(tx, "Bridge already completed");
+            return Error<BridgeTransactionResult>(
+                $"Could not complete bridge: state {tx?.Status.ToString() ?? "MISSING"}");
+        }
 
-        return Ok(tx, "Bridge marked as completed");
+        tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
+        return Ok(tx!, "Bridge marked as completed");
     }
 
     public async Task<OASISResult<BridgeTransactionResult>> ReverseBridgeAsync(
         string bridgeTransactionId, string sourceRecipientAddress, CancellationToken ct = default,
         string? clientIdempotencyKey = null)
     {
-        var tx = await _db.BridgeTransactions.FindAsync(new object[] { bridgeTransactionId }, ct);
+        var tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
         if (tx == null)
             return Error<BridgeTransactionResult>("Bridge transaction not found");
 
@@ -444,7 +440,9 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             switch (claim.Record.State)
             {
                 case IdempotencyState.Completed:
-                    await _db.Entry(tx).ReloadAsync(ct);
+                    tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
+                    if (tx == null)
+                        return Error<BridgeTransactionResult>("Bridge transaction not found during idempotent replay");
                     return Ok(tx, "Bridge already reversed (idempotent replay)");
                 case IdempotencyState.Failed:
                     return Error<BridgeTransactionResult>(
@@ -460,16 +458,14 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         // state (distinct from the forward redeem's Redeeming) so reversal
         // provenance is unambiguous — never inferred from a CompletedAt stamp.
         // Terminal state below is Refunded (success) or Failed (manual).
-        int affected = await _db.BridgeTransactions
-            .Where(b => b.Id == tx.Id && b.Status == BridgeStatus.Completed)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, BridgeStatus.Reversing)
-                .SetProperty(b => b.IdempotencyKey, idempotencyKey), ct);
+        int affected = await _bridgeStore.TryTransitionBridgeStatusAsync(
+            tx.Id, BridgeStatus.Completed, BridgeStatus.Reversing,
+            new BridgeStatusMutation { IdempotencyKey = idempotencyKey }, ct);
 
         if (affected != 1)
         {
-            await _db.Entry(tx).ReloadAsync(ct);
-            var raceMsg = $"Bridge no longer reversible (state {tx.Status}) — concurrent operation won";
+            tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
+            var raceMsg = $"Bridge no longer reversible (state {tx?.Status.ToString() ?? "MISSING"}) — concurrent operation won";
             await _idempotency.FailAsync(idempotencyKey, raceMsg, ct);
             return Error<BridgeTransactionResult>(raceMsg);
         }
@@ -499,14 +495,19 @@ public class CrossChainBridgeService : ICrossChainBridgeService
 
         if (burnResult is { IsError: false })
         {
-            await _db.BridgeTransactions
-                .Where(b => b.Id == tx.Id && b.Status == BridgeStatus.Reversing)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(b => b.Status, BridgeStatus.Refunded)
-                    .SetProperty(b => b.RedemptionTxHash, burnResult.Result)
-                    .SetProperty(b => b.CompletedAt, DateTime.UtcNow), ct);
+            await _bridgeStore.TryTransitionBridgeStatusAsync(
+                tx.Id, BridgeStatus.Reversing, BridgeStatus.Refunded,
+                new BridgeStatusMutation
+                {
+                    RedemptionTxHash = burnResult.Result,
+                    SetCompletedAtUtcNow = true,
+                }, ct);
             await _idempotency.CompleteAsync(idempotencyKey, burnResult.Result ?? string.Empty, ct);
-            await _db.Entry(tx).ReloadAsync(ct);
+
+            // Re-fetch final state for the response.
+            tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
+            if (tx == null)
+                return Error<BridgeTransactionResult>("Bridge transaction vanished after refund");
 
             _logger.LogInformation(
                 "Bridge reversed on-chain: {Id} → {SourceRecipient} burnTx={BurnTx}",
@@ -521,13 +522,13 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             $"MANUAL INTERVENTION REQUIRED: bridge {tx.Id} reversal could not be completed automatically " +
             $"({detail}). Manually burn wrapped {tx.TargetTokenId} on {tx.TargetChain} and release " +
             $"{tx.SourceTokenId} to {sourceRecipientAddress} on {tx.SourceChain}.";
-        await _db.BridgeTransactions
-            .Where(b => b.Id == tx.Id && b.Status == BridgeStatus.Reversing)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, BridgeStatus.Failed)
-                .SetProperty(b => b.ErrorMessage, manualMsg), ct);
+        await _bridgeStore.TryTransitionBridgeStatusAsync(
+            tx.Id, BridgeStatus.Reversing, BridgeStatus.Failed,
+            new BridgeStatusMutation { ErrorMessage = manualMsg }, ct);
         await _idempotency.FailAsync(idempotencyKey, manualMsg, ct);
-        await _db.Entry(tx).ReloadAsync(ct);
+
+        // Re-fetch final state for the response.
+        tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
 
         _logger.LogError(
             "Bridge reversal requires manual intervention: {Id} → {SourceRecipient}: {Detail}",
@@ -538,10 +539,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
     public async Task<OASISResult<IEnumerable<BridgeTransactionResult>>> GetBridgeHistoryAsync(
         Guid avatarId, CancellationToken ct = default)
     {
-        var history = await _db.BridgeTransactions
-            .Where(t => t.AvatarId == avatarId)
-            .OrderByDescending(t => t.CreatedAt)
-            .ToListAsync(ct);
+        var history = await _bridgeStore.GetBridgeHistoryAsync(avatarId, descending: true, ct);
 
         return Ok<IEnumerable<BridgeTransactionResult>>(
             history, $"Retrieved {history.Count} bridge transactions");
@@ -591,7 +589,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
     public async Task<OASISResult<BridgeTransactionResult>> GetBridgeStatusAsync(
         string bridgeTransactionId, CancellationToken ct = default)
     {
-        var tx = await _db.BridgeTransactions.FindAsync(new object[] { bridgeTransactionId }, ct);
+        var tx = await _bridgeStore.GetBridgeAsync(bridgeTransactionId, ct);
         if (tx == null)
             return Error<BridgeTransactionResult>("Bridge transaction not found");
 
@@ -629,8 +627,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             IdempotencyKey = idempotencyKey,
             CreatedAt = DateTime.UtcNow
         };
-        _db.BridgeTransactions.Add(bridgeTx);
-        await _db.SaveChangesAsync(ct);
+        await _bridgeStore.AddBridgeAsync(bridgeTx, ct);
 
         var initiationResult = await _wormhole.InitiateTransferAsync(
             sourceChain, targetChain, tokenId, "", recipientAddress, amount, ct);
@@ -641,33 +638,35 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             // not succeed (or its outcome is unknown); the reconciliation sweep
             // re-derives truth from chain confirmations for any orphan.
             var initErr = $"Wormhole initiation failed: {initiationResult.Message}";
-            await _db.BridgeTransactions
-                .Where(b => b.Id == bridgeId && b.Status == BridgeStatus.Initiated)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(b => b.Status, BridgeStatus.Failed)
-                    .SetProperty(b => b.ErrorMessage, initErr), ct);
+            await _bridgeStore.TryTransitionBridgeStatusAsync(
+                bridgeId, BridgeStatus.Initiated, BridgeStatus.Failed,
+                new BridgeStatusMutation { ErrorMessage = initErr }, ct);
             return Error<BridgeTransactionResult>(initErr);
         }
 
         var initiation = initiationResult.Result!;
 
         // Lock landed: record emitter/sequence and advance to AwaitingVAA.
-        await _db.BridgeTransactions
-            .Where(b => b.Id == bridgeId && b.Status == BridgeStatus.Initiated)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, BridgeStatus.AwaitingVAA)
-                .SetProperty(b => b.LockTxHash, initiation.TxHash)
-                .SetProperty(b => b.WormholeEmitterChainId, initiation.EmitterChainId)
-                .SetProperty(b => b.WormholeEmitterAddress, initiation.EmitterAddress)
-                .SetProperty(b => b.WormholeSequence, initiation.Sequence), ct);
+        await _bridgeStore.TryTransitionBridgeStatusAsync(
+            bridgeId, BridgeStatus.Initiated, BridgeStatus.AwaitingVAA,
+            new BridgeStatusMutation
+            {
+                LockTxHash = initiation.TxHash,
+                WormholeEmitterChainId = initiation.EmitterChainId,
+                WormholeEmitterAddress = initiation.EmitterAddress,
+                WormholeSequence = initiation.Sequence,
+            }, ct);
 
-        await _db.Entry(bridgeTx).ReloadAsync(ct);
+        // Re-fetch to return the updated snapshot.
+        var updated = await _bridgeStore.GetBridgeAsync(bridgeId, ct);
+        if (updated == null)
+            return Error<BridgeTransactionResult>("Bridge transaction vanished after initiation");
 
         _logger.LogInformation(
             "Wormhole bridge initiated: {Id} {Source}→{Target} seq={Sequence} — awaiting Guardian VAA",
-            bridgeTx.Id, sourceChain, targetChain, initiation.Sequence);
+            bridgeId, sourceChain, targetChain, initiation.Sequence);
 
-        return Ok(bridgeTx,
+        return Ok(updated,
             $"Wormhole bridge initiated: {sourceChain} → {targetChain}. " +
             $"Call FetchVAA to poll for Guardian signatures, then RedeemWithVAA to complete.");
     }
@@ -700,8 +699,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             {
                 case IdempotencyState.Completed:
                 {
-                    var prior = await _db.BridgeTransactions.AsNoTracking()
-                        .FirstOrDefaultAsync(b => b.IdempotencyKey == idempotencyKey, ct);
+                    var prior = await _bridgeStore.GetBridgeByIdempotencyKeyAsync(idempotencyKey, ct);
                     if (prior is not null)
                         return Ok(prior, $"Trusted bridge already completed (idempotent replay): {sourceChain} → {targetChain}");
                     return Error<BridgeTransactionResult>(
@@ -733,8 +731,7 @@ public class CrossChainBridgeService : ICrossChainBridgeService
             IdempotencyKey = idempotencyKey,
             CreatedAt = DateTime.UtcNow
         };
-        _db.BridgeTransactions.Add(bridgeTx);
-        await _db.SaveChangesAsync(ct);
+        await _bridgeStore.AddBridgeAsync(bridgeTx, ct);
 
         var bridgeVault = GetBridgeVaultAddress(sourceChain, targetChain);
         var lockResult = await sourceProvider.LockForBridgeAsync(
@@ -743,22 +740,21 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         if (lockResult.IsError)
         {
             var lockErr = $"Source chain lock failed: {lockResult.Message}";
-            await _db.BridgeTransactions
-                .Where(b => b.Id == bridgeTx.Id && b.Status == BridgeStatus.Initiated)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(b => b.Status, BridgeStatus.Failed)
-                    .SetProperty(b => b.ErrorMessage, lockErr), ct);
+            await _bridgeStore.TryTransitionBridgeStatusAsync(
+                bridgeTx.Id, BridgeStatus.Initiated, BridgeStatus.Failed,
+                new BridgeStatusMutation { ErrorMessage = lockErr }, ct);
             await _idempotency.FailAsync(idempotencyKey, lockErr, ct);
             return Error<BridgeTransactionResult>(lockErr);
         }
 
         // Lock landed: record it and move to Locked before attempting the mint.
-        await _db.BridgeTransactions
-            .Where(b => b.Id == bridgeTx.Id && b.Status == BridgeStatus.Initiated)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, BridgeStatus.Locked)
-                .SetProperty(b => b.LockTxHash, lockResult.Result)
-                .SetProperty(b => b.SourceAddress, lockResult.Result ?? ""), ct);
+        await _bridgeStore.TryTransitionBridgeStatusAsync(
+            bridgeTx.Id, BridgeStatus.Initiated, BridgeStatus.Locked,
+            new BridgeStatusMutation
+            {
+                LockTxHash = lockResult.Result,
+                SourceAddress = lockResult.Result ?? "",
+            }, ct);
 
         var mintResult = await targetProvider.MintWrappedAsync(
             sourceChain, tokenId, $"bridge://{sourceChain}/{tokenId}",
@@ -773,11 +769,9 @@ public class CrossChainBridgeService : ICrossChainBridgeService
                 $"MANUAL INTERVENTION REQUIRED: trusted bridge {bridgeTx.Id} locked source asset " +
                 $"(lockTx={lockResult.Result}) but target mint failed: {mintResult.Message}. " +
                 $"Release/refund the locked {tokenId} on {sourceChain} or retry the mint.";
-            await _db.BridgeTransactions
-                .Where(b => b.Id == bridgeTx.Id && b.Status == BridgeStatus.Locked)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(b => b.Status, BridgeStatus.Failed)
-                    .SetProperty(b => b.ErrorMessage, mintErr), ct);
+            await _bridgeStore.TryTransitionBridgeStatusAsync(
+                bridgeTx.Id, BridgeStatus.Locked, BridgeStatus.Failed,
+                new BridgeStatusMutation { ErrorMessage = mintErr }, ct);
             await _idempotency.FailAsync(idempotencyKey, mintErr, ct);
             _logger.LogError(
                 "Trusted bridge mint FAILED after successful lock: {Id} {Source}→{Target} lockTx={LockTx}: {Message}",
@@ -786,22 +780,26 @@ public class CrossChainBridgeService : ICrossChainBridgeService
         }
 
         // Lock + mint both succeeded: atomically stamp Completed.
-        await _db.BridgeTransactions
-            .Where(b => b.Id == bridgeTx.Id && b.Status == BridgeStatus.Locked)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(b => b.Status, BridgeStatus.Completed)
-                .SetProperty(b => b.TargetTokenId, mintResult.Result)
-                .SetProperty(b => b.MintTxHash, mintResult.Result)
-                .SetProperty(b => b.CompletedAt, DateTime.UtcNow), ct);
+        await _bridgeStore.TryTransitionBridgeStatusAsync(
+            bridgeTx.Id, BridgeStatus.Locked, BridgeStatus.Completed,
+            new BridgeStatusMutation
+            {
+                TargetTokenId = mintResult.Result,
+                MintTxHash = mintResult.Result,
+                SetCompletedAtUtcNow = true,
+            }, ct);
         await _idempotency.CompleteAsync(idempotencyKey, mintResult.Result ?? string.Empty, ct);
 
-        await _db.Entry(bridgeTx).ReloadAsync(ct);
+        // Re-fetch to return the updated snapshot.
+        var updated = await _bridgeStore.GetBridgeAsync(bridgeTx.Id, ct);
+        if (updated == null)
+            return Error<BridgeTransactionResult>("Bridge transaction vanished after completion");
 
         _logger.LogInformation(
             "Trusted bridge completed: {Id} {Source}→{Target} token={TokenId} amount={Amount}",
             bridgeTx.Id, sourceChain, targetChain, tokenId, amount);
 
-        return Ok(bridgeTx, $"Trusted bridge completed: {sourceChain} → {targetChain}");
+        return Ok(updated, $"Trusted bridge completed: {sourceChain} → {targetChain}");
     }
 
     private string GetBridgeVaultAddress(string sourceChain, string targetChain)

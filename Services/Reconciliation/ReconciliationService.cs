@@ -1,9 +1,9 @@
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OASIS.WebAPI.Core;
-using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
+using OASIS.WebAPI.Models.Bridge;
 using OASIS.WebAPI.Models.Idempotency;
 using OASIS.WebAPI.Models.Responses;
 
@@ -35,7 +35,7 @@ namespace OASIS.WebAPI.Services.Reconciliation;
 /// </summary>
 public sealed class ReconciliationService : IReconciliationService
 {
-    private readonly OASISDbContext _db;
+    private readonly IBridgeStore _bridgeStore;
     private readonly IBlockchainProviderFactory _chainFactory;
     private readonly IIdempotencyStore _idempotency;
     private readonly ILogger<ReconciliationService> _logger;
@@ -60,13 +60,13 @@ public sealed class ReconciliationService : IReconciliationService
     };
 
     public ReconciliationService(
-        OASISDbContext db,
+        IBridgeStore bridgeStore,
         IBlockchainProviderFactory chainFactory,
         IIdempotencyStore idempotency,
         ILogger<ReconciliationService> logger,
         IOptions<ReconciliationOptions> options)
     {
-        _db = db;
+        _bridgeStore = bridgeStore;
         _chainFactory = chainFactory;
         _idempotency = idempotency;
         _logger = logger;
@@ -81,15 +81,10 @@ public sealed class ReconciliationService : IReconciliationService
         var staleBefore = now.AddSeconds(-Math.Max(0, _options.BridgeStaleAfterSeconds));
         var batch = Math.Clamp(_options.BatchSize, 1, 1000);
 
-        // Snapshot candidate ids only (no tracking) — every write below is a
-        // standalone conditional UPDATE, so we never mutate tracked entities.
-        var candidates = await _db.BridgeTransactions
-            .AsNoTracking()
-            .Where(b => NonTerminalBridge.Contains(b.Status) && b.CreatedAt < staleBefore)
-            .OrderBy(b => b.CreatedAt)
-            .Take(batch)
-            .Select(b => b.Id)
-            .ToListAsync(ct);
+        // Snapshot candidate ids only — every write below is a standalone
+        // conditional UPDATE, so we never mutate tracked entities.
+        var candidates = await _bridgeStore.GetNonTerminalBridgeIdsAsync(
+            NonTerminalBridge, staleBefore, batch, ct);
 
         var report = ReconciliationReport.Empty with { Scanned = candidates.Count };
 
@@ -120,9 +115,7 @@ public sealed class ReconciliationService : IReconciliationService
         if (string.IsNullOrWhiteSpace(id))
             throw new ArgumentException("Bridge transaction id is required", nameof(id));
 
-        var exists = await _db.BridgeTransactions
-            .AsNoTracking()
-            .AnyAsync(b => b.Id == id, ct);
+        var exists = await _bridgeStore.ExistsByIdAsync(id, ct);
 
         if (!exists)
         {
@@ -138,15 +131,13 @@ public sealed class ReconciliationService : IReconciliationService
     /// <summary>
     /// Reconcile exactly one bridge transaction. Re-reads (no-tracking) inside
     /// so a manual trigger or a long sweep always sees current status. All
-    /// writes are conditional <c>ExecuteUpdateAsync</c> with the expected
-    /// current status in the predicate; exactly-one-row is asserted.
+    /// writes are conditional updates with the expected current status in the
+    /// predicate; exactly-one-row is asserted.
     /// </summary>
     private async Task<ReconciliationReport> ReconcileOneBridgeAsync(
         string id, DateTime now, CancellationToken ct)
     {
-        var tx = await _db.BridgeTransactions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(b => b.Id == id, ct);
+        var tx = await _bridgeStore.GetBridgeAsync(id, ct);
 
         if (tx is null || !NonTerminalBridge.Contains(tx.Status))
             return ReconciliationReport.Empty; // already terminal / vanished — nothing to do
@@ -211,16 +202,12 @@ public sealed class ReconciliationService : IReconciliationService
                 // <expected current>. If a concurrent live request already
                 // moved it, affected == 0 and we simply no-op (idempotent).
                 var expected = tx.Status;
-                var completedAt = DateTime.UtcNow;
-                int affected = await _db.BridgeTransactions
-                    .Where(b => b.Id == tx.Id && b.Status == expected)
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(b => b.Status, advanceTo)
-                        .SetProperty(b => b.CompletedAt,
-                            advanceTo == BridgeStatus.Completed
-                                ? completedAt
-                                : (DateTime?)null),
-                        ct);
+                var alsoSet = advanceTo == BridgeStatus.Completed
+                    ? new BridgeStatusMutation { SetCompletedAtUtcNow = true }
+                    : new BridgeStatusMutation { ClearCompletedAt = true };
+
+                int affected = await _bridgeStore.TryTransitionBridgeStatusAsync(
+                    tx.Id, expected, advanceTo, alsoSet, ct);
 
                 if (affected == 1)
                 {
@@ -251,13 +238,13 @@ public sealed class ReconciliationService : IReconciliationService
             {
                 var expected = tx.Status;
                 var msg = $"Reconciliation: {phase} tx {txHash} reported FAILED on-chain ({chainName}).";
-                int affected = await _db.BridgeTransactions
-                    .Where(b => b.Id == tx.Id && b.Status == expected)
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(b => b.Status, BridgeStatus.Failed)
-                        .SetProperty(b => b.ErrorMessage, msg)
-                        .SetProperty(b => b.CompletedAt, DateTime.UtcNow),
-                        ct);
+                int affected = await _bridgeStore.TryTransitionBridgeStatusAsync(
+                    tx.Id, expected, BridgeStatus.Failed,
+                    new BridgeStatusMutation
+                    {
+                        ErrorMessage = msg,
+                        SetCompletedAtUtcNow = true,
+                    }, ct);
 
                 if (affected == 1)
                 {
@@ -351,13 +338,8 @@ public sealed class ReconciliationService : IReconciliationService
         var staleBefore = now.AddSeconds(-Math.Max(0, _options.OperationStaleAfterSeconds));
         var batch = Math.Clamp(_options.BatchSize, 1, 1000);
 
-        var candidateIds = await _db.BlockchainOperations
-            .AsNoTracking()
-            .Where(o => NonTerminalOperation.Contains(o.Status) && o.CreatedDate < staleBefore)
-            .OrderBy(o => o.CreatedDate)
-            .Take(batch)
-            .Select(o => o.Id)
-            .ToListAsync(ct);
+        var candidateIds = await _bridgeStore.GetNonTerminalOperationIdsAsync(
+            NonTerminalOperation, staleBefore, batch, ct);
 
         var report = ReconciliationReport.Empty with { Scanned = candidateIds.Count };
 
@@ -385,9 +367,7 @@ public sealed class ReconciliationService : IReconciliationService
     private async Task<ReconciliationReport> ReconcileOneOperationAsync(
         Guid id, DateTime now, CancellationToken ct)
     {
-        var op = await _db.BlockchainOperations
-            .AsNoTracking()
-            .FirstOrDefaultAsync(o => o.Id == id, ct);
+        var op = await _bridgeStore.GetOperationAsync(id, ct);
 
         if (op is null || !NonTerminalOperation.Contains(op.Status))
             return ReconciliationReport.Empty;
@@ -432,12 +412,8 @@ public sealed class ReconciliationService : IReconciliationService
             case ChainVerdict.Confirmed:
             {
                 var expected = op.Status;
-                int affected = await _db.BlockchainOperations
-                    .Where(o => o.Id == op.Id && o.Status == expected)
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(o => o.Status, OperationStatus.Completed)
-                        .SetProperty(o => o.CompletedDate, DateTime.UtcNow),
-                        ct);
+                int affected = await _bridgeStore.TryTransitionOperationStatusAsync(
+                    op.Id, expected, OperationStatus.Completed, DateTime.UtcNow, ct);
 
                 if (affected == 1)
                 {
@@ -462,12 +438,8 @@ public sealed class ReconciliationService : IReconciliationService
             case ChainVerdict.FailedOnChain:
             {
                 var expected = op.Status;
-                int affected = await _db.BlockchainOperations
-                    .Where(o => o.Id == op.Id && o.Status == expected)
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(o => o.Status, OperationStatus.Failed)
-                        .SetProperty(o => o.CompletedDate, DateTime.UtcNow),
-                        ct);
+                int affected = await _bridgeStore.TryTransitionOperationStatusAsync(
+                    op.Id, expected, OperationStatus.Failed, DateTime.UtcNow, ct);
 
                 if (affected == 1)
                 {

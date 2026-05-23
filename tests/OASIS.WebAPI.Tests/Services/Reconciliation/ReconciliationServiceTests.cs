@@ -1,13 +1,9 @@
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Core.Blockchain.Wormhole;
-using OASIS.WebAPI.Core.Idempotency;
-using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Idempotency;
@@ -19,11 +15,10 @@ namespace OASIS.WebAPI.Tests.Services.Reconciliation;
 
 /// <summary>
 /// Reconciliation tests: "kill mid-op → recovery converges to chain truth".
-/// ReconciliationService only mutates via a conditional
-/// <c>ExecuteUpdateAsync</c> whose predicate pins the expected current status,
-/// then asserts exactly one row changed. EF-InMemory does not faithfully
-/// implement that row-affected count, so a real SQLite DB (shared-cache
-/// in-memory <see cref="SqliteTestContext"/>) is used. The chain is mocked; every
+/// ReconciliationService only mutates via a conditional transition whose predicate
+/// pins the expected current status, then asserts exactly one row changed.
+/// <see cref="FakeBridgeStore"/> faithfully implements the same single-winner
+/// semantics (lock-guarded predicate check + mutation). The chain is mocked; every
 /// test asserts reconciliation NEVER calls any on-chain MUTATING method — it
 /// strictly OBSERVES via <c>GetTransactionStatusAsync</c>.
 /// </summary>
@@ -38,7 +33,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task KillMidRedeem_ConvergesToChainTruth_Once_AndIdempotent()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
         // Stale enough to be reconciled (older than BridgeStaleAfterSeconds=60).
         var bridgeId = harness.SeedBridge(b =>
         {
@@ -89,7 +84,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task StuckAndChainSilent_NeverMutated_FlaggedOnlyWhenHardStuck()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
 
         // Provider can't say anything: IsError result (not found / RPC down).
         harness.SetupTxStatusError("mint_unknown");
@@ -146,7 +141,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task OnChainExplicitNegative_MarksFailed_ConditionalUpdateRespected()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
         var bridgeId = harness.SeedBridge(b =>
         {
             b.Status = BridgeStatus.Redeeming;
@@ -191,7 +186,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task FreshInFlightBridge_NotScanned_NoProviderCall_NoWrite()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
         var bridgeId = harness.SeedBridge(b =>
         {
             b.Status = BridgeStatus.Redeeming;
@@ -232,7 +227,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task Operations_ConfirmedAdvances_NoTxHashFlagged_NeverRebroadcast()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
 
         // (a) Pending op WITH a confirmed on-chain tx.
         var confirmedOp = harness.SeedOperation(o =>
@@ -296,7 +291,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task OrphanLock_ConfirmedAdvances_UnconfirmedFlagged_NeverReverses()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
 
         // (a) Initiated with a LockTxHash the SOURCE chain confirms → Locked.
         var confirmedLock = harness.SeedBridge(b =>
@@ -354,7 +349,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task BridgeConfirmedTerminal_SettlesOrphanedInProgressIdempotency_AndIdempotentOnRerun()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
         const string idemKey = "bridge-redeem:br_orphan:digestabc";
 
         // Orphaned InProgress claim left by the dead process.
@@ -406,7 +401,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task OperationConfirmedTerminal_SettlesResolvableIdempotency_LeavesUnresolvableUntouched()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
         const string idemKey = "op:explicit-key:abc123";
         harness.SeedIdempotency(idemKey, IdempotencyState.InProgress, "Mint");
 
@@ -465,7 +460,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task AlreadyTerminalIdempotencyRecord_LeftUntouched()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
         const string idemKey = "bridge-redeem:br_done:digestxyz";
 
         // Already settled (e.g. the original request DID complete it).
@@ -517,7 +512,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task ReversingState_NotAdvanced_FlaggedForManualIntervention()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
 
         // Reverse-in-flight: ReverseBridgeAsync moved it Completed→Reversing.
         // No CompletedAt / idempotency-key inference is needed — the explicit
@@ -572,7 +567,7 @@ public class ReconciliationServiceTests
     [Fact]
     public async Task ForwardRedeeming_WithCompletedAtAndReverseishKey_StillAdvances_NotFrozen()
     {
-        using var harness = new SqliteReconHarness();
+        using var harness = new FakeReconHarness();
 
         // A genuine forward redeem in Redeeming that ALSO has CompletedAt set
         // and an idempotency key containing "reverse" — the exact inputs the
@@ -609,21 +604,22 @@ public class ReconciliationServiceTests
     // ─── SQLite harness + Moq chain doubles ───
 
     /// <summary>
-    /// Wraps the shared shared-cache <see cref="SqliteTestContext"/> with the
-    /// reconciliation options and the mocked chain (a single
+    /// Wraps <see cref="FakeBridgeStore"/> and <see cref="FakeIdempotencyStore"/>
+    /// with the reconciliation options and the mocked chain (a single
     /// <see cref="IBlockchainProvider"/> behind a
     /// <see cref="IBlockchainProviderFactory"/> for both <c>GetProvider</c> and
     /// <c>GetDefaultProvider</c>).
     /// </summary>
-    private sealed class SqliteReconHarness : IDisposable
+    private sealed class FakeReconHarness : IDisposable
     {
-        private readonly SqliteTestContext _db = SqliteTestContext.SharedCacheInMemory();
+        private readonly FakeBridgeStore _fakeBridge = new();
+        private readonly FakeIdempotencyStore _fakeIdempotency = new();
         private readonly ReconciliationOptions _reconOptions;
 
         public Mock<IBlockchainProvider> ProviderMock { get; } = new();
         public Mock<IBlockchainProviderFactory> FactoryMock { get; } = new();
 
-        public SqliteReconHarness()
+        public FakeReconHarness()
         {
             ProviderMock.Setup(p => p.ChainType).Returns("Solana");
             FactoryMock.Setup(f => f.GetProvider(It.IsAny<string>(), It.IsAny<ChainNetwork>()))
@@ -645,56 +641,22 @@ public class ReconciliationServiceTests
             };
         }
 
-        private OASISDbContext NewContext() => _db.NewContext();
-
-        /// <summary>
-        /// Mirrors the production sweep scope: ReconciliationService and the
-        /// IIdempotencyStore both resolve the SAME scoped OASISDbContext. The
-        /// real EF-backed <see cref="IdempotencyStore"/> is used (not a mock)
-        /// so the InProgress→terminal settlement is exercised against a genuine
-        /// relational store, consistent with this harness's philosophy.
-        /// </summary>
-        private IServiceScopeFactory CreateScopeFactory()
-        {
-            var services = new ServiceCollection();
-            services.AddScoped<OASISDbContext>(_ => _db.NewContext());
-            return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-        }
-
-        public ReconciliationService CreateService()
-        {
-            var ctx = NewContext();
-            return new ReconciliationService(
-                ctx,
+        public ReconciliationService CreateService() =>
+            new(
+                _fakeBridge,
                 FactoryMock.Object,
-                new IdempotencyStore(CreateScopeFactory()),
+                _fakeIdempotency,
                 Mock.Of<ILogger<ReconciliationService>>(),
                 Options.Create(_reconOptions));
-        }
 
         /// <summary>Seed an idempotency record in a given state (models the
         /// orphaned InProgress claim a crash leaves behind).</summary>
         public void SeedIdempotency(
-            string key, IdempotencyState state, string operationType = "bridge-redeem")
-        {
-            using var db = NewContext();
-            db.IdempotencyRecords.Add(new IdempotencyRecord
-            {
-                Key = key,
-                OperationType = operationType,
-                State = state,
-                CreatedAt = DateTime.UtcNow.AddMinutes(-30),
-                UpdatedAt = DateTime.UtcNow.AddMinutes(-30),
-            });
-            db.SaveChanges();
-        }
+            string key, IdempotencyState state, string operationType = "bridge-redeem") =>
+            _fakeIdempotency.Seed(key, operationType, state);
 
-        public IdempotencyRecord? GetIdempotency(string key)
-        {
-            using var db = NewContext();
-            return db.IdempotencyRecords.AsNoTracking()
-                .FirstOrDefault(r => r.Key == key);
-        }
+        public IdempotencyRecord? GetIdempotency(string key) =>
+            _fakeIdempotency.GetAsync(key, CancellationToken.None).GetAwaiter().GetResult();
 
         /// <summary>Configure the chain probe for a tx hash to return a
         /// successful <c>OASISResult</c> carrying the given status dictionary.</summary>
@@ -736,9 +698,7 @@ public class ReconciliationServiceTests
                 CreatedAt = DateTime.UtcNow.AddMinutes(-30),
             };
             configure(row);
-            using var db = NewContext();
-            db.BridgeTransactions.Add(row);
-            db.SaveChanges();
+            _fakeBridge.SeedBridge(row);
             return row.Id;
         }
 
@@ -755,23 +715,17 @@ public class ReconciliationServiceTests
                 Parameters = new Dictionary<string, string>(),
             };
             configure(op);
-            using var db = NewContext();
-            db.BlockchainOperations.Add(op);
-            db.SaveChanges();
+            _fakeBridge.SeedOperation(op);
             return op.Id;
         }
 
-        public BridgeTransactionResult GetBridge(string id)
-        {
-            using var db = NewContext();
-            return db.BridgeTransactions.AsNoTracking().Single(b => b.Id == id);
-        }
+        public BridgeTransactionResult GetBridge(string id) =>
+            _fakeBridge.GetBridgeAsync(id).GetAwaiter().GetResult()
+            ?? throw new InvalidOperationException($"No bridge with id '{id}' found in fake store.");
 
-        public BlockchainOperation GetOperation(Guid id)
-        {
-            using var db = NewContext();
-            return db.BlockchainOperations.AsNoTracking().Single(o => o.Id == id);
-        }
+        public BlockchainOperation GetOperation(Guid id) =>
+            _fakeBridge.GetOperationAsync(id).GetAwaiter().GetResult()
+            ?? throw new InvalidOperationException($"No operation with id '{id}' found in fake store.");
 
         /// <summary>The central safety invariant: reconciliation OBSERVES, it
         /// NEVER broadcasts/mutates on-chain.</summary>
@@ -809,6 +763,6 @@ public class ReconciliationServiceTests
                 It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
-        public void Dispose() => _db.Dispose();
+        public void Dispose() { /* no resources to release — all in-memory */ }
     }
 }

@@ -1,0 +1,30 @@
+erDiagram
+    %% @surreal.schemafull
+    %% @surreal.aggregate "Holon (Models/Holon.cs)"
+    %% @surreal.guardrail "G6 SCHEMAFULL"
+    %% @surreal.note "ParentHolon / SubHolons are navigation properties from EF -- not persisted. Polyhierarchy graph remodel lives in surrealdb-migration task 10."
+    holon {
+        string id
+        %% @surreal.assert "$value != NONE AND $value != \"\""
+        string name
+        string description
+        option<string> parent_holon_id
+        option<string> avatar_id
+        %% @surreal.assert "$value != NONE AND $value != \"\""
+        string provider_name
+        option<string> chain_id
+        option<string> asset_type
+        option<string> token_id
+        %% @surreal.fieldgroup "Metadata (flexible key->value bag)"
+        option<object> metadata
+        %% @surreal.fieldgroup "PeerHolonIds (list of holon-id strings)"
+        option<array<string>> peer_holon_ids
+        datetime created_date
+        option<datetime> modified_date
+        %% @surreal.default "true"
+        bool is_active
+        %% @surreal.index fields=[avatar_id] name=holon_avatar_id
+        %% @surreal.index fields=[parent_holon_id] name=holon_parent
+        %% @surreal.index fields=[provider_name,chain_id] name=holon_provider_chain
+        %% @surreal.index fields=[asset_type] name=holon_asset_type
+    }

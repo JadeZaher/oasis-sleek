@@ -1,8 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using OASIS.WebAPI.Core;
-using OASIS.WebAPI.Data;
+using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Responses;
 
@@ -13,11 +12,11 @@ namespace OASIS.WebAPI.Controllers;
 [Authorize]
 public class ApiKeyController : ControllerBase
 {
-    private readonly OASISDbContext _db;
+    private readonly IApiKeyStore _store;
 
-    public ApiKeyController(OASISDbContext db)
+    public ApiKeyController(IApiKeyStore store)
     {
-        _db = db;
+        _store = store;
     }
 
     private Guid GetAvatarId()
@@ -53,8 +52,7 @@ public class ApiKeyController : ControllerBase
             Scopes = request.Scopes,
         };
 
-        _db.ApiKeys.Add(apiKey);
-        await _db.SaveChangesAsync();
+        await _store.CreateAsync(apiKey, HttpContext.RequestAborted);
 
         return Ok(new OASISResult<CreateApiKeyResponse>
         {
@@ -83,22 +81,20 @@ public class ApiKeyController : ControllerBase
         if (avatarId == Guid.Empty)
             return Unauthorized(new OASISResult<object> { IsError = true, Message = "Avatar not authenticated." });
 
-        var keys = await _db.ApiKeys
-            .Where(k => k.AvatarId == avatarId)
-            .OrderByDescending(k => k.CreatedDate)
-            .Select(k => new ApiKeyInfo
-            {
-                Id = k.Id,
-                Name = k.Name,
-                KeyPrefix = k.KeyPrefix,
-                CreatedDate = k.CreatedDate,
-                ExpiresAt = k.ExpiresAt,
-                LastUsedAt = k.LastUsedAt,
-                RevokedAt = k.RevokedAt,
-                IsActive = k.IsActive,
-                Scopes = k.Scopes,
-            })
-            .ToListAsync();
+        var owned = await _store.ListByAvatarAsync(avatarId, HttpContext.RequestAborted);
+
+        var keys = owned.Select(k => new ApiKeyInfo
+        {
+            Id = k.Id,
+            Name = k.Name,
+            KeyPrefix = k.KeyPrefix,
+            CreatedDate = k.CreatedDate,
+            ExpiresAt = k.ExpiresAt,
+            LastUsedAt = k.LastUsedAt,
+            RevokedAt = k.RevokedAt,
+            IsActive = k.IsActive,
+            Scopes = k.Scopes,
+        }).ToList();
 
         return Ok(new OASISResult<List<ApiKeyInfo>> { IsError = false, Message = "OK", Result = keys });
     }
@@ -113,15 +109,9 @@ public class ApiKeyController : ControllerBase
         if (avatarId == Guid.Empty)
             return Unauthorized(new OASISResult<object> { IsError = true, Message = "Avatar not authenticated." });
 
-        var key = await _db.ApiKeys
-            .FirstOrDefaultAsync(k => k.Id == id && k.AvatarId == avatarId);
-
-        if (key is null)
+        var ok = await _store.RevokeAsync(id, avatarId, DateTime.UtcNow, HttpContext.RequestAborted);
+        if (!ok)
             return NotFound(new OASISResult<object> { IsError = true, Message = "API key not found." });
-
-        key.IsActive = false;
-        key.RevokedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync();
 
         return Ok(new OASISResult<object> { IsError = false, Message = "API key revoked." });
     }
@@ -136,14 +126,9 @@ public class ApiKeyController : ControllerBase
         if (avatarId == Guid.Empty)
             return Unauthorized(new OASISResult<object> { IsError = true, Message = "Avatar not authenticated." });
 
-        var key = await _db.ApiKeys
-            .FirstOrDefaultAsync(k => k.Id == id && k.AvatarId == avatarId);
-
-        if (key is null)
+        var ok = await _store.DeleteAsync(id, avatarId, HttpContext.RequestAborted);
+        if (!ok)
             return NotFound(new OASISResult<object> { IsError = true, Message = "API key not found." });
-
-        _db.ApiKeys.Remove(key);
-        await _db.SaveChangesAsync();
 
         return Ok(new OASISResult<object> { IsError = false, Message = "API key deleted." });
     }

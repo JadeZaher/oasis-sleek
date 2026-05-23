@@ -84,6 +84,12 @@ public class WalletBuilder
     public WalletBuilder WithLabel(string label) { _label = label; return this; }
     public WalletBuilder AsDefault() { _isDefault = true; return this; }
 
+    // Property accessors used by the SurrealDB harness seed helpers.
+    public string GetChainType() => _chainType;
+    public string GetAddress() => _address;
+    public string? GetLabel() => _label;
+    public bool GetIsDefault() => _isDefault;
+
     public Wallet Build() =>
         new()
         {
@@ -143,6 +149,7 @@ public class HolonBuilder
         {
             Name = _name,
             Description = _description,
+            ParentHolonId = _parentHolonId,
             ProviderName = _providerName,
             ChainId = _chainId,
             AssetType = _assetType,

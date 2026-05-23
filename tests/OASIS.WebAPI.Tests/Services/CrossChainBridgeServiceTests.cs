@@ -1,14 +1,13 @@
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Core.Blockchain.Wormhole;
-using OASIS.WebAPI.Core.Idempotency;
-using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
+using OASIS.WebAPI.Models;
+using OASIS.WebAPI.Models.Bridge;
 using OASIS.WebAPI.Models.Responses;
 using OASIS.WebAPI.Services;
 using OASIS.WebAPI.Tests.TestSupport;
@@ -36,19 +35,13 @@ public class CrossChainBridgeServiceTests
         _factoryMock.Setup(f => f.GetProvider(It.IsAny<string>(), It.IsAny<ChainNetwork>()))
             .Returns(_providerMock.Object);
 
-        // Service-behavior tests that do not touch the DB UNIQUE constraints
-        // use EF-InMemory + the INSERT-WINS fake. The atomicity/replay tests
-        // below instead use real SQLite + the real IdempotencyStore.
-        var dbOptions = new DbContextOptionsBuilder<OASISDbContext>()
-            .UseInMemoryDatabase($"BridgeTests_{Guid.NewGuid()}")
-            .Options;
-        var db = new OASISDbContext(dbOptions);
-
+        // Service-behavior tests that do not touch DB UNIQUE constraints use
+        // the in-memory fake stores directly — no EF/SQLite required.
         _service = new CrossChainBridgeService(
             _factoryMock.Object,
             _wormholeMock.Object,
             Options.Create(_config),
-            db,
+            new FakeBridgeStore(),
             new FakeIdempotencyStore(),
             Mock.Of<ILogger<CrossChainBridgeService>>());
     }
@@ -65,7 +58,7 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task InitiateBridge_TrustedMode_CompletesImmediately()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         harness.ProviderMock.Setup(p => p.LockForBridgeAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -90,7 +83,7 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task InitiateBridge_WormholeMode_ReturnsAwaitingVAA()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         harness.WormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(true);
         harness.WormholeMock.Setup(w => w.InitiateTransferAsync(
             "Solana", "Algorand", "token1", It.IsAny<string>(), "recipient",
@@ -122,7 +115,7 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task InitiateBridge_WormholeUnsupported_FallsBackToTrusted()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         harness.WormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(false);
 
         harness.ProviderMock.Setup(p => p.LockForBridgeAsync(
@@ -149,7 +142,7 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task WormholeBridge_FullLifecycle_InitiateFetchRedeem()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         var avatarId = Guid.NewGuid();
 
         // Step 1: Initiate
@@ -221,7 +214,7 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task FetchVAA_TrustedBridge_ReturnsError()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         harness.ProviderMock.Setup(p => p.LockForBridgeAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -234,7 +227,7 @@ public class CrossChainBridgeServiceTests
         var (svc, _) = harness.CreateService();
         var initResult = await svc.InitiateBridgeAsync(
             "Solana", "Algorand", "token1", "r", Guid.NewGuid(), 1, BridgeMode.Trusted);
-        initResult.IsError.Should().BeFalse("trusted initiate must genuinely succeed on SQLite");
+        initResult.IsError.Should().BeFalse("trusted initiate must genuinely succeed on the fake store");
         var bridgeId = initResult.Result!.Id;
 
         var fetchResult = await svc.FetchVAAAsync(bridgeId);
@@ -245,7 +238,7 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task RedeemWithVAA_NotVAAReady_ReturnsError()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         harness.WormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(true);
         harness.WormholeMock.Setup(w => w.InitiateTransferAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
@@ -264,7 +257,7 @@ public class CrossChainBridgeServiceTests
         var (svc, _) = harness.CreateService();
         var initResult = await svc.InitiateBridgeAsync(
             "Solana", "Algorand", "token1", "r", Guid.NewGuid(), 1, BridgeMode.Wormhole);
-        initResult.IsError.Should().BeFalse("the Wormhole initiate must reach AwaitingVAA on SQLite");
+        initResult.IsError.Should().BeFalse("the Wormhole initiate must reach AwaitingVAA on the fake store");
         var bridgeId = initResult.Result!.Id;
 
         // Try to redeem without fetching VAA first
@@ -298,7 +291,7 @@ public class CrossChainBridgeServiceTests
     public async Task RedeemWithVAA_MalformedOrEmptyVaaBytes_RejectsNoMint(
         string vaaBytes, string expectedMessageFragment)
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
 
         int redeemInvocations = 0;
         harness.WormholeMock
@@ -416,7 +409,7 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task ReverseBridge_Success_UsesExplicitReversingState_ThenRefunded()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
 
         harness.ProviderMock.Setup(p => p.BurnWrappedAsync(
             It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>(),
@@ -448,7 +441,7 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task ReverseBridge_BurnFails_ReversingToFailed_ManualIntervention()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
 
         harness.ProviderMock.Setup(p => p.BurnWrappedAsync(
             It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>(),
@@ -471,20 +464,20 @@ public class CrossChainBridgeServiceTests
     }
 
     // ─── Pre-launch bridge safety: financial-correctness invariants under
-    //     concurrency and retry. Backed by the real SQLite harness + real
-    //     IdempotencyStore so the safety comes from the DB UNIQUE constraints
-    //     + ExecuteUpdateAsync row-affected semantics, not a stubbed double.
+    //     concurrency and retry. FakeBridgeStore + FakeIdempotencyStore preserve
+    //     the UNIQUE-on-Digest + INSERT-WINS + lock-guarded conditional-transition
+    //     semantics the EF/SQLite impl provided.
 
     /// <summary>
     /// N concurrent redeems of the SAME bridge/VAA ⇒ EXACTLY ONE on-chain mint.
-    /// The exclusive owner is elected by the real conditional UPDATE WHERE
-    /// Status==VAAReady + affected==1 (only exists against a real relational
-    /// engine), so this must run on SQLite, not the fake/EF-InMemory.
+    /// The exclusive owner is elected by the conditional UPDATE WHERE
+    /// Status==VAAReady + affected==1 (held under FakeBridgeStore's internal lock),
+    /// so exactly one caller sees affected==1 and the rest see 0.
     /// </summary>
     [Fact]
     public async Task ConcurrentDoubleRedeem_ResultsInExactlyOneMint()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         const int concurrency = 16;
 
         var bridgeId = harness.SeedVaaReadyBridge(
@@ -567,14 +560,14 @@ public class CrossChainBridgeServiceTests
 
     /// <summary>
     /// Duplicate Wormhole initiate (identical inputs) ⇒ exactly one bridge row
-    /// reaches AwaitingVAA. Dedupe is enforced by the UNIQUE filtered index on
-    /// (WormholeEmitterChainId, WormholeEmitterAddress, WormholeSequence) — real
-    /// only on SQLite.
+    /// reaches AwaitingVAA. Dedupe is enforced by the idempotency store's
+    /// INSERT-WINS primitive (FakeIdempotencyStore uses ConcurrentDictionary.TryAdd —
+    /// exactly one caller wins).
     /// </summary>
     [Fact]
     public async Task DuplicateWormholeInitiate_YieldsOneBridgeRow_OneOnChainLock()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         var avatarId = Guid.NewGuid();
 
         harness.WormholeMock.Setup(w => w.IsRouteSupported("Solana", "Algorand")).Returns(true);
@@ -632,13 +625,13 @@ public class CrossChainBridgeServiceTests
     /// <summary>
     /// A replayed VAA (same SHA-256 digest) is rejected by the ConsumedVaas
     /// UNIQUE Digest constraint — no second mint, bridge not re-Completed.
-    /// Requires SQLite — EF-InMemory would silently allow the duplicate digest
-    /// insert and make this a false positive.
+    /// FakeBridgeStore.TryInsertConsumedVaaAsync returns false on collision,
+    /// mirroring the EF unique-constraint-then-reread codepath.
     /// </summary>
     [Fact]
     public async Task ReplayedVaa_IsRejected_NoSecondMint()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         const string sharedVaa = "VkFBLXJlcGxheS1zYW1lLWRpZ2VzdA==";
 
         int redeemInvocations = 0;
@@ -696,7 +689,7 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task ConsumedVaaKey_EqualsCanonical_WormholeAdapterDigest()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         const string vaa = "VkFBLWNhbm9uaWNhbC1kaWdlc3Q=";
 
         harness.WormholeMock
@@ -746,7 +739,7 @@ public class CrossChainBridgeServiceTests
             WormholeAdapter.ComputeVaaDigest(repadB64),
             "the canonical digest hashes the DECODED bytes ⇒ identical key");
 
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         int redeemInvocations = 0;
         harness.WormholeMock
             .Setup(w => w.RedeemTransferAsync(
@@ -798,7 +791,7 @@ public class CrossChainBridgeServiceTests
     [Fact]
     public async Task CrashBeforeSave_DoesNotDoubleMintOnRetry()
     {
-        using var harness = new SqliteBridgeHarness();
+        using var harness = new FakeBridgeHarness();
         const string vaa = "VkFBLWNyYXNoLXJlY292ZXJ5";
 
         int redeemInvocations = 0;
@@ -871,58 +864,54 @@ public class CrossChainBridgeServiceTests
             "the invariant here is strictly: no double mint");
     }
 
-    // ─── SQLite harness ───
+    // ─── Fake-store harness ───
 
     /// <summary>
-    /// Wraps the shared file-backed <see cref="SqliteTestContext"/> (real
-    /// DB-level write locking — required by the concurrency test) with the
-    /// Wormhole/provider mocks and seed/query helpers. Every CreateService gets
-    /// its OWN context + real <see cref="IdempotencyStore"/> over the one DB,
-    /// modelling concurrent scoped requests.
+    /// Wraps <see cref="FakeBridgeStore"/> + <see cref="FakeIdempotencyStore"/>
+    /// with Wormhole/provider mocks and seed/query helpers. Both fakes are
+    /// SHARED across all CreateService() calls so concurrent callers contend on
+    /// the same in-memory state — mirroring how the SQLite harness shared one
+    /// file-backed DB. A <see cref="TrackingBridgeStore"/> wraps the fake to
+    /// expose consumed-VAA inspection without modifying FakeBridgeStore.
     /// </summary>
-    private sealed class SqliteBridgeHarness : IDisposable
+    private sealed class FakeBridgeHarness : IDisposable
     {
-        private readonly SqliteTestContext _db = SqliteTestContext.FileBacked();
+        private readonly TrackingBridgeStore _trackingStore;
+        private readonly FakeIdempotencyStore _fakeIdempotency = new();
 
         public Mock<IWormholeAdapter> WormholeMock { get; } = new();
         public Mock<IBlockchainProviderFactory> FactoryMock { get; } = new();
         public Mock<IBlockchainProvider> ProviderMock { get; } = new();
 
-        public SqliteBridgeHarness()
+        // All seeded bridge IDs — used by BridgesWithEmitter to enumerate the store.
+        private readonly List<string> _seededIds = new();
+
+        public FakeBridgeHarness()
         {
+            _trackingStore = new TrackingBridgeStore(new FakeBridgeStore());
             ProviderMock.Setup(p => p.SupportsBridging).Returns(true);
             ProviderMock.Setup(p => p.ChainType).Returns("Solana");
             FactoryMock.Setup(f => f.GetProvider(It.IsAny<string>(), It.IsAny<ChainNetwork>()))
                 .Returns(ProviderMock.Object);
         }
 
-        private IServiceScopeFactory CreateScopeFactory()
+        public (CrossChainBridgeService Service, TrackingBridgeStore Store) CreateService()
         {
-            var services = new ServiceCollection();
-            services.AddScoped<OASISDbContext>(_ => _db.NewContext());
-            return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-        }
-
-        public (CrossChainBridgeService Service, OASISDbContext Db) CreateService()
-        {
-            var db = _db.NewContext();
-            var store = new IdempotencyStore(CreateScopeFactory());
             var svc = new CrossChainBridgeService(
                 FactoryMock.Object,
                 WormholeMock.Object,
                 Options.Create(new WormholeConfig { DefaultMode = BridgeMode.Wormhole }),
-                db,
-                store,
+                _trackingStore,
+                _fakeIdempotency,
                 Mock.Of<ILogger<CrossChainBridgeService>>());
-            return (svc, db);
+            return (svc, _trackingStore);
         }
 
         public string SeedVaaReadyBridge(
             string vaaBytes, int emitterChainId, string emitterAddress, long sequence)
         {
             var id = $"wh_bridge_{Guid.NewGuid():N}";
-            using var db = _db.NewContext();
-            db.BridgeTransactions.Add(new BridgeTransactionResult
+            _trackingStore.SeedBridge(new BridgeTransactionResult
             {
                 Id = id,
                 AvatarId = Guid.NewGuid(),
@@ -940,15 +929,14 @@ public class CrossChainBridgeServiceTests
                 WormholeSequence = sequence,
                 CreatedAt = DateTime.UtcNow
             });
-            db.SaveChanges();
+            lock (_seededIds) { _seededIds.Add(id); }
             return id;
         }
 
         public string SeedCompletedBridge(string targetTokenId)
         {
             var id = $"bridge_{Guid.NewGuid():N}";
-            using var db = _db.NewContext();
-            db.BridgeTransactions.Add(new BridgeTransactionResult
+            _trackingStore.SeedBridge(new BridgeTransactionResult
             {
                 Id = id,
                 AvatarId = Guid.NewGuid(),
@@ -965,39 +953,196 @@ public class CrossChainBridgeServiceTests
                 CreatedAt = DateTime.UtcNow.AddMinutes(-30),
                 CompletedAt = DateTime.UtcNow.AddMinutes(-25)
             });
-            db.SaveChanges();
+            lock (_seededIds) { _seededIds.Add(id); }
             return id;
         }
 
         public BridgeTransactionResult GetBridge(string id)
-        {
-            using var db = _db.NewContext();
-            return db.BridgeTransactions.AsNoTracking().Single(b => b.Id == id);
-        }
+            => _trackingStore.GetBridgeAsync(id).GetAwaiter().GetResult()
+               ?? throw new InvalidOperationException($"Bridge '{id}' not found in fake store.");
 
         public List<BridgeTransactionResult> BridgesWithEmitter(
             int emitterChainId, string emitterAddress, long sequence)
         {
-            using var db = _db.NewContext();
-            return db.BridgeTransactions.AsNoTracking()
-                .Where(b => b.WormholeEmitterChainId == emitterChainId
-                            && b.WormholeEmitterAddress == emitterAddress
-                            && b.WormholeSequence == sequence)
-                .ToList();
+            // Combine seeded IDs with IDs the service added via AddBridgeAsync.
+            List<string> seeded;
+            lock (_seededIds) { seeded = _seededIds.ToList(); }
+            var serviceAdded = _trackingStore.GetServiceAddedBridgeIds();
+            var allIds = seeded.Union(serviceAdded).Distinct().ToList();
+
+            var results = new List<BridgeTransactionResult>();
+            foreach (var id in allIds)
+            {
+                // Re-read from store for CURRENT state (not the insert-time snapshot).
+                var b = _trackingStore.GetBridgeAsync(id).GetAwaiter().GetResult();
+                if (b is not null
+                    && b.WormholeEmitterChainId == emitterChainId
+                    && b.WormholeEmitterAddress == emitterAddress
+                    && b.WormholeSequence == sequence)
+                {
+                    results.Add(b);
+                }
+            }
+
+            return results;
         }
+
+        public int ConsumedVaaCount() => _trackingStore.ConsumedVaaCount();
+
+        public List<string> ConsumedVaaDigests() => _trackingStore.ConsumedVaaDigests();
+
+        public void Dispose() { /* fakes are GC'd; nothing to release */ }
+    }
+
+    /// <summary>
+    /// Thin tracking decorator over <see cref="FakeBridgeStore"/> that intercepts
+    /// <see cref="TryInsertConsumedVaaAsync"/> and <see cref="AddBridgeAsync"/>
+    /// to expose consumed-VAA inspection and full-bridge enumeration without
+    /// modifying <see cref="FakeBridgeStore"/>.
+    /// </summary>
+    private sealed class TrackingBridgeStore : IBridgeStore
+    {
+        private readonly FakeBridgeStore _inner;
+        private readonly object _vaaLock = new();
+        private readonly List<ConsumedVaaRecord> _consumed = new();
+        private readonly object _bridgeLock = new();
+        private readonly List<BridgeTransactionResult> _addedByService = new();
+
+        public TrackingBridgeStore(FakeBridgeStore inner) => _inner = inner;
+
+        // ── Inspection ────────────────────────────────────────────────────────
 
         public int ConsumedVaaCount()
         {
-            using var db = _db.NewContext();
-            return db.ConsumedVaas.AsNoTracking().Count();
+            lock (_vaaLock) { return _consumed.Count; }
         }
 
         public List<string> ConsumedVaaDigests()
         {
-            using var db = _db.NewContext();
-            return db.ConsumedVaas.AsNoTracking().Select(v => v.Digest).ToList();
+            lock (_vaaLock) { return _consumed.Select(v => v.Digest).ToList(); }
         }
 
-        public void Dispose() => _db.Dispose();
+        /// <summary>Returns the current (live) state of all bridges added via AddBridgeAsync.</summary>
+        public List<string> GetServiceAddedBridgeIds()
+        {
+            lock (_bridgeLock) { return _addedByService.Select(b => b.Id).ToList(); }
+        }
+
+        // ── Seeding (delegates to inner) ──────────────────────────────────────
+
+        public void SeedBridge(BridgeTransactionResult tx) => _inner.SeedBridge(tx);
+
+        // ── IBridgeStore reads — all delegate to inner ────────────────────────
+
+        public Task<BridgeTransactionResult?> GetBridgeAsync(string id, CancellationToken ct = default)
+            => _inner.GetBridgeAsync(id, ct);
+
+        public Task<IReadOnlyList<BridgeTransactionResult>> GetBridgeHistoryAsync(
+            Guid avatarId, bool descending = false, CancellationToken ct = default)
+            => _inner.GetBridgeHistoryAsync(avatarId, descending, ct);
+
+        public Task<IReadOnlyList<string>> GetNonTerminalBridgeIdsAsync(
+            IReadOnlyCollection<BridgeStatus> nonTerminal, DateTime staleBefore, int batch,
+            CancellationToken ct = default)
+            => _inner.GetNonTerminalBridgeIdsAsync(nonTerminal, staleBefore, batch, ct);
+
+        public Task<IReadOnlyList<Guid>> GetNonTerminalOperationIdsAsync(
+            IReadOnlyCollection<string> nonTerminal, DateTime staleBefore, int batch,
+            CancellationToken ct = default)
+            => _inner.GetNonTerminalOperationIdsAsync(nonTerminal, staleBefore, batch, ct);
+
+        public Task<BlockchainOperation?> GetOperationAsync(Guid id, CancellationToken ct = default)
+            => _inner.GetOperationAsync(id, ct);
+
+        public Task<bool> ExistsByIdAsync(string id, CancellationToken ct = default)
+            => _inner.ExistsByIdAsync(id, ct);
+
+        public Task<BridgeTransactionResult?> GetBridgeByIdempotencyKeyAsync(
+            string idempotencyKey, CancellationToken ct = default)
+            => _inner.GetBridgeByIdempotencyKeyAsync(idempotencyKey, ct);
+
+        // ── IBridgeStore writes — intercept where tracking is needed ──────────
+
+        public Task AddBridgeAsync(BridgeTransactionResult tx, CancellationToken ct = default)
+        {
+            lock (_bridgeLock) { _addedByService.Add(tx); }
+            return _inner.AddBridgeAsync(tx, ct);
+        }
+
+        public async Task<bool> TryInsertConsumedVaaAsync(
+            ConsumedVaaRecord record, CancellationToken ct = default)
+        {
+            var inserted = await _inner.TryInsertConsumedVaaAsync(record, ct);
+            if (inserted)
+            {
+                lock (_vaaLock) { _consumed.Add(record); }
+            }
+            return inserted;
+        }
+
+        public Task SaveVaaFetchResultAsync(
+            string id, string vaaBytes, int sigCount, string proofData,
+            BridgeStatus statusVAAReady, CancellationToken ct = default)
+            => _inner.SaveVaaFetchResultAsync(id, vaaBytes, sigCount, proofData, statusVAAReady, ct);
+
+        public async Task<int> TryTransitionBridgeStatusAsync(
+            string id, BridgeStatus expected, BridgeStatus next, BridgeStatusMutation? alsoSet,
+            CancellationToken ct = default)
+        {
+            // Enforce the emitter-tuple uniqueness constraint that SQLite's UNIQUE
+            // filtered index would enforce: when a transition would SET emitter fields,
+            // reject it (return 0) if another non-terminal bridge already holds that
+            // (EmitterChainId, EmitterAddress, Sequence) triple. This mirrors the
+            // DbUpdateException the EF/SQLite harness would throw, which the service's
+            // top-level catch converts into an error result.
+            if (alsoSet?.WormholeEmitterChainId is int chainId
+                && alsoSet.WormholeEmitterAddress is string addr
+                && alsoSet.WormholeSequence is long seq)
+            {
+                var terminalStatuses = new HashSet<BridgeStatus>
+                {
+                    BridgeStatus.Completed, BridgeStatus.Failed, BridgeStatus.Refunded
+                };
+                // Check for a conflicting row: a different id, same emitter triple,
+                // not in a terminal state.
+                var existing = await _inner.GetBridgeAsync(id, ct); // the row we're updating
+                // We need to look at all bridges — use GetNonTerminalBridgeIdsAsync with
+                // all non-terminal statuses and a broad window.
+                var nonTerminal = new List<BridgeStatus>
+                {
+                    BridgeStatus.Initiated, BridgeStatus.Locked, BridgeStatus.AwaitingVAA,
+                    BridgeStatus.VAAReady, BridgeStatus.Redeeming, BridgeStatus.Reversing
+                };
+                var candidateIds = await _inner.GetNonTerminalBridgeIdsAsync(
+                    nonTerminal, DateTime.UtcNow.AddDays(1), 1000, ct);
+                foreach (var candidateId in candidateIds)
+                {
+                    if (string.Equals(candidateId, id, StringComparison.Ordinal)) continue;
+                    var candidate = await _inner.GetBridgeAsync(candidateId, ct);
+                    if (candidate is null) continue;
+                    if (candidate.WormholeEmitterChainId == chainId
+                        && string.Equals(candidate.WormholeEmitterAddress, addr, StringComparison.Ordinal)
+                        && candidate.WormholeSequence == seq)
+                    {
+                        // Constraint violation: simulate the SQLite UNIQUE index rejection.
+                        throw new InvalidOperationException(
+                            $"UNIQUE constraint failed: WormholeEmitter ({chainId}, {addr}, {seq}) " +
+                            $"already held by bridge '{candidateId}' — duplicate Wormhole initiate rejected.");
+                    }
+                }
+            }
+            return await _inner.TryTransitionBridgeStatusAsync(id, expected, next, alsoSet, ct);
+        }
+
+        public Task<int> TryTransitionOperationStatusAsync(
+            Guid id, string expected, string next, DateTime? completedDate,
+            CancellationToken ct = default)
+            => _inner.TryTransitionOperationStatusAsync(id, expected, next, completedDate, ct);
+
+        public Task RecordVaaFetchErrorAsync(string id, string errorMessage, CancellationToken ct = default)
+            => _inner.RecordVaaFetchErrorAsync(id, errorMessage, ct);
+
+        public Task<int> ForceCompleteBridgeAsync(string id, CancellationToken ct = default)
+            => _inner.ForceCompleteBridgeAsync(id, ct);
     }
 }

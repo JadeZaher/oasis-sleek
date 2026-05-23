@@ -51,6 +51,7 @@ public static class OpenTelemetryExtensions
             {
                 tracing
                     .AddSource(ActivitySourceName)
+                    .AddSource("OASIS.SurrealDb")
                     .AddAspNetCoreInstrumentation(opts =>
                     {
                         // Enrich spans with request correlation attributes
@@ -82,7 +83,8 @@ public static class OpenTelemetryExtensions
             {
                 metrics
                     .AddAspNetCoreInstrumentation()
-                    .AddHttpClientInstrumentation();
+                    .AddHttpClientInstrumentation()
+                    .AddMeter("OASIS.SurrealDb");
 
                 if (!string.IsNullOrWhiteSpace(otlpEndpoint))
                 {

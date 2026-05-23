@@ -8,13 +8,11 @@ namespace OASIS.WebAPI.Models;
 /// (redeemed) on the target chain. Provides replay protection: a VAA's
 /// <see cref="Digest"/> may be inserted at most once.
 ///
-/// Replay-protection contract (for Wave 2 redeem flow):
-/// BEFORE submitting a VAA to the target chain, attempt to INSERT a row keyed
-/// by the VAA digest. The UNIQUE constraint on <see cref="Digest"/> (configured
-/// in <c>OASISDbContext</c>) means a replayed VAA's insert fails with a
-/// <see cref="Microsoft.EntityFrameworkCore.DbUpdateException"/> — treat that
-/// as "already consumed, reject the replay". Use the same
-/// catch-DbUpdateException-then-reread pattern as the idempotency store.
+/// Replay-protection contract (Wave 2 redeem flow): callers route inserts
+/// through <c>IBridgeStore.TryInsertConsumedVaaAsync</c>. The UNIQUE constraint
+/// on <see cref="Digest"/> (enforced by the SurrealDB schema for
+/// <c>consumed_vaa_ledger</c>) means a replayed VAA's insert returns
+/// <c>false</c> — treat that as "already consumed, reject the replay".
 /// </summary>
 [Table("ConsumedVaas")]
 public class ConsumedVaaRecord

@@ -9,7 +9,7 @@ namespace OASIS.WebAPI.Sagas;
 /// payload at dispatch time. The handler is resolved from the per-tick DI scope
 /// the processor passes in (same scope-per-tick discipline as
 /// <c>ReconciliationHostedService</c>), so handlers can depend on scoped
-/// services (<c>OASISDbContext</c>, <c>IIdempotencyStore</c>, …).
+/// services (<c>IIdempotencyStore</c>, the per-aggregate stores, …).
 /// </summary>
 public sealed class SagaStep<TPayload> : ISagaStep, IStepDispatch
 {

@@ -77,3 +77,28 @@ enforces this and will fail if any of these tables are added prematurely.
 - **avatar** — flexible enough that schemaless may be the right call; wave 2 decides.
 - **saga_step** / **outbox_message** — plan task 8b; added once the SurrealDB
   saga trigger replaces the EF polling implementation.
+
+## Backup / restore & RTO target
+
+Backup and restore are wrapped in `scripts/surrealdb/backup.ps1` and
+`scripts/surrealdb/restore.ps1`. Both call `surreal export` / `surreal import`
+via `docker exec` against the canonical container (`oasis-surrealdb`).
+
+**Recovery time objective (RTO): 15 minutes** for a full-namespace restore
+from the most recent backup against a freshly-started container on the same
+host. This is informed by:
+
+- Export size on a typical dev namespace: ~5-50 MB (.surql text).
+- `surreal import` is single-threaded but I/O bound — minutes, not hours.
+- Container cold-start + healthcheck: ~10 s.
+
+For DR-grade RTO (cross-host, with off-box backup retention), this script is
+insufficient — it assumes the same docker daemon. That gap is intentional
+pre-launch (no live data); revisit when value flows.
+
+### Example
+
+```powershell
+pwsh scripts/surrealdb/backup.ps1
+pwsh scripts/surrealdb/restore.ps1 -InputPath backups/oasis-20260522-093000.surql
+```

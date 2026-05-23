@@ -17,7 +17,7 @@ public interface IBridgeStore
     Task<BridgeTransactionResult?> GetBridgeAsync(string id, CancellationToken ct = default);
 
     /// <summary>Loads an avatar's bridge transaction history.</summary>
-    Task<IReadOnlyList<BridgeTransactionResult>> GetBridgeHistoryAsync(Guid avatarId, CancellationToken ct = default);
+    Task<IReadOnlyList<BridgeTransactionResult>> GetBridgeHistoryAsync(Guid avatarId, bool descending = false, CancellationToken ct = default);
 
     /// <summary>Loads ids of non-terminal bridges last touched before <paramref name="staleBefore"/>, capped at <paramref name="batch"/>.</summary>
     Task<IReadOnlyList<string>> GetNonTerminalBridgeIdsAsync(IReadOnlyCollection<BridgeStatus> nonTerminal, DateTime staleBefore, int batch, CancellationToken ct = default);
@@ -56,4 +56,32 @@ public interface IBridgeStore
     /// asserts==1, retries, or RMW.
     /// </summary>
     Task<int> TryTransitionOperationStatusAsync(Guid id, string expected, string next, DateTime? completedDate, CancellationToken ct = default);
+
+    /// <summary>Returns true iff a bridge with the given id exists.</summary>
+    Task<bool> ExistsByIdAsync(string id, CancellationToken ct = default);
+
+    /// <summary>
+    /// Records a VAA-fetch error message on the bridge row WITHOUT advancing
+    /// status. Mirrors the legacy "tx.ErrorMessage = ...; SaveChangesAsync()"
+    /// pattern from CrossChainBridgeService.FetchVAAAsync. The store does NOT
+    /// gate on status — caller already validated the row before fetching.
+    /// </summary>
+    Task RecordVaaFetchErrorAsync(string id, string errorMessage, CancellationToken ct = default);
+
+    /// <summary>
+    /// Force-completes a bridge from any non-Completed status: UPDATE … WHERE
+    /// Id=id AND Status != Completed SET Status=Completed, CompletedAt=UtcNow.
+    /// Returns affected-row count VERBATIM (0 = already Completed / not found;
+    /// 1 = transitioned). The store NEVER asserts==1, retries, or RMW.
+    /// Mirrors the legacy CompleteBridgeAsync force-complete pattern.
+    /// </summary>
+    Task<int> ForceCompleteBridgeAsync(string id, CancellationToken ct = default);
+
+    /// <summary>
+    /// Looks up the bridge row stamped with the given idempotency key, or null
+    /// if no row has been stamped. Used by the idempotent-replay path of
+    /// InitiateTrustedBridgeAsync to return the prior committed row when the
+    /// idempotency ledger reports Completed.
+    /// </summary>
+    Task<BridgeTransactionResult?> GetBridgeByIdempotencyKeyAsync(string idempotencyKey, CancellationToken ct = default);
 }

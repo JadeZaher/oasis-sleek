@@ -27,8 +27,8 @@ namespace OASIS.WebAPI.Interfaces;
 /// </list>
 /// </para>
 ///
-/// Scoped lifetime (resolves the scoped <c>OASISDbContext</c>). The background
-/// sweep creates a DI scope per tick — see <c>ReconciliationHostedService</c>.
+/// Scoped lifetime (resolves the per-aggregate stores). The background sweep
+/// creates a DI scope per tick — see <c>ReconciliationHostedService</c>.
 /// </summary>
 public interface IReconciliationService
 {

@@ -1,0 +1,191 @@
+using Oasis.SurrealDb.Client.Query;
+using OASIS.WebAPI.Core;
+using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
+using OASIS.WebAPI.Models;
+using OASIS.WebAPI.Models.Responses;
+using GeneratedWallet = OASIS.WebAPI.Generated.SurrealDb.Wallet;
+
+namespace OASIS.WebAPI.Providers.Stores.Surreal;
+
+/// <summary>
+/// SurrealDB-backed <see cref="IWalletStore"/>. Maps between the legacy
+/// <see cref="Wallet"/> domain model and the generated
+/// <see cref="GeneratedWallet"/> POCO via private ToPoco / FromPoco helpers.
+///
+/// ID encoding: <c>Guid.ToString("N").ToLowerInvariant()</c> (32-char hex,
+/// no dashes). Dates are stored as DateTimeOffset with UTC kind applied.
+/// </summary>
+public sealed class SurrealWalletStore : IWalletStore
+{
+    private readonly ISurrealExecutor _executor;
+
+    public SurrealWalletStore(ISurrealExecutor executor)
+    {
+        _executor = executor;
+    }
+
+    // ── IWalletStore ──────────────────────────────────────────────────────────
+
+    public async Task<OASISResult<IWallet>> GetByIdAsync(Guid id, CancellationToken ct = default)
+    {
+        try
+        {
+            var q = SurrealQuery.SelectById(GeneratedWallet.SchemaNameConst, ToSurrealId(id));
+            var row = await _executor.QuerySingleAsync<GeneratedWallet>(q, ct);
+            return new OASISResult<IWallet>
+            {
+                IsError = row == null,
+                Message = row == null ? "Wallet not found." : "Success",
+                Result  = row == null ? null : FromPoco(row)
+            };
+        }
+        catch (Exception ex)
+        {
+            return new OASISResult<IWallet>().CaptureException(ex, $"SurrealWalletStore.GetByIdAsync failed: {ex.Message}");
+        }
+    }
+
+    public async Task<OASISResult<IEnumerable<IWallet>>> GetAllAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var q = SurrealQuery.SelectAll(GeneratedWallet.SchemaNameConst);
+            var rows = await _executor.QueryAsync<GeneratedWallet>(q, ct);
+            return new OASISResult<IEnumerable<IWallet>>
+            {
+                Result  = rows.Select(FromPoco).ToList(),
+                Message = "Success"
+            };
+        }
+        catch (Exception ex)
+        {
+            return new OASISResult<IEnumerable<IWallet>>().CaptureException(ex, $"SurrealWalletStore.GetAllAsync failed: {ex.Message}");
+        }
+    }
+
+    public async Task<OASISResult<IEnumerable<IWallet>>> GetByAvatarAsync(Guid avatarId, CancellationToken ct = default)
+    {
+        try
+        {
+            var q = SurrealQuery<GeneratedWallet>.From()
+                .Where(w => w.AvatarId == avatarId.ToString("N").ToLowerInvariant());
+            var rows = await _executor.QueryAsync<GeneratedWallet>(q, ct);
+            return new OASISResult<IEnumerable<IWallet>>
+            {
+                Result  = rows.Select(FromPoco).ToList(),
+                Message = "Success"
+            };
+        }
+        catch (Exception ex)
+        {
+            return new OASISResult<IEnumerable<IWallet>>().CaptureException(ex, $"SurrealWalletStore.GetByAvatarAsync failed: {ex.Message}");
+        }
+    }
+
+    public async Task<OASISResult<IWallet>> UpsertAsync(IWallet wallet, CancellationToken ct = default)
+    {
+        try
+        {
+            if (wallet.Id == Guid.Empty)
+                wallet.Id = Guid.NewGuid();
+
+            var poco   = ToPoco(wallet);
+            var surrId = poco.Id;
+
+            // UPDATE type::thing($_t, $_id) CONTENT $_body RETURN AFTER
+            // SurrealDB upsert: creates the record if it does not exist; replaces
+            // it if it does. Same pattern as SurrealBlockchainOperationStore.
+            var q = SurrealQuery
+                .Of("UPDATE type::thing($_t, $_id) CONTENT $_body RETURN AFTER")
+                .WithParam("_t",    GeneratedWallet.SchemaNameConst)
+                .WithParam("_id",   surrId)
+                .WithParam("_body", poco);
+
+            var resp = await _executor.ExecuteAsync(q, ct);
+            resp.EnsureAllOk();
+
+            var saved = resp.GetValues<GeneratedWallet>(0).FirstOrDefault();
+            var result = saved is not null ? FromPoco(saved) : wallet;
+
+            return new OASISResult<IWallet> { Result = result, Message = "Saved." };
+        }
+        catch (Exception ex)
+        {
+            return new OASISResult<IWallet>().CaptureException(ex, $"SurrealWalletStore.UpsertAsync failed: {ex.Message}");
+        }
+    }
+
+    public async Task<OASISResult<bool>> DeleteAsync(Guid id, CancellationToken ct = default)
+    {
+        try
+        {
+            // Check existence first (matches the prior EF read-before-update contract).
+            var checkQ = SurrealQuery.SelectById(GeneratedWallet.SchemaNameConst, ToSurrealId(id));
+            var existing = await _executor.QuerySingleAsync<GeneratedWallet>(checkQ, ct);
+            if (existing == null)
+                return new OASISResult<bool> { IsError = true, Message = "Wallet not found.", Result = false };
+
+            var q = SurrealQuery.DeleteById(GeneratedWallet.SchemaNameConst, ToSurrealId(id));
+            await _executor.ExecuteAsync(q, ct);
+
+            return new OASISResult<bool> { Result = true, Message = "Deleted." };
+        }
+        catch (Exception ex)
+        {
+            return new OASISResult<bool>().CaptureException(ex, $"SurrealWalletStore.DeleteAsync failed: {ex.Message}");
+        }
+    }
+
+    // ── Mapping ───────────────────────────────────────────────────────────────
+
+    private static string ToSurrealId(Guid id)
+        => id.ToString("N").ToLowerInvariant();
+
+    private static Guid FromSurrealId(string id)
+        => Guid.ParseExact(id, "N");
+
+    private static GeneratedWallet ToPoco(IWallet w) => new()
+    {
+        Id                   = ToSurrealId(w.Id),
+        AvatarId             = ToSurrealId(w.AvatarId),
+        ChainType            = w.ChainType,
+        Address              = w.Address,
+        PublicKey            = w.PublicKey,
+        Label                = w.Label,
+        IsDefault            = w.IsDefault,
+        WalletType           = MapWalletType(w.WalletType),
+        EncryptedPrivateKey  = w.EncryptedPrivateKey,
+        EncryptedSeedPhrase  = w.EncryptedSeedPhrase,
+        CreatedDate          = new DateTimeOffset(
+                                   DateTime.SpecifyKind(w.CreatedDate, DateTimeKind.Utc))
+    };
+
+    private static Wallet FromPoco(GeneratedWallet p) => new()
+    {
+        Id                  = FromSurrealId(p.Id),
+        AvatarId            = FromSurrealId(p.AvatarId),
+        ChainType           = p.ChainType,
+        Address             = p.Address,
+        PublicKey           = p.PublicKey,
+        Label               = p.Label,
+        IsDefault           = p.IsDefault,
+        WalletType          = MapWalletTypeBack(p.WalletType),
+        EncryptedPrivateKey = p.EncryptedPrivateKey,
+        EncryptedSeedPhrase = p.EncryptedSeedPhrase,
+        CreatedDate         = p.CreatedDate.UtcDateTime
+    };
+
+    private static GeneratedWallet.WalletTypeKind MapWalletType(WalletType t) => t switch
+    {
+        WalletType.Platform => GeneratedWallet.WalletTypeKind.Platform,
+        _                   => GeneratedWallet.WalletTypeKind.External
+    };
+
+    private static WalletType MapWalletTypeBack(GeneratedWallet.WalletTypeKind k) => k switch
+    {
+        GeneratedWallet.WalletTypeKind.Platform => WalletType.Platform,
+        _                                       => WalletType.External
+    };
+
+}

@@ -4,7 +4,7 @@
 #   podman-compose -f podman-compose.yml up --build
 #
 # Services:
-#   - postgres:    PostgreSQL 16 (port 5432)
+#   - surrealdb:   SurrealDB 1.5.4 (port 8442) — sole storage backend
 #   - oasis-api:   .NET 8 WebAPI (port 5000)
 #   - oasis-web:   Next.js frontend (port 3000)
 #
@@ -13,25 +13,47 @@
 #   API:       http://localhost:5000
 #   Swagger:   http://localhost:5000/swagger
 #
+# Storage: SurrealDB only. Postgres + EF Core were deleted in
+# `surrealdb-migration` CLOSEOUT Stream D (2026-05-22); the `oasis-postgres`
+# service + `ConnectionStrings__OASISDatabase` + `OASIS__DefaultProvider` env
+# vars have been removed. See `docker-compose.surrealdb.yml` for the standalone
+# dev/test container variant.
+#
 
 services:
-  # ─── PostgreSQL Database ───
-  postgres:
-    image: postgres:16-alpine
-    container_name: oasis-postgres
+  # ─── SurrealDB (sole storage backend) ───
+  # Mirrors docker-compose.surrealdb.yml — same image, same G1 durability
+  # parameters (sync=every on the storage URI). Port 8442 matches the standalone
+  # dev container so dev tooling + scripts work either way.
+  surrealdb:
+    image: surrealdb/surrealdb:v1.5.4
+    container_name: oasis-surrealdb
+    restart: unless-stopped
+    command:
+      - start
+      - --log
+      - info
+      - --user
+      - root
+      - --pass
+      - oasis-surreal-root
+      - --bind
+      - 0.0.0.0:8442
+      - surrealkv://data/oasis.db?sync=every
     environment:
-      POSTGRES_DB: oasis
-      POSTGRES_USER: oasis
-      POSTGRES_PASSWORD: oasis123
+      # G1 — durability: flush to disk before acknowledging each write commit.
+      SURREAL_SYNC_DATA: "true"
+      SURREAL_KV_ROCKSDB_SYNC: "true"
     ports:
-      - "5432:5432"
+      - "8442:8442"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - surrealdb_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U oasis -d oasis"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8442/health || exit 1"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
+      start_period: 10s
 
   # ─── .NET WebAPI ───
   oasis-api:
@@ -44,11 +66,19 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:5000
-      ConnectionStrings__OASISDatabase: "Host=postgres;Port=5432;Database=oasis;Username=oasis;Password=oasis123"
+      # SurrealDB connection (matches docker-compose.surrealdb.yml). The
+      # SurrealDb section is bound by builder.Services.AddOasisSurrealDb(...)
+      # in Program.cs. G1DurabilityAcknowledged must be true — operators
+      # acknowledge the compose file has sync=every on the storage URI.
+      SurrealDb__Endpoint: "http://surrealdb:8442"
+      SurrealDb__Namespace: "oasis"
+      SurrealDb__Database: "oasis"
+      SurrealDb__User: "root"
+      SurrealDb__Password: "oasis-surreal-root"
+      SurrealDb__G1DurabilityAcknowledged: "true"
       Jwt__Key: "super-secret-key-for-testing-only-must-be-32-chars!"
       Jwt__Issuer: "oasis-sleek"
       Jwt__Audience: "oasis-sleek"
-      OASIS__DefaultProvider: "PostgreSQL"
       # Blockchain RPC (testnet/devnet — safe for functional testing)
       Blockchain__Chains__Algorand__DefaultNetwork: "testnet"
       Blockchain__Chains__Algorand__Networks__testnet__NodeUrl: "https://testnet-algod.algonode.cloud"
@@ -56,7 +86,7 @@ services:
       Blockchain__Chains__Solana__DefaultNetwork: "devnet"
       Blockchain__Chains__Solana__Networks__devnet__NodeUrl: "https://api.devnet.solana.com"
     depends_on:
-      postgres:
+      surrealdb:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:5000/swagger/index.html || exit 1"]
@@ -81,4 +111,4 @@ services:
         condition: service_healthy
 
 volumes:
-  postgres_data:
+  surrealdb_data:

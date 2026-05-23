@@ -1,19 +1,25 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using OASIS.WebAPI.Data;
+using Oasis.SurrealDb.Client.Query;
 
 namespace OASIS.WebAPI.Observability;
 
 /// <summary>
-/// Health check that verifies the primary storage database is reachable.
-/// Reports Healthy when EF Core can open a connection; Unhealthy otherwise.
+/// Health check that verifies the primary storage backend (SurrealDB) is
+/// reachable. Reports Healthy when a trivial round-trip query (<c>RETURN 1</c>)
+/// completes; Unhealthy otherwise.
+///
+/// Sole storage backend post-wave-3 EF deletion (`surrealdb-migration` Stream D).
+/// The probe goes through <see cref="ISurrealExecutor"/> — the same code path
+/// production traffic uses — so DI, connection, auth, and the OTEL
+/// instrumentation decorator are all exercised.
 /// </summary>
 public sealed class StorageHealthCheck : IHealthCheck
 {
-    private readonly OASISDbContext _db;
+    private readonly ISurrealExecutor _executor;
 
-    public StorageHealthCheck(OASISDbContext db)
+    public StorageHealthCheck(ISurrealExecutor executor)
     {
-        _db = db;
+        _executor = executor;
     }
 
     public async Task<HealthCheckResult> CheckHealthAsync(
@@ -22,15 +28,22 @@ public sealed class StorageHealthCheck : IHealthCheck
     {
         try
         {
-            var canConnect = await _db.Database.CanConnectAsync(cancellationToken);
-            return canConnect
-                ? HealthCheckResult.Healthy("Database connection established.")
-                : HealthCheckResult.Unhealthy("Database connection check returned false.");
+            var q = SurrealQuery.Of("RETURN 1");
+            var response = await _executor.ExecuteAsync(q, cancellationToken);
+
+            if (response.Count == 0 || !response[0].IsOk)
+            {
+                var detail = response.Count > 0 ? response[0].Detail ?? string.Empty : "no statements";
+                return HealthCheckResult.Unhealthy(
+                    $"SurrealDB probe returned non-OK: {detail}");
+            }
+
+            return HealthCheckResult.Healthy("SurrealDB connection established.");
         }
         catch (Exception ex)
         {
             return HealthCheckResult.Unhealthy(
-                description: "Database connection failed with an exception.",
+                description: "SurrealDB connection failed with an exception.",
                 exception: ex);
         }
     }

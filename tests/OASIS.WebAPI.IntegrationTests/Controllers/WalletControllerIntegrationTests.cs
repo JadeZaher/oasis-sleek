@@ -1,8 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
-using Microsoft.Extensions.DependencyInjection;
-using OASIS.WebAPI.Data;
 using OASIS.WebAPI.IntegrationTests.Builders;
 using OASIS.WebAPI.IntegrationTests.Factories;
 using OASIS.WebAPI.Models;
@@ -84,7 +82,7 @@ public class WalletControllerIntegrationTests : IntegrationTestBase
     public async Task SetDefault_ShouldSwapDefaultFlag()
     {
         var avatarId = Guid.Parse(TestAuthHandler.DefaultAvatarId);
-        var prev = await SeedWalletAsync(w => w.ForAvatar(avatarId).OnChain("Solana").AsDefault());
+        var prev    = await SeedWalletAsync(w => w.ForAvatar(avatarId).OnChain("Solana").AsDefault());
         var current = await SeedWalletAsync(w => w.ForAvatar(avatarId).OnChain("Solana"));
 
         var response = await Client.PostAsJsonAsync($"api/wallet/{current.Id}/set-default", new { });
@@ -94,10 +92,14 @@ public class WalletControllerIntegrationTests : IntegrationTestBase
         result!.IsError.Should().BeFalse();
         result.Result.Should().BeTrue();
 
-        using var scope = Factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<OASIS.WebAPI.Data.OASISDbContext>();
-        db.Wallets.Find(prev.Id)!.IsDefault.Should().BeFalse();
-        db.Wallets.Find(current.Id)!.IsDefault.Should().BeTrue();
+        // Verify via HTTP GET — prev should no longer be default; current should be.
+        var prevGet = await Client.GetAsync($"api/wallet/{prev.Id}");
+        var prevResult = await ReadResultAsync<Wallet>(prevGet);
+        prevResult!.Result!.IsDefault.Should().BeFalse();
+
+        var curGet = await Client.GetAsync($"api/wallet/{current.Id}");
+        var curResult = await ReadResultAsync<Wallet>(curGet);
+        curResult!.Result!.IsDefault.Should().BeTrue();
     }
 
     [Fact]

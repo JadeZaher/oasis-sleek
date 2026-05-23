@@ -9,8 +9,8 @@ namespace OASIS.WebAPI.Services.Reconciliation;
 /// stuck Redeeming/AwaitingVAA/AwaitingSignature records").
 ///
 /// <para><b>Lifetime &amp; scoping.</b> A <see cref="BackgroundService"/> is a
-/// singleton, but <see cref="IReconciliationService"/> and
-/// <c>OASISDbContext</c> are scoped. Each tick therefore creates a fresh DI
+/// singleton, but <see cref="IReconciliationService"/> and the per-aggregate
+/// stores it consumes are scoped. Each tick therefore creates a fresh DI
 /// scope via <see cref="IServiceScopeFactory"/> and resolves the scoped
 /// service inside it, then disposes the scope.</para>
 ///

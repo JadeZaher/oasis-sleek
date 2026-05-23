@@ -10,9 +10,9 @@ namespace OASIS.WebAPI.Sagas;
 /// the scoped store / handlers).
 ///
 /// <para><b>Lifetime &amp; scoping.</b> A <see cref="BackgroundService"/> is a
-/// singleton; <see cref="ISagaProcessor"/> and <c>OASISDbContext</c> are scoped,
-/// so each tick opens its own scope and disposes it — identical discipline to
-/// the reconciliation sweep.</para>
+/// singleton; <see cref="ISagaProcessor"/> and the per-aggregate stores it
+/// consumes are scoped, so each tick opens its own scope and disposes it —
+/// identical discipline to the reconciliation sweep.</para>
 ///
 /// <para><b>Resilience.</b> The trigger guards every tick; this service adds a
 /// last-ditch guard so the loop can never bubble an exception out of the hosted

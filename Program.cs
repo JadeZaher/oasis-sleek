@@ -5,7 +5,6 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using System.Reflection;
@@ -13,7 +12,6 @@ using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Core.Blockchain;
 using OASIS.WebAPI.Extensions;
 using OASIS.WebAPI.Core.Blockchain.Wormhole;
-using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Interfaces.QuestExecution;
@@ -241,24 +239,50 @@ builder.Services.AddRateLimiter(options =>
 // stores directly.
 builder.Services.AddSingleton<IProviderHealthMonitor, ProviderHealthMonitor>();
 
-// ─── Per-aggregate EF stores (replace the deleted god storage seam) ───
-// Scoped to match OASISDbContext lifetime. Adding a new aggregate = add one
-// I*Store + Ef*Store pair and one line here.
-builder.Services.AddScoped<IAvatarStore, EfAvatarStore>();
-builder.Services.AddScoped<IWalletStore, EfWalletStore>();
-builder.Services.AddScoped<IHolonStore, EfHolonStore>();
-builder.Services.AddScoped<IBlockchainOperationStore, EfBlockchainOperationStore>();
-builder.Services.AddScoped<ISTARStore, EfStarStore>();
-builder.Services.AddScoped<IQuestStore, EfQuestStore>();
-builder.Services.AddScoped<INftStore, EfNftStore>();
-builder.Services.AddScoped<IBridgeStore, EfBridgeStore>();
+// ─── Per-aggregate stores ───
+// surrealdb-migration wave-2 close-out (Stream A): Avatar/Holon/STAR flip to
+// SurrealDB now that their 090/100/110 .mermaid/.surql schemas + inline-POCO
+// adapters have landed. Only Quest remains on EF, gated on
+// quest-temporal-fork-model. Scoped lifetime in both cases.
+builder.Services.AddScoped<IAvatarStore,
+    OASIS.WebAPI.Providers.Stores.Surreal.SurrealAvatarStore>();
+builder.Services.AddScoped<IWalletStore,
+    OASIS.WebAPI.Providers.Stores.Surreal.SurrealWalletStore>();
+builder.Services.AddScoped<IHolonStore,
+    OASIS.WebAPI.Providers.Stores.Surreal.SurrealHolonStore>();
+builder.Services.AddScoped<IBlockchainOperationStore,
+    OASIS.WebAPI.Providers.Stores.Surreal.SurrealBlockchainOperationStore>();
+builder.Services.AddScoped<ISTARStore,
+    OASIS.WebAPI.Providers.Stores.Surreal.SurrealStarStore>();
+// IQuestStore stays on the in-memory adapter during the
+// [[quest-temporal-fork-model]] transition window; the SurrealDB-backed
+// runtime store lands with that track (surrealdb-migration plan.md tasks
+// 9-11). Definition-side template reads are already on
+// SurrealQuestTemplateStore via IQuestTemplateStore (CLOSEOUT Stream C2).
+builder.Services.AddSingleton<IQuestStore, InMemoryQuestStore>();
+builder.Services.AddScoped<INftStore,
+    OASIS.WebAPI.Providers.Stores.Surreal.SurrealNftStore>();
+builder.Services.AddScoped<IBridgeStore,
+    OASIS.WebAPI.Providers.Stores.Surreal.SurrealBridgeStore>();
+// surrealdb-migration CLOSEOUT Stream C2 (pre-D gap closure): ApiKey + Quest
+// template catalog flipped to per-aggregate Surreal stores. ApiKey: backs
+// ApiKeyAuthenticationHandler + ApiKeyController. QuestTemplate: backs
+// QuestInstantiator (definition-side catalog reads only — the runtime
+// quest_run / quest_node_execution tables are owned by
+// quest-temporal-fork-model and remain on the InMemory adapter until that
+// track lands).
+builder.Services.AddScoped<OASIS.WebAPI.Interfaces.Stores.IApiKeyStore,
+    OASIS.WebAPI.Providers.Stores.Surreal.SurrealApiKeyStore>();
+builder.Services.AddScoped<OASIS.WebAPI.Interfaces.Stores.IQuestTemplateStore,
+    OASIS.WebAPI.Providers.Stores.Surreal.SurrealQuestTemplateStore>();
 
 // <quest-temporal-fork-model>
 // Per-attempt runtime stores for QuestRun + QuestNodeExecution. InMemory is
 // the default during the transition window; the SurrealDB-backed adapter
 // arrives with surrealdb-migration tasks 9–10 (see SURREAL-SCHEMA-HINTS.md).
 // Singleton is appropriate for InMemory (process-lifetime state); EF stubs
-// (EfQuestRunStore/EfQuestNodeExecutionStore) are [Obsolete] and not wired.
+// the EF stubs that previously sat behind these interfaces were deleted in
+// CLOSEOUT Stream D.
 builder.Services.AddSingleton<IQuestRunStore, InMemoryQuestRunStore>();
 builder.Services.AddSingleton<IQuestNodeExecutionStore, InMemoryQuestNodeExecutionStore>();
 // </quest-temporal-fork-model>
@@ -272,6 +296,23 @@ builder.Services.AddSingleton<IQuestNodeExecutionStore, InMemoryQuestNodeExecuti
 // 5-8; until then this registration just makes the client available for
 // any code that wants to use it (integration tests, future adapters).
 builder.Services.AddOasisSurrealDb(builder.Configuration);
+// Decorate ISurrealExecutor with OTEL instrumentation (spans + SurrealMetrics).
+// The decorator is in OASIS.WebAPI so the homebake package stays observability-agnostic.
+// Remove the package's DefaultSurrealExecutor descriptor and re-register the same
+// implementation via ActivatorUtilities so the InstrumentedSurrealExecutor wraps it
+// without leaving a dangling registration in DI (GetServices<ISurrealExecutor>()
+// would otherwise return two entries; the runbook's M1 finding).
+{
+    var defaultExecutorDescriptor = builder.Services.Single(d =>
+        d.ServiceType == typeof(Oasis.SurrealDb.Client.Query.ISurrealExecutor));
+    builder.Services.Remove(defaultExecutorDescriptor);
+    builder.Services.AddScoped<Oasis.SurrealDb.Client.Query.ISurrealExecutor>(sp =>
+    {
+        var inner = (Oasis.SurrealDb.Client.Query.ISurrealExecutor)
+            ActivatorUtilities.CreateInstance(sp, defaultExecutorDescriptor.ImplementationType!);
+        return new OASIS.WebAPI.Observability.InstrumentedSurrealExecutor(inner);
+    });
+}
 // </surrealdb-client-package>
 
 // SwapManager's quote cache is now an injected, bounded IMemoryCache (was a
@@ -309,12 +350,6 @@ builder.Services.AddScoped<ISearchManager, SearchManager>();
 builder.Services.AddScoped<IAvatarNFTService, AvatarNFTService>();
 builder.Services.AddScoped<IQuestManager, QuestManager>();
 
-var connectionString = builder.Configuration.GetConnectionString("OASISDatabase")
-    ?? throw new InvalidOperationException("Connection string 'OASISDatabase' not found.");
-
-builder.Services.AddDbContext<OASISDbContext>(options =>
-    options.UseNpgsql(connectionString, b => b.MigrationsAssembly("OASIS.WebAPI")));
-
 // ─── Blockchain providers & factory ───
 builder.Services.AddSingleton<IBlockchainProvider, AlgorandProvider>();
 builder.Services.AddSingleton<IBlockchainProvider, SolanaProvider>();
@@ -346,16 +381,24 @@ builder.Services.AddScoped<IVaaSignatureVerifier, Secp256k1VaaSignatureVerifier>
 // ─── Idempotency store (api-safety-hardening task 9/10/11/12) ───
 // REQUIRED: CrossChainBridgeService & BlockchainOperationManager take
 // IIdempotencyStore as a ctor dependency; AlgorandFaucet resolves it per-call
-// via IServiceScopeFactory. Scoped — matches OASISDbContext lifetime.
+// via IServiceScopeFactory. surrealdb-migration wave-2 task 7 flipped the
+// impl from EF (OASIS.WebAPI.Core.Idempotency.IdempotencyStore) to the
+// SurrealDB-backed SurrealIdempotencyStore, which closes the C5
+// multi-statement-swallow risk via per-statement SurrealResponse inspection
+// and writes through deterministic SHA-256(key) record ids.
 builder.Services.AddScoped<OASIS.WebAPI.Interfaces.IIdempotencyStore,
-    OASIS.WebAPI.Core.Idempotency.IdempotencyStore>();
+    OASIS.WebAPI.Core.Idempotency.SurrealIdempotencyStore>();
 
-// ─── Cross-chain bridge (hybrid trusted + Wormhole) — Scoped for EF DbContext access ───
+// ─── Cross-chain bridge (hybrid trusted + Wormhole) ───
+// surrealdb-migration wave-2 task 8: routes through IBridgeStore +
+// IIdempotencyStore. Storage backend is SurrealDB after wave-3 EF deletion.
 builder.Services.AddScoped<ICrossChainBridgeService, CrossChainBridgeService>();
 
 // ─── Chain reconciliation (api-safety-hardening tasks 14/15) ───
 // Scoped service re-derives true status from chain truth; the hosted service
-// drives a periodic sweep, creating a DI scope per tick.
+// drives a periodic sweep, creating a DI scope per tick. Routes all bridge +
+// operation reads/writes through IBridgeStore (surrealdb-migration wave-2
+// task 8 — completed).
 builder.Services.AddOptions<OASIS.WebAPI.Services.Reconciliation.ReconciliationOptions>()
     .Bind(builder.Configuration.GetSection(
         OASIS.WebAPI.Services.Reconciliation.ReconciliationOptions.SectionName));
@@ -370,8 +413,12 @@ builder.Services.AddHostedService<OASIS.WebAPI.Services.Reconciliation.Reconcili
 builder.Services.AddOptions<OASIS.WebAPI.Sagas.SagaOptions>()
     .Bind(builder.Configuration.GetSection(
         OASIS.WebAPI.Sagas.SagaOptions.SectionName));
+// surrealdb-migration wave-2 task 8b: flip ISagaStore to the SurrealDB-backed
+// impl. The G2 single-winner claim now executes via a parameterized
+// UPDATE … WHERE id == $id AND status == 'Pending' AND next_run_at <= $now
+// against the new saga_steps table (Persistence/SurrealDb/Schemas/080_saga_steps.surql).
 builder.Services.AddScoped<OASIS.WebAPI.Sagas.ISagaStore,
-    OASIS.WebAPI.Sagas.EfSagaStore>();
+    OASIS.WebAPI.Sagas.SurrealSagaStore>();
 builder.Services.AddSingleton<OASIS.WebAPI.Sagas.ISagaRegistry,
     OASIS.WebAPI.Sagas.SagaRegistry>();
 builder.Services.AddScoped<OASIS.WebAPI.Sagas.ISagaCoordinator,
@@ -443,13 +490,51 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// Auto-migrate database on startup (creates DB + applies all pending migrations)
-// Then seed demo data if the database is empty
+// SurrealDB boot self-check (G1 reachability + durability acknowledgement).
+//
+// G1 durability ("sync=every") is enforced by the storage URI passed to
+// `surreal start` in docker-compose.surrealdb.yml — it is a server-side CLI
+// flag, NOT a property of the HTTP client URL. SurrealDB 1.5.x exposes no
+// SQL surface to read back the fsync mode at runtime, so this code path
+// cannot truly verify durability; it must remain a deploy-time review item
+// (compose file diff). What we CAN verify at boot is:
+//   (1) the server is reachable through the same ISurrealExecutor the rest
+//       of the app uses (proves DI + connection + auth all line up), and
+//   (2) the SurrealDb:G1DurabilityAcknowledged config flag is set to true
+//       — operators must explicitly ack that they've reviewed compose and
+//       confirmed `?sync=every` is present. This is an audit-trail gate,
+//       not a behavioural one.
+// IntegrationTest environments skip both checks because the test container
+// is brought up per-test by the harness, not at host boot.
+if (!app.Environment.IsEnvironment("IntegrationTest"))
 {
+    var ack = builder.Configuration.GetValue<bool>("SurrealDb:G1DurabilityAcknowledged");
+    if (!ack)
+        throw new InvalidOperationException(
+            "SurrealDB G1 durability acknowledgement is missing. Confirm that " +
+            "docker-compose.surrealdb.yml (or your deploy manifest) passes " +
+            "`surrealkv://data/oasis.db?sync=every` to `surreal start`, then set " +
+            "SurrealDb:G1DurabilityAcknowledged=true in configuration to acknowledge " +
+            "the review. Every commit must fsync before ack (G1).");
+
     using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<OASISDbContext>();
-    db.Database.Migrate();
-    await SeedData.SeedAsync(db);
+    var executor = scope.ServiceProvider.GetRequiredService<
+        Oasis.SurrealDb.Client.Query.ISurrealExecutor>();
+    try
+    {
+        await executor.ExecuteAsync(
+            Oasis.SurrealDb.Client.Query.SurrealQuery.Of("SELECT 1 AS ok"));
+    }
+    catch (Exception ex)
+    {
+        var endpoint = builder.Configuration["SurrealDb:Endpoint"]
+            ?? "http://localhost:8442";
+        throw new InvalidOperationException(
+            "SurrealDB server unreachable at boot. Ensure the container is running " +
+            $"and reachable at {endpoint}. Review docker-compose.surrealdb.yml and " +
+            "confirm health checks are passing.",
+            ex);
+    }
 }
 
 app.UseHttpsRedirection();

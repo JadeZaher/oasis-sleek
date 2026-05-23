@@ -3,9 +3,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using OASIS.WebAPI.Data;
+using OASIS.WebAPI.Interfaces.Stores;
 
 namespace OASIS.WebAPI.Core;
 
@@ -42,18 +41,15 @@ public class ApiKeyAuthenticationHandler : AuthenticationHandler<AuthenticationS
         var keyHash = HashKey(rawKey);
 
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<OASISDbContext>();
+        var store = scope.ServiceProvider.GetRequiredService<IApiKeyStore>();
 
-        var apiKey = await db.ApiKeys
-            .AsNoTracking()
-            .FirstOrDefaultAsync(k => k.KeyHash == keyHash && k.IsActive);
-
+        var apiKey = await store.GetByHashAsync(keyHash, Context.RequestAborted);
         if (apiKey is null)
         {
             return AuthenticateResult.Fail("Invalid API key.");
         }
 
-        if (apiKey.RevokedAt.HasValue)
+        if (!apiKey.IsActive || apiKey.RevokedAt.HasValue)
         {
             return AuthenticateResult.Fail("API key has been revoked.");
         }
@@ -63,14 +59,14 @@ public class ApiKeyAuthenticationHandler : AuthenticationHandler<AuthenticationS
             return AuthenticateResult.Fail("API key has expired.");
         }
 
-        // Update last used timestamp (fire-and-forget)
+        // Update last_used timestamp on a detached scope so a slow / failing
+        // DB write never blocks (or fails) the request being authenticated.
+        // TouchLastUsedAsync contract: must not throw — see IApiKeyStore.
         _ = Task.Run(async () =>
         {
             using var updateScope = _scopeFactory.CreateScope();
-            var updateDb = updateScope.ServiceProvider.GetRequiredService<OASISDbContext>();
-            await updateDb.ApiKeys
-                .Where(k => k.Id == apiKey.Id)
-                .ExecuteUpdateAsync(s => s.SetProperty(k => k.LastUsedAt, DateTime.UtcNow));
+            var updateStore = updateScope.ServiceProvider.GetRequiredService<IApiKeyStore>();
+            await updateStore.TouchLastUsedAsync(apiKey.Id, DateTime.UtcNow, CancellationToken.None);
         });
 
         var claims = new List<Claim>

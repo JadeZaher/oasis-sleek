@@ -1,27 +1,28 @@
-using System.ComponentModel.DataAnnotations;
-using System.ComponentModel.DataAnnotations.Schema;
 using OASIS.WebAPI.Sagas;
 
 namespace OASIS.WebAPI.Models.Sagas;
 
 /// <summary>
 /// The durable transactional-outbox / saga-step record. One row == one step of
-/// one saga instance. Written in the SAME DB transaction as the state change
-/// that produced it (transactional outbox: no dual-write, no broker needed for
-/// atomicity). The step processor only ever asks the store "what is due?" and
-/// claims a row with a conditional UPDATE — exactly the proven
+/// one saga instance. Written in the SAME storage transaction as the state
+/// change that produced it (transactional outbox: no dual-write, no broker
+/// needed for atomicity). The step processor only ever asks the store "what is
+/// due?" and claims a row with a conditional UPDATE — exactly the proven
 /// api-safety-hardening single-winner primitive.
+///
+/// <para><b>Storage backend.</b> Persisted in the SurrealDB <c>saga_steps</c>
+/// table (schema source: <c>Persistence/SurrealDb/Schemas/source/080_saga_steps.mermaid</c>).
+/// The mapping between this POCO and the SurrealDB row lives in
+/// <see cref="OASIS.WebAPI.Sagas.SurrealSagaStore"/>.</para>
 ///
 /// <para><b>Generic by construction.</b> No bridge (or any domain) type appears
 /// here — <see cref="SagaName"/>/<see cref="StepName"/> are free strings and
 /// <see cref="Payload"/> is opaque JSON. The bridge becomes one consumer in a
 /// later phase with zero schema change.</para>
 /// </summary>
-[Table("SagaSteps")]
 public class SagaStepRecord
 {
     /// <summary>Surrogate primary key.</summary>
-    [Key]
     public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>
@@ -32,15 +33,12 @@ public class SagaStepRecord
     /// NOT via a unique constraint here (the outbox legitimately holds many
     /// rows per correlation: forward steps + a compensation step + retries).
     /// </summary>
-    [MaxLength(200)]
     public string CorrelationKey { get; set; } = string.Empty;
 
     /// <summary>Registered saga definition name.</summary>
-    [MaxLength(128)]
     public string SagaName { get; set; } = string.Empty;
 
     /// <summary>The step's name within the definition (forward or compensation).</summary>
-    [MaxLength(128)]
     public string StepName { get; set; } = string.Empty;
 
     /// <summary>
@@ -49,7 +47,6 @@ public class SagaStepRecord
     /// every retry/reclaim of this step ⇒ a re-run is an idempotent replay,
     /// never a duplicate effect.
     /// </summary>
-    [MaxLength(200)]
     public string StepIdempotencyKey { get; set; } = string.Empty;
 
     /// <summary>Opaque JSON payload (serialized typed step input).</summary>
@@ -82,11 +79,9 @@ public class SagaStepRecord
     public DateTime? ClaimedAt { get; set; }
 
     /// <summary>Last failure message (diagnostics / dead-letter triage).</summary>
-    [MaxLength(2048)]
     public string? LastError { get; set; }
 
     /// <summary>Last successful step output (observability / next-step seed).</summary>
-    [MaxLength(4096)]
     public string? Output { get; set; }
 
     /// <summary><c>true</c> once the step has been parked in the dead-letter

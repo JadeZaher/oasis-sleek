@@ -1,16 +1,10 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
-using OASIS.WebAPI.Data;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Stores;
 using QuestEntity = OASIS.WebAPI.Models.Quest.Quest;
 using QuestNode = OASIS.WebAPI.Models.Quest.QuestNode;
 using QuestEdge = OASIS.WebAPI.Models.Quest.QuestEdge;
-using QuestNodeTemplate = OASIS.WebAPI.Models.Quest.QuestNodeTemplate;
-using QuestTemplate = OASIS.WebAPI.Models.Quest.QuestTemplate;
-using QuestTemplateNode = OASIS.WebAPI.Models.Quest.QuestTemplateNode;
-using QuestTemplateEdge = OASIS.WebAPI.Models.Quest.QuestTemplateEdge;
-using QuestNodeType = OASIS.WebAPI.Models.Quest.QuestNodeType;
-using QuestEdgeType = OASIS.WebAPI.Models.Quest.QuestEdgeType;
 
 namespace OASIS.WebAPI.Services.Quest;
 
@@ -20,23 +14,23 @@ namespace OASIS.WebAPI.Services.Quest;
 /// </summary>
 public class QuestInstantiator : IQuestInstantiator
 {
-    private readonly OASISDbContext _dbContext;
+    private readonly IQuestTemplateStore _templateStore;
     private readonly IQuestDagValidator _validator;
     private readonly ILogger<QuestInstantiator> _logger;
 
     public QuestInstantiator(
-        OASISDbContext dbContext,
+        IQuestTemplateStore templateStore,
         IQuestDagValidator validator,
         ILogger<QuestInstantiator> logger)
     {
-        _dbContext = dbContext;
+        _templateStore = templateStore;
         _validator = validator;
         _logger = logger;
     }
 
     public async Task<QuestEntity> InstantiateAsync(Guid templateId, string parametersJson, Guid avatarId)
     {
-        var template = await _dbContext.QuestTemplates.FindAsync(templateId);
+        var template = await _templateStore.GetTemplateAsync(templateId, CancellationToken.None);
         if (template == null)
         {
             throw new InvalidOperationException($"QuestTemplate {templateId} not found.");
@@ -67,7 +61,8 @@ public class QuestInstantiator : IQuestInstantiator
         // Instantiate template nodes
         foreach (var templateNode in template.Nodes)
         {
-            var nodeTemplate = await _dbContext.QuestNodeTemplates.FindAsync(templateNode.NodeTemplateId);
+            var nodeTemplate = await _templateStore.GetNodeTemplateAsync(
+                templateNode.NodeTemplateId, CancellationToken.None);
             if (nodeTemplate == null)
             {
                 throw new InvalidOperationException(

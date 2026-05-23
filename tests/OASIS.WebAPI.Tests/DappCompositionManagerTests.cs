@@ -49,7 +49,7 @@ public class DappCompositionManagerTests
 
         result.IsError.Should().BeFalse();
         result.Result!.Status.Should().Be(DappSeries.StatusKind.Draft);
-        result.Result.AvatarId.Should().Be(_avatarId.ToString("N"));
+        result.Result.AvatarIdGuid.Should().Be(_avatarId);
         result.Result.Name.Should().Be("My dApp");
     }
 
@@ -66,7 +66,7 @@ public class DappCompositionManagerTests
     public async Task GetAsync_RejectsCrossAvatarAccess()
     {
         var create = await _manager.CreateAsync(_avatarId, new DappSeriesCreateModel { Name = "Owned" });
-        var seriesId = Guid.ParseExact(create.Result!.Id, "N");
+        var seriesId = create.Result!.IdGuid;
 
         var otherAvatar = Guid.NewGuid();
         var get = await _manager.GetAsync(seriesId, otherAvatar);
@@ -79,7 +79,7 @@ public class DappCompositionManagerTests
     public async Task DeleteAsync_BlocksDeletionOfReadySeries()
     {
         var create = await _manager.CreateAsync(_avatarId, new DappSeriesCreateModel { Name = "Promote" });
-        var seriesId = Guid.ParseExact(create.Result!.Id, "N");
+        var seriesId = create.Result!.IdGuid;
         create.Result.Status = DappSeries.StatusKind.Ready;
         await _seriesStore.UpsertSeriesAsync(create.Result);
 
@@ -167,7 +167,7 @@ public class DappCompositionManagerTests
         SetupQuestDef(questB);
 
         var create = await _manager.CreateAsync(_avatarId, new DappSeriesCreateModel { Name = "Cycle" });
-        var seriesId = Guid.ParseExact(create.Result!.Id, "N");
+        var seriesId = create.Result!.IdGuid;
         await _manager.AddQuestAsync(seriesId, _avatarId, new DappSeriesAddQuestModel { QuestId = questA, Order = 1 });
         await _manager.AddQuestAsync(seriesId, _avatarId, new DappSeriesAddQuestModel { QuestId = questB, Order = 2 });
         SetupLatestRunStatus(questA, QuestRunStatus.Succeeded);
@@ -193,7 +193,7 @@ public class DappCompositionManagerTests
         });
 
         var create = await _manager.CreateAsync(_avatarId, new DappSeriesCreateModel { Name = "Holon ref" });
-        var seriesId = Guid.ParseExact(create.Result!.Id, "N");
+        var seriesId = create.Result!.IdGuid;
         await _manager.AddQuestAsync(seriesId, _avatarId, new DappSeriesAddQuestModel { QuestId = questId, Order = 1 });
         SetupLatestRunStatus(questId, QuestRunStatus.Succeeded);
 
@@ -212,7 +212,7 @@ public class DappCompositionManagerTests
     public async Task DeployAsync_RejectsWhenSeriesIsNotReady()
     {
         var create = await _manager.CreateAsync(_avatarId, new DappSeriesCreateModel { Name = "X" });
-        var seriesId = Guid.ParseExact(create.Result!.Id, "N");
+        var seriesId = create.Result!.IdGuid;
 
         var deploy = await _manager.DeployAsync(seriesId, _avatarId);
 
@@ -260,7 +260,7 @@ public class DappCompositionManagerTests
         var questId = Guid.NewGuid();
         SetupQuestDef(questId);
         var create = await _manager.CreateAsync(_avatarId, new DappSeriesCreateModel { Name = "One quest" });
-        var seriesId = Guid.ParseExact(create.Result!.Id, "N");
+        var seriesId = create.Result!.IdGuid;
         await _manager.AddQuestAsync(seriesId, _avatarId, new DappSeriesAddQuestModel { QuestId = questId, Order = 1 });
         return (seriesId, questId);
     }
@@ -272,7 +272,7 @@ public class DappCompositionManagerTests
         SetupQuestDef(questA);
         SetupQuestDef(questB); // No dependency on questA -- this is the failure case.
         var create = await _manager.CreateAsync(_avatarId, new DappSeriesCreateModel { Name = "Two-no-dep" });
-        var seriesId = Guid.ParseExact(create.Result!.Id, "N");
+        var seriesId = create.Result!.IdGuid;
         await _manager.AddQuestAsync(seriesId, _avatarId, new DappSeriesAddQuestModel { QuestId = questA, Order = 1 });
         await _manager.AddQuestAsync(seriesId, _avatarId, new DappSeriesAddQuestModel { QuestId = questB, Order = 2 });
         return (seriesId, questA, questB);
@@ -285,7 +285,7 @@ public class DappCompositionManagerTests
         SetupQuestDef(questA);
         SetupQuestDef(questB, dependsOn: new[] { questA });
         var create = await _manager.CreateAsync(_avatarId, new DappSeriesCreateModel { Name = "Two-with-dep" });
-        var seriesId = Guid.ParseExact(create.Result!.Id, "N");
+        var seriesId = create.Result!.IdGuid;
         await _manager.AddQuestAsync(seriesId, _avatarId, new DappSeriesAddQuestModel { QuestId = questA, Order = 1 });
         await _manager.AddQuestAsync(seriesId, _avatarId, new DappSeriesAddQuestModel { QuestId = questB, Order = 2 });
         return (seriesId, questA, questB);

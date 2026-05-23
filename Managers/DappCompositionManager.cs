@@ -46,16 +46,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
         if (string.IsNullOrWhiteSpace(model.Name))
             return Fail<DappSeries>("DappSeries.Name is required.");
 
-        var series = new DappSeries
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            Name = model.Name,
-            Description = model.Description,
-            AvatarId = avatarId.ToString("N"),
-            Status = DappSeries.StatusKind.Draft,
-            SharedConfig = EmptyJsonObject(),
-            CreatedDate = DateTimeOffset.UtcNow,
-        };
+        var series = DappSeries.NewDraft(avatarId, model.Name, model.Description);
         return await _seriesStore.UpsertSeriesAsync(series, ct);
     }
 
@@ -63,7 +54,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
     {
         var load = await _seriesStore.GetSeriesAsync(seriesId, ct);
         if (load.IsError || load.Result is null) return load;
-        if (!OwnedBy(load.Result, avatarId)) return Fail<DappSeries>("Forbidden: series is owned by a different avatar.");
+        if (!load.Result.OwnedBy(avatarId)) return Fail<DappSeries>("Forbidden: series is owned by a different avatar.");
         return load;
     }
 
@@ -88,7 +79,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
         if (model.Name is not null) series.Name = model.Name;
         if (model.Description is not null) series.Description = model.Description;
         if (model.TargetChain is not null) series.TargetChain = model.TargetChain;
-        if (model.SharedConfig is not null) series.SharedConfig = model.SharedConfig.ToJsonElement();
+        if (model.SharedConfig is not null) series.SharedConfigDict = model.SharedConfig;
 
         return await _seriesStore.UpsertSeriesAsync(series, ct);
     }
@@ -132,14 +123,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
         if (questLoad.Result.AvatarId != avatarId)
             return Fail<DappSeriesQuest>("Forbidden: quest is owned by a different avatar.");
 
-        var entry = new DappSeriesQuest
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            DappSeriesId = seriesId.ToString("N"),
-            QuestId = model.QuestId.ToString("N"),
-            Order = model.Order,
-            InputMappings = model.InputMappings,
-        };
+        var entry = DappSeriesQuest.NewEntry(seriesId, model.QuestId, model.Order, model.InputMappings);
         return await _seriesStore.UpsertSeriesQuestAsync(entry, ct);
     }
 
@@ -165,8 +149,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
         var entries = await _seriesStore.GetQuestsBySeriesAsync(seriesId, ct);
         if (entries.IsError || entries.Result is null) return Fail<DappSeriesQuest>(entries.Message);
 
-        var questKey = questId.ToString("N");
-        var target = entries.Result.FirstOrDefault(e => e.QuestId == questKey);
+        var target = entries.Result.FirstOrDefault(e => e.QuestIdGuid == questId);
         if (target is null) return Fail<DappSeriesQuest>($"Quest {questId} not in series.");
 
         target.Order = newOrder;
@@ -183,8 +166,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
         var entries = await _seriesStore.GetQuestsBySeriesAsync(seriesId, ct);
         if (entries.IsError || entries.Result is null) return Fail<DappSeriesQuest>(entries.Message);
 
-        var questKey = questId.ToString("N");
-        var target = entries.Result.FirstOrDefault(e => e.QuestId == questKey);
+        var target = entries.Result.FirstOrDefault(e => e.QuestIdGuid == questId);
         if (target is null) return Fail<DappSeriesQuest>($"Quest {questId} not in series.");
 
         if (inputMappings is not null)
@@ -226,15 +208,12 @@ public sealed class DappCompositionManager : IDappCompositionManager
 
         var report = new CompositionValidationResult();
 
-        // Load each quest definition once.
+        // Load each quest definition once. The QuestIdGuid accessor handles
+        // the storage-side Guid('N') hex string -> Guid conversion.
         var quests = new Dictionary<Guid, QuestDef>();
         foreach (var entry in entries)
         {
-            if (!Guid.TryParseExact(entry.QuestId, "N", out var questGuid))
-            {
-                report.Diagnostics.Add($"Entry {entry.Id}: malformed QuestId {entry.QuestId}.");
-                continue;
-            }
+            var questGuid = entry.QuestIdGuid;
             var qLoad = await _questStore.GetQuestAsync(questGuid, ct);
             if (qLoad.IsError || qLoad.Result is null)
             {
@@ -268,15 +247,12 @@ public sealed class DappCompositionManager : IDappCompositionManager
         var quests = new List<QuestDef>();
         foreach (var entry in entries)
         {
-            if (Guid.TryParseExact(entry.QuestId, "N", out var qid))
-            {
-                var qLoad = await _questStore.GetQuestAsync(qid, ct);
-                if (!qLoad.IsError && qLoad.Result is not null) quests.Add(qLoad.Result);
-            }
+            var qLoad = await _questStore.GetQuestAsync(entry.QuestIdGuid, ct);
+            if (!qLoad.IsError && qLoad.Result is not null) quests.Add(qLoad.Result);
         }
 
         var boundHolonIds = ExtractBoundHolonIds(quests).ToList();
-        var combinedConfig = series.SharedConfig.ToStringDictionary();
+        var combinedConfig = new Dictionary<string, string>(series.SharedConfigDict);
 
         var manifest = new DappManifest
         {
@@ -331,7 +307,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
         var generated = await _starManager.GenerateAsync(starUpsert.Result.Id, generationRequest);
         if (generated.IsError || generated.Result is null) return Fail<ISTARODK>(generated.Message);
 
-        series.StarOdkId = generated.Result.Id.ToString("N");
+        series.StarOdkIdGuid = generated.Result.Id;
         series.Status = DappSeries.StatusKind.Ready;
         var save = await _seriesStore.UpsertSeriesAsync(series, ct);
         if (save.IsError) return Fail<ISTARODK>(save.Message);
@@ -348,17 +324,15 @@ public sealed class DappCompositionManager : IDappCompositionManager
 
         if (series.Status != DappSeries.StatusKind.Ready)
             return Fail<ISTARODK>($"Series must be in Ready status to deploy; currently {series.Status}.");
-        if (string.IsNullOrEmpty(series.StarOdkId)
-            || !Guid.TryParseExact(series.StarOdkId, "N", out var starId))
-        {
+        var starId = series.StarOdkIdGuid;
+        if (starId is null)
             return Fail<ISTARODK>("Series has no associated STARODK; call Generate first.");
-        }
 
         // targetOverride is currently passed-through informationally; the
         // ISTARManager.DeployAsync surface does not yet accept per-call target
         // overrides -- if a different chain is needed, re-run Generate with an
         // updated TargetChain on the series. Tracked as a follow-up.
-        var deployed = await _starManager.DeployAsync(starId);
+        var deployed = await _starManager.DeployAsync(starId.Value);
         if (deployed.IsError || deployed.Result is null) return Fail<ISTARODK>(deployed.Message);
 
         series.Status = DappSeries.StatusKind.Deployed;
@@ -429,12 +403,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
         List<DappSeriesQuest> entries, Dictionary<Guid, QuestDef> quests, CompositionValidationResult report)
     {
         report.InputMappingConsistency = true;
-        var orderByQuestId = new Dictionary<Guid, int>();
-        for (int i = 0; i < entries.Count; i++)
-        {
-            if (Guid.TryParseExact(entries[i].QuestId, "N", out var qid))
-                orderByQuestId[qid] = (int)entries[i].Order;
-        }
+        var orderByQuestId = entries.ToDictionary(e => e.QuestIdGuid, e => (int)e.Order);
 
         foreach (var entry in entries)
         {
@@ -495,12 +464,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
         List<DappSeriesQuest> entries, Dictionary<Guid, QuestDef> quests, CompositionValidationResult report)
     {
         report.NoCircularDependencies = true;
-        var orderByQuestId = new Dictionary<Guid, int>();
-        for (int i = 0; i < entries.Count; i++)
-        {
-            if (Guid.TryParseExact(entries[i].QuestId, "N", out var qid))
-                orderByQuestId[qid] = (int)entries[i].Order;
-        }
+        var orderByQuestId = entries.ToDictionary(e => e.QuestIdGuid, e => (int)e.Order);
 
         foreach (var (questGuid, quest) in quests)
         {
@@ -592,7 +556,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
     {
         var graph = entries.Select(entry =>
         {
-            Guid.TryParseExact(entry.QuestId, "N", out var qid);
+            var qid = entry.QuestIdGuid;
             var quest = quests.FirstOrDefault(q => q.Id == qid);
             return new
             {
@@ -611,15 +575,6 @@ public sealed class DappCompositionManager : IDappCompositionManager
         return JsonSerializer.Serialize(graph);
     }
 
-    private static bool OwnedBy(DappSeries series, Guid avatarId) =>
-        series.AvatarId == avatarId.ToString("N");
-
     private static OASISResult<T> Fail<T>(string message) =>
         new() { IsError = true, Message = message };
-
-    private static JsonElement EmptyJsonObject()
-    {
-        using var doc = JsonDocument.Parse("{}");
-        return doc.RootElement.Clone();
-    }
 }

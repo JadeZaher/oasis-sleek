@@ -32,8 +32,7 @@ public sealed class InMemoryDappSeriesStore : IDappSeriesStore
 
     public Task<OASISResult<IEnumerable<DappSeries>>> GetSeriesByAvatarAsync(Guid avatarId, CancellationToken ct = default)
     {
-        var avatarKey = avatarId.ToString("N");
-        var matches = _series.Values.Where(s => s.AvatarId == avatarKey).ToList();
+        var matches = _series.Values.Where(s => s.AvatarIdGuid == avatarId).ToList();
         return Task.FromResult(new OASISResult<IEnumerable<DappSeries>>
         {
             Result = matches,
@@ -43,12 +42,12 @@ public sealed class InMemoryDappSeriesStore : IDappSeriesStore
 
     public Task<OASISResult<DappSeries>> UpsertSeriesAsync(DappSeries series, CancellationToken ct = default)
     {
-        if (!Guid.TryParseExact(series.Id, "N", out var id))
-            return Task.FromResult(new OASISResult<DappSeries>
-            {
-                IsError = true,
-                Message = "DappSeries.Id must be a Guid('N') hex string.",
-            });
+        // Defensive: malformed Ids would throw inside the IdGuid accessor;
+        // catch and surface as a regular store-level error rather than an
+        // unhandled exception out of an InMemory call.
+        Guid id;
+        try { id = series.IdGuid; }
+        catch (FormatException) { return Task.FromResult(StoreFail<DappSeries>("DappSeries.Id must be a Guid('N') hex string.")); }
 
         _series[id] = series;
         return Task.FromResult(new OASISResult<DappSeries> { Result = series, Message = "Upserted." });
@@ -60,11 +59,8 @@ public sealed class InMemoryDappSeriesStore : IDappSeriesStore
         // Cascade-delete the ordered entries belonging to this series.
         foreach (var pair in _entries.ToArray())
         {
-            if (Guid.TryParseExact(pair.Value.DappSeriesId, "N", out var entrySeriesId)
-                && entrySeriesId == id)
-            {
+            if (pair.Value.DappSeriesIdGuid == id)
                 _entries.TryRemove(pair.Key, out _);
-            }
         }
         return Task.FromResult(new OASISResult<bool>
         {
@@ -76,9 +72,8 @@ public sealed class InMemoryDappSeriesStore : IDappSeriesStore
 
     public Task<OASISResult<IEnumerable<DappSeriesQuest>>> GetQuestsBySeriesAsync(Guid seriesId, CancellationToken ct = default)
     {
-        var seriesKey = seriesId.ToString("N");
         var matches = _entries.Values
-            .Where(e => e.DappSeriesId == seriesKey)
+            .Where(e => e.DappSeriesIdGuid == seriesId)
             .OrderBy(e => e.Order)
             .ToList();
         return Task.FromResult(new OASISResult<IEnumerable<DappSeriesQuest>>
@@ -90,12 +85,9 @@ public sealed class InMemoryDappSeriesStore : IDappSeriesStore
 
     public Task<OASISResult<DappSeriesQuest>> UpsertSeriesQuestAsync(DappSeriesQuest entry, CancellationToken ct = default)
     {
-        if (!Guid.TryParseExact(entry.Id, "N", out var id))
-            return Task.FromResult(new OASISResult<DappSeriesQuest>
-            {
-                IsError = true,
-                Message = "DappSeriesQuest.Id must be a Guid('N') hex string.",
-            });
+        Guid id;
+        try { id = entry.IdGuid; }
+        catch (FormatException) { return Task.FromResult(StoreFail<DappSeriesQuest>("DappSeriesQuest.Id must be a Guid('N') hex string.")); }
 
         _entries[id] = entry;
         return Task.FromResult(new OASISResult<DappSeriesQuest> { Result = entry, Message = "Upserted." });
@@ -103,26 +95,12 @@ public sealed class InMemoryDappSeriesStore : IDappSeriesStore
 
     public Task<OASISResult<bool>> DeleteSeriesQuestAsync(Guid seriesId, Guid questId, CancellationToken ct = default)
     {
-        var seriesKey = seriesId.ToString("N");
-        var questKey = questId.ToString("N");
-
         var match = _entries.Values.FirstOrDefault(e =>
-            e.DappSeriesId == seriesKey && e.QuestId == questKey);
+            e.DappSeriesIdGuid == seriesId && e.QuestIdGuid == questId);
         if (match is null)
-            return Task.FromResult(new OASISResult<bool>
-            {
-                IsError = true,
-                Message = $"No DappSeriesQuest entry for series {seriesId} + quest {questId}.",
-            });
+            return Task.FromResult(StoreFail<bool>($"No DappSeriesQuest entry for series {seriesId} + quest {questId}."));
 
-        if (!Guid.TryParseExact(match.Id, "N", out var entryId))
-            return Task.FromResult(new OASISResult<bool>
-            {
-                IsError = true,
-                Message = "Stored entry has malformed Id.",
-            });
-
-        var removed = _entries.TryRemove(entryId, out _);
+        var removed = _entries.TryRemove(match.IdGuid, out _);
         return Task.FromResult(new OASISResult<bool>
         {
             Result = removed,
@@ -130,4 +108,6 @@ public sealed class InMemoryDappSeriesStore : IDappSeriesStore
             IsError = !removed,
         });
     }
+
+    private static OASISResult<T> StoreFail<T>(string message) => new() { IsError = true, Message = message };
 }

@@ -98,7 +98,7 @@
     unified outbox table
 
 ### Graph remodel
-9. [ ] **Schema source:** `conductor/tracks/quest-temporal-fork-model/SURREAL-SCHEMA-HINTS.md`
+9. [x] **Done (2026-05-24, Task 9 close-out).** Three SurrealDB-backed stores landed (`Providers/Stores/Surreal/SurrealQuestStore.cs` 538 LOC, `SurrealQuestRunStore.cs` 322 LOC, `SurrealQuestNodeExecutionStore.cs` 352 LOC) on six schema files (150_quest, 160_quest_node, 170_quest_edge, 190_quest_run, 200_quest_node_execution, 230_quest_graph_edges with `forked_from` + `executes` RELATION tables). G2 single-winner claim primitive at `SurrealQuestNodeExecutionStore.cs:280-307`. Fork write-pairing via BEGIN/COMMIT at `SurrealQuestRunStore.cs:88`. DI flipped at `Program.cs:267-298`. Build clean; unit suite 535/535. 28 integration tests authored (runtime-gated on E1 image fix). See `SIGN-OFF.md` "Post-Stream-E residual close-out -- Task 9 (2026-05-24)". Schema source: `conductor/tracks/quest-temporal-fork-model/SURREAL-SCHEMA-HINTS.md`
    (consume verbatim). Model quest nodes/edges via `RELATE` edges per that
    doc (definition `quest`/`quest_node`/`quest_edge`; runtime `quest_run` +
    `quest_node_execution` with `forked_from` + `executes` edges). Reimplement

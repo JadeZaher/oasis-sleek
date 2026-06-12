@@ -78,6 +78,11 @@ services:
     depends_on:
       surrealdb:
         condition: service_healthy
+    # Resolves host.docker.internal on Linux Docker Engine (Desktop adds it
+    # automatically; Engine does not) for the genuine external-SurrealDB
+    # case where dev-up points SurrealDb__Endpoint at the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # Connection URL is parameterised so the dev-up scripts can flip it
       # to `host.containers.internal` / `host.docker.internal` when an

@@ -1,9 +1,10 @@
 # Tracks
 
-> **Day-to-day work lives in [RUNBOOK.md](../RUNBOOK.md)** (current phase,
-> in-flight coordination, sequencing). This file is the per-track
-> catalog: shipped tracks collapse into one-liners; in-flight + pending
-> tracks retain full context.
+> **Developer setup lives in [DEVELOPMENT.md](../DEVELOPMENT.md)**;
+> **operations live in [RUNBOOK.md](../RUNBOOK.md)** (local stack control,
+> production deploy, diagnostics). This file is the per-track catalog:
+> shipped tracks collapse into one-liners; in-flight + pending tracks
+> retain full context.
 >
 > Conventions in force: [Persistence/SurrealDb/CONVENTION.md](../Persistence/SurrealDb/CONVENTION.md).
 
@@ -52,3 +53,12 @@ _(none — all previously in-flight tracks shipped as of 2026-06-11)_
 | [quest-temporal-fork-model](tracks/quest-temporal-fork-model/spec.md) | **Tier 1** — definition/runtime split: `QuestRun` + `QuestNodeExecution` separated from `Quest`/`QuestNode`; `ForkAsync(runId, atNodeId, reason)` produces lineage-tracked fork. Hand-off [`SURREAL-SCHEMA-HINTS.md`](tracks/quest-temporal-fork-model/SURREAL-SCHEMA-HINTS.md) consumed by surrealdb-migration tasks 3/9/10. 7 fork/lineage tests green. |
 | [surrealdb-schema-source-gen](tracks/surrealdb-schema-source-gen/spec.md) | **Tier 1.6 — SUPERSEDED 2026-06-03.** Mermaid→POCO pipeline deleted; replaced by C#-first attribute scanner (`AttributeSchemaScanner` + `SurqlEmitter` in `Oasis.SurrealDb.Schema`). 26 POCOs now in `Persistence/SurrealDb/Models/` with `[SurrealTable]` attributes; `AttributePocoByteEquivalenceTests` is the new acceptance gate. `Oasis.SurrealDb.SourceGen` package + test shell removed 2026-06-10. See [surreal-schema-package-retro](tracks/surreal-schema-package-retro/spec.md) for the full as-built reference. |
 | [mcp-surface](tracks/mcp-surface/spec.md) | **Tier 3** — read-only MCP surface (5 tools + auth scoping + HNSW vector search) at `/mcp` via ModelContextProtocol.AspNetCore. Closed 2026-05-25 (`295d67c`); write tools deferred. |
+
+## Historical status snapshots (moved from RUNBOOK 2026-06-12)
+
+RUNBOOK.md was restructured into a true operations runbook on 2026-06-12.
+Its prior status-snapshot, shipped-retro, forward-sequencing, phased-plan,
+and open-questions content (a point-in-time record, not live track status)
+was relocated verbatim to
+[retros/runbook-status-2026-06-12.md](retros/runbook-status-2026-06-12.md).
+This catalog above remains the authoritative source for live track status.

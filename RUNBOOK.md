@@ -1,451 +1,184 @@
 # OASIS Sleek — Runbook
 
-**Last updated:** 2026-06-05 PM2 (dev-up full-stack composition + 2 pre-existing dev-mode boot bugs fixed)
-**Branch:** `api-safety-hardening` (7 commits ahead of upstream)
-**Last commit:** `137992c feat(mermaid-aggregates): Phase B — generated slice + master diagrams`
-**Suite:** 540/540 unit green; 0 errors, 19 warnings (baseline).
-
-This document is the day-to-day reference for the active work. For
-historical track-by-track context see [conductor/tracks.md](conductor/tracks.md).
-For the SurrealDB entity convention see
-[Persistence/SurrealDb/CONVENTION.md](Persistence/SurrealDb/CONVENTION.md).
+Operational reference: how to start, stop, reset, deploy, and diagnose the
+stack. For developer setup + conventions see [DEVELOPMENT.md](DEVELOPMENT.md);
+for live track status see [conductor/tracks.md](conductor/tracks.md).
 
 ---
 
-## 1. Status snapshot
+## 1. Local stack
 
-### Recently shipped (last 10 commits)
+Full stack (SurrealDB + WebAPI + Frontend) via `docker-compose.dev.yml`,
+orchestrated by the `dev-up` / `dev-down` scripts. The scripts auto-detect
+`docker compose` (v2), `docker-compose` (v1), `podman-compose`, or
+`podman compose`.
 
-- **`HEAD`** (pending — 2026-06-05 PM2) — **Dev-up full-stack
-  composition.** Three new artifacts so a contributor can clone-and-run:
-  - [`docker-compose.dev.yml`](docker-compose.dev.yml) — SurrealDB +
-    WebAPI + Frontend with healthcheck-gated dependency order. WebAPI
-    container's [`docker-entrypoint.sh`](docker-entrypoint.sh) waits for
-    SurrealDB to be reachable then runs `oasis-surreal up` (apply
-    every committed schema + every Migrations/ file) before launching
-    the host. Schema CLI is now shipped in the same image alongside
-    `OASIS.WebAPI.dll`.
-  - [`dev-up.sh`](dev-up.sh) + [`dev-up.ps1`](dev-up.ps1) — root-level
-    orchestrators that auto-detect docker compose v2, docker-compose v1,
-    podman-compose, or `podman compose` and bring the stack up. `--logs`
-    tails combined output; `--rebuild` rebuilds images; `--clean` wipes
-    the surrealdb_data volume.
-  - [`dev-down.sh`](dev-down.sh) + [`dev-down.ps1`](dev-down.ps1) —
-    teardown helpers with `--wipe` / `-Wipe` to drop the volume.
+### Start
 
-  Companion: [`appsettings.Development.json`](appsettings.Development.json)
-  gets a full `SurrealDb` block (`Endpoint`, `Namespace`, `Database`,
-  `User`, `Password`) targeting `http://127.0.0.1:8000` for host-direct
-  dev runs that talk to a locally-running SurrealDB instance.
+```bash
+./dev-up.sh          # or ./dev-up.ps1 on Windows
+```
 
-  **Two pre-existing bugs surfaced + fixed during the verification**:
-  - `McpToolRegistry` was Singleton consuming Scoped `IMcpTool`
-    implementations — invalid captive dependency that crashed
-    `BuildServiceProvider` whenever
-    `ASPNETCORE_ENVIRONMENT=Development`. Now Scoped (the registry is
-    a 5-entry Dictionary so per-request rebuild is free).
-  - The boot-time SurrealDB reachability probe used `SELECT 1 AS ok`
-    which is invalid SurrealQL (SELECT requires FROM in 1.5+).
-    Switched to `RETURN 1` — the SurrealDB-idiomatic no-op.
+Default: rebuilds the API + Frontend images and the host-side SDK dist,
+preserves the SurrealDB volume, and applies pending schema migrations
+idempotently. Flags:
 
-  End-to-end verified: host-run WebAPI boots against the local
-  SurrealDB at `127.0.0.1:8000`, `/health` returns 200 with
-  `storage-db: Healthy`, swagger.json serves at /swagger/v1/swagger.json.
-- **`HEAD-1`** (2026-06-05 PM) — **Migration `up` CLI + live
-  integration test.** New `oasis-surreal up` subcommand applies
-  `Generated/Schemas/` then `Migrations/` (lexical order in each, both
-  funnel through the `schema_migration` ledger). The runner now
-  bootstraps the configured namespace + database on first apply
-  (`DEFINE NAMESPACE IF NOT EXISTS` + `DEFINE DATABASE IF NOT EXISTS`)
-  so a fresh SurrealDB server needs no out-of-band setup. New
-  `MigrationRunnerLiveTests` integration test (in
-  `Oasis.SurrealDb.Schema.Tests`, tagged `Category=Live`) applies all
-  26 schemas to a live SurrealDB at `localhost:8000` then re-runs to
-  prove idempotency. The live test caught **5 real SurrealDB syntax
-  errors in the emitter** that the byte-equivalence tests missed:
-  - regex operator `=~` is not valid SurrealQL — switched to
-    `string::matches($value, "...")`
-  - `FLEXIBLE` modifier goes AFTER `TYPE` not before
-  - `FLEXIBLE` requires `object` or `array<object>` (bare `array` fails)
-  - bootstrap `schema_migration` DDL needed `IF NOT EXISTS`
-  - SurrealDB 2.x rejects `UPDATE x:y` on a missing record — switched
-    to `UPSERT x:y` which auto-creates
-  All five fixes shipped in this session. End-to-end CLI verified
-  against the local instance: 26 schemas APPLIED on first run, 26 SKIP
-  on second run (clean idempotent no-op). New
-  [`Migrations/README.md`](Persistence/SurrealDb/Migrations/README.md)
-  documents the data-migration naming convention + authoring rules.
-- **`HEAD-1`** (2026-06-05 AM) — **Schema graph + closed-set enums.**
-  Every FK column on the 17 POCOs now carries `[References(typeof(Target))]`
-  (~30 fields touched). The `.surql` emit flips from `string` to
-  `record<target>` (or `option<record<target>>`). The RELATE-edge POCOs
-  (`ForkedFrom`, `Executes`) emit as native
-  `DEFINE TABLE x TYPE RELATION FROM y TO z`. Closed-set enums emit a
-  `DEFINE PARAM IF NOT EXISTS $<table>_<column>` block at the top of the
-  file, with `ASSERT $value INSIDE $<table>_<column>` on the field.
-  Per-slice flowcharts now render outbound edges (cross-slice targets
-  appear as dashed-blue ghost nodes); the master flowchart adds a full
-  enum legend listing every closed set with its C# enum type name.
-  **Known follow-up**: store adapters under `Providers/Stores/Surreal/`
-  still write the bare-hex wire format and need to switch to the
-  `"table:hex"` prefixed form before integration tests against a live
-  SurrealDB will pass. Unit suite: 567/567 green.
-- **`HEAD-1`** (2026-06-03) — **C#-first SurrealDB authoring lands
-  end-to-end.** 24 attributed POCOs in `Persistence/SurrealDb/Models/`
-  replace the entire Mermaid → POCO source-gen path. New
-  `OasisSurrealDbOptions` (Connection + Generation sections) consolidates
-  connection + generator-output configuration. Schema/flowchart/DBML
-  artifacts emit to `Persistence/SurrealDb/Generated/`. `MermaidParser`,
-  `MermaidSchemaModel`, `MermaidParseException`, `AggregateEmitter`, the
-  entire `Oasis.SurrealDb.SourceGen` package, and the 24 `.mermaid`
-  source files are deleted. Byte-equivalence test
-  (`AttributePocoByteEquivalenceTests`) discovers every
-  `[SurrealTable]`-decorated POCO at runtime and asserts byte-identical
-  `.surql` emit. See §3 (rewritten) for the new convention; CONVENTION.md
-  + ANNOTATIONS.md likewise rewritten.
-- **`HEAD-1`** (2026-05-27) — Phase C design pivoted to C#-first
-  (this is the commit `HEAD` above implements).
-- **`2326714`** — Initial design doc landed proposing the Mermaid-
-  portfolio model (multi-diagram authoring). Superseded same-day by
-  the C#-first pivot above; commit preserved in history for the
-  pivot reasoning.
-- **`d4b546d`** — `surrealql-toolkit` umbrella ADR + 5 constituent
-  pending tracks. **Stale as of evening 2026-05-27** — the
-  public-toolkit framing is no longer in scope. Clean-up decision
-  deferred to next session.
-- **`137992c`** — RUNBOOK §4 Phase B shipped (since retired on
-  2026-06-03). Aggregate slice emitter + 24 source `.mermaid` files +
-  6 slice diagrams under `docs/aggregates/` + master at
-  `docs/domain.generated.mermaid`. Replaced by the C#-first flowchart
-  emitter; outputs now land at
-  [`Persistence/SurrealDb/Generated/Flowcharts/`](Persistence/SurrealDb/Generated/Flowcharts/)
-  in the `graph LR` shape.
-- **`9bcfd32`** + **`b66a09f`** — RUNBOOK §4 refined to make slice
-  files a generated artifact (not hand-authored); §5 sequencing +
-  §6 phase table updated. Both also superseded by the C#-first pivot.
-- **`295d67c`** — `mcp-surface` track closed. Read-only MCP server at
-  `/mcp` (ModelContextProtocol.AspNetCore 1.3.0) behind JWT+ApiKey
-  multi-scheme. 5 tools (quest reachability, holon traversal, NFT graph,
-  avatar-scoped read, HNSW vector search). +5 unit tests (540/540 green),
-  13 integration tests gated on E1. Write tools deferred; runtime
-  evidence + F9–F12 latent-item review pending E1 image fix.
-- **`24a7403`** — `surrealdb-migration` Phase D (wave-2 commit).
-  3 SurrealQuest stores (1595 LOC) + 6 `.surql` schemas (150/160/170/
-  190/200/230) + 28 integration tests. G2 single-winner claim primitive
-  + fork write-pairing via BEGIN/COMMIT. DI flipped at
-  [Program.cs:267-298](Program.cs#L267-L298). Task 9 closed.
-- **`8f1eee1`** — RUNBOOK.md + tracks.md consolidation.
-- **`d318bcb`** — `CONVENTION.md` partial-class extension pattern.
-- **`92ede75`** — 8 source-gen'd POCOs for quest + dapp-composition;
-  dapp-composition slice end-to-end.
+| Flag (bash / PowerShell) | Effect |
+|---|---|
+| `--no-build` / `-NoBuild` | Skip the image + SDK rebuild. Fast restart on cached images. |
+| `--reset-db` / `-ResetDb` | **DESTRUCTIVE.** Tear down + wipe the SurrealDB volume before bringing the stack up. (alias: `--clean` / `-Clean`) |
+| `--reset` / `-Reset` | Wipe + re-apply the SurrealDB schema/namespace WITHOUT touching the volume. Combine with `--reset-db` for a total reset. |
+| `--logs` / `-Logs` | Tail combined container logs after startup. |
+| `OASIS_SKIP_RESET=1` (env) | Skip the host-side schema sync entirely (the container entrypoint still applies `oasis-surreal up`). |
 
-### Working tree
+After ~30-60s (first run builds images):
 
-Clean — only `conductor/.conductor_session_log` modified
-(auto-generated, ignored in commits). Nothing else in flight.
-
-### Active phase
-
-**Phase C — redesigned again, now C#-first.** Two design iterations
-landed in this session before settling. The Mermaid-portfolio
-direction (multi-diagram authoring across `schema/*.mermaid`) was the
-right *response* to the original Phase C scope but solved the wrong
-layer. The user steer that resolved it: ".NET-first, OASIS-internal,
-no public-toolkit framing, source of truth = decorated C# POCOs."
-
-Short version: schema source = **decorated C# POCOs in this repo**.
-Attributes declare shape (FK, indexes, ASSERT inputs, state-machine
-binding); partial classes carry validation + domain helpers. The
-existing Roslyn source-gen is **inverted** — instead of `.mermaid` →
-POCO, it scans the C# attribute surface and emits `.surql` + a single
-DBML manifest (`docs/schema.dbml`) + state-machine code + a guardrail
-traceability runbook. See
-[DESIGN-mermaid-portfolio.md](conductor/tracks/surrealql-toolkit/DESIGN-mermaid-portfolio.md)
-(filename retained for git history; contents now describe the
-C#-first model).
-
-The pivot is OASIS-internal in scope. The `surrealql-toolkit`
-umbrella + 4 sibling tracks (drift, db-pull, studio, packaging) are
-stale-but-in-tree pending a clean-up decision next session; the
-`data-backfill-migrations` track stays valid (F6 still has to happen).
-
-**This session is design-only.** No code, no file moves. Next
-session begins with the prototype slice (`wallet_nft`, 3 entities)
-to prove byte-equivalent `.surql` output before mechanically
-migrating the rest.
-
-### Pending decisions
-
-- **Phase C trigger** — generator multi-table parsing + FK emission
-  lands after Phase B is validated (see §4.3). Recommended order:
-  Phase B → Phase C → Phase E (Quest cutover) so the generator settles
-  on the new authoring layout before the Quest aggregate moves to
-  source-gen'd POCOs.
-- ~~**Environment E1 unblocker**~~ — **RESOLVED 2026-06-12.** Swapped
-  the start URI to `rocksdb:///data/db` in `docker-compose.dev.yml`
-  + `podman-compose.yml`. The 1.5.4 slim image lacks `surrealkv`;
-  RocksDB syncs its WAL per commit so G1 durability is preserved.
-  A 2.x/3.x bump (which restores `surrealkv` default-on) is tracked
-  as a separate workstream:
-  [`surrealdb-major-upgrade`](conductor/tracks/surrealdb-major-upgrade/spec.md).
-
----
-
-## 2. Conventions in force
-
-| Convention | Source | Applies to |
+| Service | URL | Notes |
 |---|---|---|
-| SurrealDB entity = hand-authored attributed POCO + partial extensions | [Persistence/SurrealDb/CONVENTION.md](Persistence/SurrealDb/CONVENTION.md) | All SurrealDB-backed aggregates (24 POCOs as of 2026-06-03) |
-| No EF Core migrations on new work (EF + Postgres removed in surrealdb-migration) | [memory/greenfield-prelaunch-no-compat](.claude/projects/c--Users-atooz-Programming-Projects-oasis-sleek/memory/greenfield-prelaunch-no-compat.md) | Pre-launch, no customers/data |
-| Integration tests run against the dev-up SurrealDB instance (`oasis-dev-surrealdb` on `:8000`) | [memory/integration-tests-persistent-postgres](.claude/projects/c--Users-atooz-Programming-Projects-oasis-sleek/memory/integration-tests-persistent-postgres.md) (memory name predates SurrealDB cutover) | All `OASIS.WebAPI.IntegrationTests` |
-| Bridge tier-0 hardening invariants | [api-safety-hardening RESIDUAL-RISK-RUNBOOK §4](conductor/tracks/api-safety-hardening/RESIDUAL-RISK-RUNBOOK.md) | Bridge value flow |
-| TDD on bug fixes + features | [conductor/skills/tdd-workflow](conductor/) | Default |
+| Frontend | http://localhost:3000 | Next.js app |
+| WebAPI | http://localhost:5000 | health: `/health`, swagger: `/swagger/v1/swagger.json` |
+| SurrealDB | http://localhost:8000 | `root` / `root`, persistent volume `surrealdb_data` |
+
+**Custom host port:** set `SURREALDB_HOST_PORT` to remap the SurrealDB
+host-side port when 8000 is occupied (the detection probe + host-side
+schema sync honor it). The scripts also self-detect an already-running
+bundled `oasis-dev-surrealdb` container and take the normal full-stack
+path; a non-bundled SurrealDB already answering on the host port is treated
+as external and the API is pointed at it via
+`host.docker.internal` / `host.containers.internal`.
+
+### Stop
+
+```bash
+./dev-down.sh                  # stop containers, preserve volume
+./dev-down.sh --wipe           # also drop the surrealdb_data volume (-Wipe / -ResetDb on PowerShell)
+```
+
+### Reset (fresh DB)
+
+```bash
+./dev-down.sh --wipe           # drop surrealdb_data volume
+./dev-up.sh                    # idempotent schema sync re-creates everything
+```
+Or, preserving the volume but re-applying the namespace:
+```bash
+./dev-up.sh --reset            # destructively wipes + re-applies the namespace
+```
+
+The host-side schema sync needs `dotnet` on the host (the schema CLI runs
+from source via `dotnet run`). Without it, set `OASIS_SKIP_RESET=1` — the
+WebAPI container's entrypoint applies `oasis-surreal up` on its own. See
+[DEVELOPMENT.md](DEVELOPMENT.md) for host-run and bring-your-own-SurrealDB
+variants.
 
 ---
 
-## 3. SurrealDB convention recap (C#-first, post-2026-06-03)
+## 2. Production deploy (Railway)
 
-Full doc: [Persistence/SurrealDb/CONVENTION.md](Persistence/SurrealDb/CONVENTION.md).
-Attribute reference: [packages/Oasis.SurrealDb.Client/Schema/ANNOTATIONS.md](packages/Oasis.SurrealDb.Client/Schema/ANNOTATIONS.md).
+The WebAPI ships as a single image (`Dockerfile`) bundling the
+`oasis-surreal` schema CLI alongside `OASIS.WebAPI.dll`. SurrealDB runs as a
+separate Railway service.
 
-**Source of truth:** decorated C# POCOs in
-[Persistence/SurrealDb/Models/](Persistence/SurrealDb/Models/), namespace
-`OASIS.WebAPI.Persistence.SurrealDb.Models`. Each POCO is a `partial class`
-implementing `Oasis.SurrealDb.Client.ISurrealRecord`, carrying
-`[SurrealTable]` + per-field `[Column]` / `[Assert]` / `[Inside]` /
-`[Default]` / `[Index]` attributes plus `[JsonPropertyName]` for the
-wire shape.
+### WebAPI service — required environment variables
 
-**Generated artifacts** live in
-[Persistence/SurrealDb/Generated/](Persistence/SurrealDb/Generated/):
-- `Schemas/<table>.surql` — DDL emitted from the attribute scan
-- `Flowcharts/<slice>.flowchart.mermaid` + `Flowcharts/domain.flowchart.mermaid` — `graph LR` visualization
-- `Dbml/schema.dbml` — DBML diff manifest (opt-in via `OasisSurrealDbOptions.Generation.EmitDbml`)
+| Variable | Required | Notes |
+|---|---|---|
+| `ASPNETCORE_ENVIRONMENT` | yes | Set to `Production`. Gates Swagger off and enforces the G1 durability ack below. |
+| `Jwt__Key` | yes | JWT signing key, ≥32 chars. No default — boot fails without it. |
+| `Jwt__Issuer` / `Jwt__Audience` | optional | Default `OASIS.WebAPI` / `OASIS.Client`. |
+| `OASIS__WalletEncryptionKey` | yes | Symmetric key for platform wallet generation. No default — `WalletKeyService` throws without it. |
+| `SurrealDb__Endpoint` | yes | URL of the SurrealDB service (e.g. `http://surrealdb.railway.internal:8000`). |
+| `SurrealDb__Namespace` | yes | e.g. `oasis`. |
+| `SurrealDb__Database` | yes | e.g. `oasis`. |
+| `SurrealDb__User` | yes | SurrealDB root user. |
+| `SurrealDb__Password` | yes | SurrealDB root password. |
+| `SurrealDb__G1DurabilityAcknowledged` | yes | Must be `true`. Outside `IntegrationTest`, `Program.cs` refuses to boot unless this is set — it's the operator's acknowledgement that the SurrealDB storage URI runs with per-commit WAL sync (see §2 durability note). |
+| `PORT` | injected | Railway injects `$PORT`; the entrypoint binds `ASPNETCORE_URLS=http://0.0.0.0:$PORT` (falls back to 5000). Do NOT also pin `ASPNETCORE_URLS` to a fixed port — let the entrypoint honor `$PORT`. |
 
-**Configuration:** [`OasisSurrealDbOptions`](packages/Oasis.SurrealDb.Client/Schema/OasisSurrealDbOptions.cs)
-binds to `SurrealDb` in `appsettings.json` with `Connection` + `Generation`
-subsections. Env overrides (`OASIS_SURREAL_*`) preserved for CLI invocations.
+The `SurrealDb__*` family is consumed by both the .NET host AND the
+entrypoint's migration pre-step; you only need to wire one family. The
+entrypoint also accepts the `OASIS_SURREAL_*` aliases
+(`OASIS_SURREAL_URL` / `_NS` / `_DB` / `_USER` / `_PASS`) if preferred.
 
-**Adapter / extension code** lives in sibling partial-class files in
-the same namespace — `Persistence/SurrealDb/Models/<Name>.Extensions.cs`
-(domain predicates, Guid conversions) or
-`Persistence/SurrealDb/Models/<Name>.Validation.cs` (FluentValidation
-`OnValidating` hooks). DTOs + in-memory transients stay in
-`OASIS.WebAPI.Models.*`.
+### Entrypoint migration behavior
 
-**Acceptance gate:** [`AttributePocoByteEquivalenceTests`](tests/OASIS.WebAPI.Tests/Persistence/SurrealDb/AttributePocoByteEquivalenceTests.cs)
-discovers every `[SurrealTable]`-decorated type at runtime, emits its
-`.surql` via the attribute scanner, and asserts byte-identical match
-against `Persistence/SurrealDb/Generated/Schemas/<table>.surql`.
-Adding a new POCO automatically extends coverage; missing or drifted
-golden file fails CI.
+On every boot, `docker-entrypoint.sh`:
+1. Waits up to ~2 min for SurrealDB to answer `/health`, then aborts if
+   unreachable.
+2. Runs `oasis-surreal up` — applies `Generated/Schemas/` then
+   `Migrations/` against the configured namespace/database. **Idempotent**:
+   the `schema_migration` ledger skips already-applied files. A fresh
+   SurrealDB needs no out-of-band setup (the runner bootstraps
+   `DEFINE NAMESPACE/DATABASE IF NOT EXISTS`).
+3. Execs the WebAPI host.
 
-**Retired:** the Mermaid pipeline (`MermaidParser`, `MermaidSchemaModel`,
-`MermaidParseException`, `AggregateEmitter`, the entire
-`Oasis.SurrealDb.SourceGen` package, the 24 `.mermaid` source files,
-and the `OASIS_WebAPI.Generated.SurrealDb` namespace) was deleted in
-the 2026-06-03 cleanup. The `.surql` files under the legacy
-`Persistence/SurrealDb/Schemas/` directory were superseded by the
-`Generated/Schemas/` files.
+Skip the migration step with `OASIS_SKIP_MIGRATIONS=1` (e.g. when an earlier
+deploy step already applied them).
 
----
+### SurrealDB service on Railway
 
-## 4. Mermaid visualization restructure (shipped — C#-first pivot)
-
-**What shipped:** the visualization restructure completed via the
-C#-first pivot (2026-06-03). The old Mermaid-source pipeline
-(`source/*.mermaid` → Roslyn source-gen → POCOs) was inverted: the 24
-hand-authored `.mermaid` source files and the `Oasis.SurrealDb.SourceGen`
-package were deleted, and the schema source of truth became decorated C#
-POCOs in `Persistence/SurrealDb/Models/`.
-
-Flowchart generation now runs the other way — the `AttributeSchemaScanner`
-in `Oasis.SurrealDb.Schema` reads the POCO attribute surface and emits
-`graph LR` diagrams via `MermaidFlowchartEmitter`. The as-built outputs
-live at:
-
-- [`Persistence/SurrealDb/Generated/Flowcharts/`](Persistence/SurrealDb/Generated/Flowcharts/) — per-slice `.flowchart.mermaid` files + `domain.flowchart.mermaid` master
-- [`Persistence/SurrealDb/Generated/Schemas/`](Persistence/SurrealDb/Generated/Schemas/) — the `.surql` DDL files emitted from the same scan
-- [`Persistence/SurrealDb/Generated/Dbml/`](Persistence/SurrealDb/Generated/Dbml/) — `schema.dbml` (opt-in via `OasisSurrealDbOptions.Generation.EmitDbml`)
-
-### 4.1 Slice membership (as generated)
-
-| Slice | Entities |
+| Aspect | Value |
 |---|---|
-| `quest` | quest, quest_node, quest_edge, quest_dependency, quest_run, quest_node_execution |
-| `quest_templates` | quest_template, quest_node_template |
-| `dapp_composition` | dapp_series, dapp_series_quest |
-| `bridge` | bridge_tx, saga_steps, consumed_vaa_ledger, idempotency_key_store, operation_log |
-| `wallet_nft` | wallet, nft_ownership, swap_state |
-| `identity` | avatar, api_key, holon, star_odk |
-
-Cross-slice references (e.g. `dapp_series_quest.quest_id` → `quest`)
-appear as dashed-blue ghost nodes in per-slice flowcharts and as full
-edges in the master diagram.
-
-### 4.2 Regenerating the flowcharts and schemas
-
-```
-oasis-surreal generate-from-assembly bin/Debug/net8.0/OASIS.WebAPI.dll
-oasis-surreal flowcharts-from-assembly bin/Debug/net8.0/OASIS.WebAPI.dll
-```
-
-The first command scans every `[SurrealTable]`-decorated POCO, reruns
-`AttributeSchemaScanner` + `SurqlEmitter`, and overwrites the `.surql` files
-in `Generated/Schemas/`. The second command reruns `MermaidFlowchartEmitter`
-and overwrites the flowchart files in `Generated/Flowcharts/`. Both must be
-run after any POCO attribute change. The `AttributePocoByteEquivalenceTests`
-suite (§3) catches schema drift in CI without needing a live database.
-
-### 4.3 Emitter source locations
-
-| Emitter | File |
-|---|---|
-| Schema scanner | `packages/Oasis.SurrealDb.Schema/Generator/AttributeSchemaScanner.cs` |
-| `.surql` emitter | `packages/Oasis.SurrealDb.Schema/Generator/SurqlEmitter.cs` |
-| Flowchart emitter | `packages/Oasis.SurrealDb.Schema/Generator/MermaidFlowchartEmitter.cs` |
-| CLI entry point | `packages/Oasis.SurrealDb.Schema/Program.cs` (`generate-from-assembly` subcommand) |
-
-### 4.4 Historical note
-
-Phases B and C as originally drafted (slice annotations on `.mermaid`
-files, `AggregateEmitter`, `oasis-surreal aggregates` subcommand,
-Roslyn `IIncrementalGenerator` updates) were superseded by the
-C#-first pivot before Phase C code was written. The old approach is
-preserved in git history at `137992c` (Phase B shipped) and the pivot
-rationale at commit `HEAD-1` (2026-05-27). The `Generated/Flowcharts/`
-output fulfils the original goal of showing relationship arrows across
-the full domain model.
+| Image | `surrealdb/surrealdb:v1.5.4` (pin matches the rest of the stack; a 2.x/3.x bump is tracked at `surrealdb-major-upgrade`). |
+| Start command | `start --user root --pass <pass> --bind 0.0.0.0:8000 rocksdb:///data/db` |
+| Volume | Mount a persistent volume at `/data` so the RocksDB store survives restarts. |
+| Durability | RocksDB syncs its WAL per commit (`SURREAL_SYNC_DATA: "true"`), which satisfies the G1 durability gate — this is what `SurrealDb__G1DurabilityAcknowledged=true` on the API acknowledges. The 1.5.4 slim image lacks the `surrealkv` engine; RocksDB is the durable path. Review the storage URI + sync flags at deploy time, since the fsync mode is not introspectable at runtime. |
 
 ---
 
-## 5. Forward sequencing — what unblocks what
+## 3. Common diagnostics
 
+**`dev-up.sh` says "no compose runtime found"**
+Install one of: Docker Desktop, Docker Engine (Linux), or Podman 4.x+. The
+script picks the first one it finds.
+
+**SurrealDB never became reachable at boot**
+1. Container running? `docker compose -f docker-compose.dev.yml ps`
+2. Host port (default 8000) free? Set `SURREALDB_HOST_PORT` to remap if not.
+3. On `--reset` failure the script dumps `oasis-dev-surrealdb` state + the
+   last 50 log lines — common causes are a rejected storage URI, rootless
+   podman volume-ownership (`permission denied` on `/data`), or the port
+   already bound.
+
+**"checksum mismatch detected" re-running `oasis-surreal up`**
+A migration file drifted from its recorded `schema_migration` hash. Revert
+the edit, or rerun with `--force` (see the migrations README "Drift
+detection").
+
+**WebAPI boots but `/health` returns Unhealthy**
+The `storage-db` check failed. Confirm SurrealDB is reachable from the API's
+perspective:
+- compose: `docker exec oasis-dev-api curl -s http://surrealdb:8000/health`
+- host-run: `curl http://127.0.0.1:8000/health`
+
+**WebAPI refuses to boot citing G1 durability**
+`SurrealDb:G1DurabilityAcknowledged` is unset/false in a non-`IntegrationTest`
+environment. Confirm the SurrealDB storage URI runs with per-commit sync,
+then set `SurrealDb__G1DurabilityAcknowledged=true`.
+
+**Frontend hits CORS / wrong-API-URL errors**
+`NEXT_PUBLIC_API_URL` is **baked in at Next.js build time** — editing it in
+compose alone does nothing. Update it AND rebuild the frontend image
+(`./dev-up.sh` rebuilds by default, or
+`docker compose -f docker-compose.dev.yml build oasis-frontend`). See the
+DEVELOPMENT.md troubleshooting note.
+
+**Which migrations are applied?**
+```bash
+dotnet run --project packages/Oasis.SurrealDb.Schema -- migrate status
 ```
-        ┌─────────────────────────────────────────────┐
-        │   Phase B (HERE) — Mermaid aggregate slices  │
-        │   @surreal.slice + relation lines on 24       │
-        │   source files. `oasis-surreal aggregates`    │
-        │   emits 6 docs/aggregates/*.mermaid + master  │
-        │   docs/domain.generated.mermaid. Generator    │
-        │   POCO/.surql output unchanged.               │
-        │   ~2-3h                                       │
-        └────────────────────┬───────────────────────┘
-                             │ (1) visual model validated
-                             ▼
-        ┌─────────────────────────────────────────────┐
-        │   Phase C — Generator multi-table + FK        │
-        │   Parser: multi-table per file                │
-        │   Recognize relationship arrows               │
-        │   Emit FK ASSERTs + RELATION blocks to .surql │
-        │   Migrate generator to read aggregates/       │
-        │   Delete 24 single-table .mermaid files       │
-        │   ~4-6h                                       │
-        └────────────────────┬───────────────────────┘
-                             │ (2) generator on new layout
-                             ▼
-        ┌─────────────────────────────────────────────┐
-        │   Phase E — Quest aggregate cutover           │
-        │   Partial-class extensions for Quest,         │
-        │   QuestNode, QuestEdge, QuestDependency,      │
-        │   QuestRun, QuestNodeExecution                │
-        │   Delete hand-written Models/Quest/*.cs       │
-        │   Rewire wave-2 stores + 34 handlers +        │
-        │   755-line QuestManager + tests               │
-        │   ~7-9h                                       │
-        └────────────────────┬───────────────────────┘
-                             │ (3) cutover complete
-                             ▼
-        ┌─────────────────────────────────────────────┐
-        │   Phase F — quest-api endpoint gaps           │
-        │   ✓ Shipped 2026-06-11 (autopilot)            │
-        │   14 endpoints + 14 manager methods landed    │
-        │   on the post-fork-model runtime (NOT the     │
-        │   post-cutover surface — see "Why this order" │
-        │   note below). 4 obsolete Quest-status        │
-        │   endpoints reframed onto QuestRun per ADR    │
-        │   §2.2; see tracks/quest-api/SIGN-OFF.md      │
-        └────────────────────┬───────────────────────┘
-                             │ (4) endpoints close
-                             ▼
-        ┌─────────────────────────────────────────────┐
-        │   Phase G — dapp-composition close-out        │
-        │   Integration tests (SurrealDB testcontainer) │
-        │   Swagger smoke verification                  │
-        │   Track `[~]` → `[x]`                         │
-        │   ~1-2h                                       │
-        └─────────────────────────────────────────────┘
-```
-
-**Why this order:**
-
-1. Phase B before C so we ratify the visual layout before paying
-   generator-rewrite cost on the wrong shape.
-2. Phase C before E so the Quest cutover targets the final
-   generator surface, not a moving one.
-3. Phase E before F so the new endpoints sit on the post-cutover
-   surface (saves ~3h of duplicate rework). **Empirically falsified
-   2026-06-11**: Phase F shipped under autopilot ahead of Phase E
-   with zero measurable rework cost — the 14 new endpoints sit on the
-   same hand-written `Models.Quest.*` namespace as the pre-existing
-   16, and will migrate together when Phase E lands (one import-site
-   namespace swap per store/manager/controller file). Phase E remains
-   real work but is no longer a precondition for downstream tracks.
-4. dapp-composition integration tests after the Quest cutover so the
-   real Surreal-backed Quest pipeline can drive an end-to-end
-   compose → generate → deploy test.
+Reads the `schema_migration` ledger. `dev-up` does this implicitly on every
+run; repeat invocations are no-ops when the ledger matches the on-disk files.
 
 ---
 
-## 6. Phased plan (next ~3 weeks)
-
-| Phase | Work | Effort | Status |
-|---|---|---|---|
-| A. Runbook + tracks consolidation | RUNBOOK.md, tracks.md prune | 1-2h | ✓ Shipped 2026-05-23 (`8f1eee1`) |
-| B. Mermaid aggregate slices (visualization-only) | Annotate 24 source `.mermaid` files with `@surreal.slice` + Mermaid relationship lines. Add `oasis-surreal aggregates` subcommand that emits 6 `docs/aggregates/*.mermaid` + `docs/domain.generated.mermaid`. Generator POCO/.surql output unchanged. | 2-3h | ✓ Shipped 2026-05-27 (`137992c`) |
-| C. C#-first schema authoring (redesigned again) | Invert the Roslyn source-gen: schema source = decorated C# POCOs (attributes for shape, partial classes for validation). Generator emits `.surql` + `docs/schema.dbml` + state-machine code + guardrail runbook. Mermaid sources retire once byte-equivalent `.surql` is proven on the prototype slice. See [DESIGN-mermaid-portfolio.md](conductor/tracks/surrealql-toolkit/DESIGN-mermaid-portfolio.md) (filename kept for git history; contents now describe the C#-first model). | TBD — sized after prototype slice | **NEXT (prototype `wallet_nft` slice first)** |
-| D. Wave-2 commit + integration | Commit the 3 SurrealQuest stores + tests + `230_quest_graph_edges.*`. | 1h | ✓ Shipped 2026-05-27 (`24a7403`) |
-| E. Quest aggregate cutover to generated POCOs | Partial-class extensions + delete hand-written + rewire wave-2 stores + 34 handlers + QuestManager + tests. Aliases vanish. | 7-9h | **READY 2026-06-11** — runtime stable post-quest-api; partial-class swap is now a focused refactor (no longer gating Phases F/G) |
-| F. quest-api endpoint gaps | 14 new endpoints + 14 new manager methods (4 spec endpoints reframed onto `QuestRun` per ADR §2.2; see `tracks/quest-api/SIGN-OFF.md`) | 2-3h actual | ✓ Shipped 2026-06-11 (autopilot) |
-| G. dapp-composition close-out | Integration tests against the dev-up SurrealDB + Swagger smoke | 1-2h | After F |
-| H. Frontend demo harness `frontend-demo-harness` track | shadcn/ui demo harness, 6 phases | 8-10 days | Independent; can start any time |
-| I. `durable-saga-orchestration` Tier 1 | Reusable durable-saga + transactional-outbox module | TBD | After surrealdb-migration (done) |
-| J. `mcp-surface` Tier 3 | MCP server over SurrealDB graph | — | ✓ Shipped 2026-05-25 (`295d67c`) |
-| K. `surrealql-toolkit` strategic program | Umbrella ADR — "Prisma for SurrealQL with first-class graph semantics." Names 5 constituent tracks (data-backfill-migrations, surrealql-drift-detection, surrealql-studio, surrealql-db-pull, surrealql-toolkit-packaging). Wave 0 foundation already shipped via surrealdb-client-package + surrealdb-schema-source-gen + Phase B. | strategic | After Phase C unlocks Wave 1 |
-
----
-
-## 7. Open questions / pending decisions
-
-1. **Aggregate boundary for the slice files** — §4.1 proposes 6
-   slices. Edge case: `dapp_series_quest` references `quest`
-   (different slice). Two answers: (a) declare cross-slice
-   relationships in the slice that *owns* the FK side, (b) require a
-   master slice for cross-aggregate joins. Default to (a) until we
-   hit pain.
-2. **Mermaid syntax for cross-aggregate refs** — mermaid `erDiagram`
-   does not natively support qualified entity names from other
-   diagrams. Workaround: all aggregates emit into the same global
-   namespace; the concat step deduplicates entity declarations.
-   Document this in CONVENTION.md when Phase B lands.
-3. **Concat tooling** — PowerShell vs `dotnet tool` vs MSBuild target.
-   PowerShell keeps the dependency surface zero (Windows-native);
-   MSBuild target couples it to `dotnet build` so it can't drift.
-   Default to MSBuild target (regen on build) since dev-machine
-   touches `.mermaid` slices but rarely touches PowerShell.
-
----
-
-## 8. Where to look for what
+## 4. Where to look for what
 
 | Question | Document |
 |---|---|
+| "How do I clone + run locally?" | [DEVELOPMENT.md](DEVELOPMENT.md) |
 | "What's the right C# pattern for a new SurrealDB entity?" | [Persistence/SurrealDb/CONVENTION.md](Persistence/SurrealDb/CONVENTION.md) |
-| "How do I add a new field to an existing entity?" | Edit the relevant POCO in [Persistence/SurrealDb/Models/](Persistence/SurrealDb/Models/), then run `oasis-surreal generate-from-assembly` to regenerate [Persistence/SurrealDb/Generated/Schemas/](Persistence/SurrealDb/Generated/Schemas/) |
-| "Where is the schema package / emitters?" | [packages/Oasis.SurrealDb.Schema/](packages/Oasis.SurrealDb.Schema/) — `Generator/AttributeSchemaScanner.cs`, `Generator/SurqlEmitter.cs`, `Generator/MermaidFlowchartEmitter.cs` |
-| "What does the API surface look like?" | [conductor/tracks/blockchain-devnet-providers/docs/PROVIDERS.md](conductor/tracks/blockchain-devnet-providers/docs/PROVIDERS.md) |
+| "What does the API surface look like?" | [PROVIDERS.md](PROVIDERS.md) |
 | "What invariants does the bridge enforce?" | [conductor/tracks/api-safety-hardening/RESIDUAL-RISK-RUNBOOK.md](conductor/tracks/api-safety-hardening/RESIDUAL-RISK-RUNBOOK.md) |
-| "What's the quest temporal model?" | [conductor/tracks/quest-temporal-fork-model/ADR.md](conductor/tracks/quest-temporal-fork-model/) |
-| "How are quest tables intended to live in SurrealDB?" | [conductor/tracks/quest-temporal-fork-model/SURREAL-SCHEMA-HINTS.md](conductor/tracks/quest-temporal-fork-model/SURREAL-SCHEMA-HINTS.md) |
-| "What's the MCP surface look like?" | [conductor/tracks/mcp-surface/CATALOG.md](conductor/tracks/mcp-surface/CATALOG.md) |
 | "Which track is which?" | [conductor/tracks.md](conductor/tracks.md) |
+| "Historical RUNBOOK status snapshots" | [conductor/retros/runbook-status-2026-06-12.md](conductor/retros/runbook-status-2026-06-12.md) |

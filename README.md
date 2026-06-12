@@ -57,27 +57,32 @@ npm install
 npm run dev
 ```
 
-**SurrealDB (local dev):**
+**Full stack (SurrealDB + WebAPI + Frontend):**
 ```bash
-podman run -d --name oasis-surreal -p 5441:8000 \
-  surrealdb/surrealdb:v1.5.4 start \
-  --auth --user root --pass root memory
+./dev-up.sh          # or ./dev-up.ps1 on Windows
 ```
+This brings up SurrealDB (`rocksdb:///data/db` on `localhost:8000`), the
+WebAPI, and the frontend via `docker-compose.dev.yml`, then applies the
+schema. Tear down with `./dev-down.sh`. See `DEVELOPMENT.md` for the full
+setup, variants (host-run WebAPI, bring-your-own SurrealDB), and
+troubleshooting.
 
-See `RUNBOOK.md` §1 for detailed setup and image-pin caveats.
+See `DEVELOPMENT.md` for detailed setup and `RUNBOOK.md` for operations
+(local stack control, production deploy, diagnostics).
 
 ## Key Docs
 
 - `PROVIDERS.md` — API surface (15 controllers, 29 endpoints, 84 SDK methods) and provider architecture
 - `API_SYNC.md` — Controller ↔ SDK regression mapping; use before shipping controller changes
-- `RUNBOOK.md` — Day-to-day workflows, architecture phases, SurrealDB setup
+- `DEVELOPMENT.md` — Developer setup, dev-up variants, conventions, troubleshooting
+- `RUNBOOK.md` — Operations: local stack control, production deploy (Railway), diagnostics
 - `conductor/tracks.md` — Feature track catalog and status
 - `conductor/tracks/api-safety-hardening/RESIDUAL-RISK-RUNBOOK.md` — Pre-launch safety gates
 - `Persistence/SurrealDb/CONVENTION.md` — Schema naming and design conventions
 
 ## Known Open Items
 
-**E1 image pin:** ~~Blocks all integration test runtime evidence~~ — **RESOLVED 2026-06-12.** Swapped storage URI to `rocksdb:///data/db` in `docker-compose.dev.yml` + `podman-compose.yml` (RocksDB syncs its WAL per commit; G1 durability preserved). A 2.x/3.x bump that restores `surrealkv` default-on is tracked separately as `surrealdb-major-upgrade`.
+**E1 image pin:** ~~Blocks all integration test runtime evidence~~ — **RESOLVED 2026-06-12.** Swapped storage URI to `rocksdb:///data/db` in `docker-compose.dev.yml` (RocksDB syncs its WAL per commit; G1 durability preserved). A 2.x/3.x bump that restores `surrealkv` default-on is tracked separately as `surrealdb-major-upgrade`.
 
 **Wormhole VAA gate:** `Secp256k1VaaSignatureVerifier` is registered; awaiting confirmation that `api-safety-hardening` is ready for launch.
 

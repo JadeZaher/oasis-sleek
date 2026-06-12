@@ -136,11 +136,30 @@ fi
 # instead points at the host via `host.containers.internal` (podman) /
 # `host.docker.internal` (docker).
 
+SURREALDB_HOST_PORT="${SURREALDB_HOST_PORT:-8000}"
+export SURREALDB_HOST_PORT
+
+# A responder on the host port is only "external" when it ISN'T our own
+# bundled container. After a `dev-up` restart the bundled surrealdb is
+# already up and answering on the mapped host port; treating that as an
+# external instance would wrongly skip the surrealdb service and point the
+# API at host.docker.internal.
+case "$COMPOSE" in
+    *podman*) PS_RUNTIME=podman ;;
+    *)        PS_RUNTIME=docker ;;
+esac
+BUNDLED_RUNNING=0
+if command -v "$PS_RUNTIME" >/dev/null 2>&1; then
+    if [ -n "$("$PS_RUNTIME" ps --filter 'name=oasis-dev-surrealdb' --format '{{.Names}}' 2>/dev/null)" ]; then
+        BUNDLED_RUNNING=1
+    fi
+fi
+
 EXTERNAL_SURREALDB=0
-if command -v curl >/dev/null 2>&1; then
-    if curl -sfo /dev/null --max-time 2 http://127.0.0.1:8000/health 2>/dev/null; then
+if [ "$BUNDLED_RUNNING" -eq 0 ] && command -v curl >/dev/null 2>&1; then
+    if curl -sfo /dev/null --max-time 2 "http://127.0.0.1:${SURREALDB_HOST_PORT}/health" 2>/dev/null; then
         EXTERNAL_SURREALDB=1
-        echo "[dev-up] Detected an existing SurrealDB on localhost:8000 -- reusing it."
+        echo "[dev-up] Detected an existing SurrealDB on localhost:${SURREALDB_HOST_PORT} -- reusing it."
     fi
 fi
 
@@ -154,7 +173,7 @@ if [ "$EXTERNAL_SURREALDB" -eq 1 ]; then
     # WebAPI's SurrealDb:Endpoint (the compose file interpolates the same
     # value into both). Single-underscore-safe -- podman-compose's
     # ${VAR:-default} parser drops names with double underscores.
-    export OASIS_SURREAL_URL="http://${HOST_DB_INTERNAL}:8000"
+    export OASIS_SURREAL_URL="http://${HOST_DB_INTERNAL}:${SURREALDB_HOST_PORT}"
     COMPOSE_UP_SERVICES="oasis-api oasis-frontend"
 fi
 
@@ -247,7 +266,7 @@ else
     # the API container points at host.containers.internal which won't
     # resolve here -- override for the CLI call, restore after.
     SCHEMA_URL_BACKUP="${OASIS_SURREAL_URL:-}"
-    export OASIS_SURREAL_URL="http://127.0.0.1:8000"
+    export OASIS_SURREAL_URL="http://127.0.0.1:${SURREALDB_HOST_PORT}"
 
     # Wait for SurrealDB to be reachable.
     SURREAL_READY=0
@@ -262,7 +281,7 @@ else
     if [ "$SURREAL_READY" -ne 1 ]; then
         export OASIS_SURREAL_URL="$SCHEMA_URL_BACKUP"
         echo "" >&2
-        echo "[dev-up] SurrealDB at http://127.0.0.1:8000 never became reachable." >&2
+        echo "[dev-up] SurrealDB at http://127.0.0.1:${SURREALDB_HOST_PORT} never became reachable." >&2
         echo "[dev-up] Dumping bundled surrealdb container state + logs to diagnose:" >&2
         case "$COMPOSE" in
             *podman*) RUNTIME=podman ;;
@@ -288,14 +307,17 @@ else
     fi
 
     echo ""
+    # `|| SCHEMA_EXIT=$?` captures the failure WITHOUT tripping `set -e`, so
+    # the guidance block below can actually print. A bare invocation would
+    # abort the script before SCHEMA_EXIT is read.
+    SCHEMA_EXIT=0
     if [ "$DO_RESET_SCHEMA" -eq 1 ]; then
         echo "[dev-up] --reset: wiping + re-applying SurrealDB schema..."
-        dotnet run --project packages/Oasis.SurrealDb.Schema --framework net8.0 -- reset
+        dotnet run --project packages/Oasis.SurrealDb.Schema --framework net8.0 -- reset || SCHEMA_EXIT=$?
     else
         echo "[dev-up] syncing SurrealDB schema (idempotent; use --reset to wipe)..."
-        dotnet run --project packages/Oasis.SurrealDb.Schema --framework net8.0 -- up
+        dotnet run --project packages/Oasis.SurrealDb.Schema --framework net8.0 -- up || SCHEMA_EXIT=$?
     fi
-    SCHEMA_EXIT=$?
     export OASIS_SURREAL_URL="$SCHEMA_URL_BACKUP"
     if [ "$SCHEMA_EXIT" -ne 0 ]; then
         if [ "$DO_RESET_SCHEMA" -eq 1 ]; then

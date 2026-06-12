@@ -145,13 +145,19 @@ $ProjectName = Split-Path -Leaf $ScriptDir
 if ($DoWipe) {
     Write-Host "[dev-up] -ResetDb: tearing down stack + wiping SurrealDB volume..."
     Invoke-Compose @('-f', $ComposeFile, 'down', '-v', '--remove-orphans')
-    try {
-        $stale = & $compose.Exe volume ls --filter "label=com.docker.compose.project=$ProjectName" -q 2>$null
-        if ($LASTEXITCODE -eq 0 -and $stale) {
-            Write-Host "[dev-up] Pruning $($stale.Count) stray project volume(s)..."
-            & $compose.Exe volume rm -f @stale 2>$null | Out-Null
-        }
-    } catch { }
+    # `volume` is an engine subcommand, not a compose one -- docker-compose /
+    # podman-compose have no `volume ls`. Drive the engine binary directly
+    # (mirrors dev-down.ps1).
+    $volRuntime = if ($compose.Exe -like '*podman*') { 'podman' } else { 'docker' }
+    if (Get-Command $volRuntime -ErrorAction SilentlyContinue) {
+        try {
+            $stale = & $volRuntime volume ls --filter "label=com.docker.compose.project=$ProjectName" -q 2>$null
+            if ($LASTEXITCODE -eq 0 -and $stale) {
+                Write-Host "[dev-up] Pruning $($stale.Count) stray project volume(s)..."
+                & $volRuntime volume rm -f @stale 2>$null | Out-Null
+            }
+        } catch { }
+    }
 } else {
     Write-Host "[dev-up] Preserving SurrealDB volume across restart (pass -ResetDb to wipe)."
 }
@@ -164,12 +170,33 @@ if ($DoWipe) {
 # instead points at the host via `host.containers.internal` (podman) /
 # `host.docker.internal` (docker).
 
-$ExistingSurrealDb = $false
+if (-not $env:SURREALDB_HOST_PORT) { $env:SURREALDB_HOST_PORT = '8000' }
+$SurrealHostPort = $env:SURREALDB_HOST_PORT
+
+# Snapshot OASIS_SURREAL_URL so the host.containers.internal / 127.0.0.1
+# rewrites below don't leak into the caller's shell. Restored in finally.
+$OasisSurrealUrlEntry = $env:OASIS_SURREAL_URL
 try {
-    $null = Invoke-WebRequest -Uri "http://127.0.0.1:8000/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-    $ExistingSurrealDb = $true
-    Write-Host "[dev-up] Detected an existing SurrealDB on localhost:8000 -- reusing it."
-} catch { }
+
+# A responder on the host port is only "external" when it ISN'T our own
+# bundled container. After a dev-up restart the bundled surrealdb is already
+# up and answering on the mapped host port; treating that as external would
+# wrongly skip the surrealdb service and point the API at host.docker.internal.
+$bundledRunning = $false
+$psRuntime = if ($compose.Exe -like '*podman*') { 'podman' } else { 'docker' }
+if (Get-Command $psRuntime -ErrorAction SilentlyContinue) {
+    $names = & $psRuntime ps --filter 'name=oasis-dev-surrealdb' --format '{{.Names}}' 2>$null
+    if (-not [string]::IsNullOrWhiteSpace(($names -join ''))) { $bundledRunning = $true }
+}
+
+$ExistingSurrealDb = $false
+if (-not $bundledRunning) {
+    try {
+        $null = Invoke-WebRequest -Uri "http://127.0.0.1:$SurrealHostPort/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+        $ExistingSurrealDb = $true
+        Write-Host "[dev-up] Detected an existing SurrealDB on localhost:$SurrealHostPort -- reusing it."
+    } catch { }
+}
 
 # Compose-up service set: omit `surrealdb` when an external instance is available.
 if ($ExistingSurrealDb) {
@@ -187,7 +214,7 @@ if ($ExistingSurrealDb) {
     # WebAPI's SurrealDb:Endpoint (the compose file interpolates the same
     # value into both). Single-underscore-safe -- podman-compose's
     # ${VAR:-default} parser drops names with double underscores.
-    $env:OASIS_SURREAL_URL    = "http://${HostDbInternal}:8000"
+    $env:OASIS_SURREAL_URL    = "http://${HostDbInternal}:$SurrealHostPort"
     $ComposeUpServices        = @('oasis-api', 'oasis-frontend')
 } else {
     $ComposeUpServices        = @()  # empty == all services
@@ -291,7 +318,7 @@ if ($env:OASIS_SKIP_RESET -eq "1") {
     # the API container points at host.containers.internal which won't
     # resolve here -- override for the CLI call, restore after.
     $schemaUrlBackup = $env:OASIS_SURREAL_URL
-    $env:OASIS_SURREAL_URL = 'http://127.0.0.1:8000'
+    $env:OASIS_SURREAL_URL = "http://127.0.0.1:$SurrealHostPort"
 
     # Wait for SurrealDB to be reachable (the container case needs a beat).
     $surrealReady = $false
@@ -375,4 +402,13 @@ if ($Logs) {
     Write-Host ""
     Write-Host "[dev-up] Tailing combined logs (Ctrl-C to stop):"
     Invoke-Compose @('-f', $ComposeFile, 'logs', '-f')
+}
+} finally {
+    # Restore the caller's OASIS_SURREAL_URL so host.containers.internal /
+    # 127.0.0.1 rewrites don't leak into the shell after the script exits.
+    if ($null -eq $OasisSurrealUrlEntry) {
+        Remove-Item Env:OASIS_SURREAL_URL -ErrorAction SilentlyContinue
+    } else {
+        $env:OASIS_SURREAL_URL = $OasisSurrealUrlEntry
+    }
 }

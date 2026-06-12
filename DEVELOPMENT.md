@@ -155,8 +155,13 @@ host for option B / C).
 **Frontend hits CORS errors against the WebAPI**
 The frontend's `NEXT_PUBLIC_API_URL` defaults to `http://localhost:5000`
 which the API CORS allowlist permits. If you've changed the WebAPI's
-listen port, update `NEXT_PUBLIC_API_URL` in
-`docker-compose.dev.yml`.
+listen port, note that `NEXT_PUBLIC_*` values are **baked in at Next.js
+build time** — editing the env var in `docker-compose.dev.yml` alone does
+nothing, because the running container already embedded the old value.
+Update `NEXT_PUBLIC_API_URL` in `docker-compose.dev.yml` AND rebuild the
+frontend image so the new value is compiled in:
+`./dev-up.sh` (rebuilds by default) or
+`docker compose -f docker-compose.dev.yml build oasis-frontend`.
 
 **Want a totally fresh DB?**
 ```
@@ -176,9 +181,59 @@ Reads the `schema_migration` ledger table and reports which files are
 applied. `dev-up` does this implicitly on every run — repeat invocations
 are no-ops when the ledger matches the on-disk files.
 
+## Conventions in force
+
+| Convention | Source | Applies to |
+|---|---|---|
+| SurrealDB entity = hand-authored attributed POCO + partial extensions | [Persistence/SurrealDb/CONVENTION.md](Persistence/SurrealDb/CONVENTION.md) | All SurrealDB-backed aggregates |
+| No EF Core migrations on new work (EF + Postgres removed in surrealdb-migration) | greenfield pre-launch, no customers/data | All persistence work |
+| Integration tests run against the dev-up SurrealDB instance (`oasis-dev-surrealdb` on `:8000`) | [RESIDUAL-RISK-RUNBOOK](conductor/tracks/api-safety-hardening/RESIDUAL-RISK-RUNBOOK.md) | All `OASIS.WebAPI.IntegrationTests` |
+| Bridge tier-0 hardening invariants | [api-safety-hardening RESIDUAL-RISK-RUNBOOK §4](conductor/tracks/api-safety-hardening/RESIDUAL-RISK-RUNBOOK.md) | Bridge value flow |
+| TDD on bug fixes + features | [conductor/skills/tdd-workflow](conductor/) | Default |
+
+### SurrealDB convention recap (C#-first)
+
+Full doc: [Persistence/SurrealDb/CONVENTION.md](Persistence/SurrealDb/CONVENTION.md).
+Attribute reference: [packages/Oasis.SurrealDb.Client/Schema/ANNOTATIONS.md](packages/Oasis.SurrealDb.Client/Schema/ANNOTATIONS.md).
+
+**Source of truth:** decorated C# POCOs in
+[Persistence/SurrealDb/Models/](Persistence/SurrealDb/Models/), namespace
+`OASIS.WebAPI.Persistence.SurrealDb.Models`. Each POCO is a `partial class`
+implementing `Oasis.SurrealDb.Client.ISurrealRecord`, carrying
+`[SurrealTable]` + per-field `[Column]` / `[Assert]` / `[Inside]` /
+`[Default]` / `[Index]` attributes plus `[JsonPropertyName]` for the wire shape.
+
+**Generated artifacts** live in
+[Persistence/SurrealDb/Generated/](Persistence/SurrealDb/Generated/):
+- `Schemas/<table>.surql` — DDL emitted from the attribute scan
+- `Flowcharts/<slice>.flowchart.mermaid` + `Flowcharts/domain.flowchart.mermaid` — `graph LR` visualization
+- `Dbml/schema.dbml` — DBML diff manifest (opt-in via `OasisSurrealDbOptions.Generation.EmitDbml`)
+
+**Configuration:** [`OasisSurrealDbOptions`](packages/Oasis.SurrealDb.Client/Schema/OasisSurrealDbOptions.cs)
+binds to `SurrealDb` in `appsettings.json` with `Connection` + `Generation`
+subsections. Env overrides (`OASIS_SURREAL_*`) preserved for CLI invocations.
+
+**Adapter / extension code** lives in sibling partial-class files in the
+same namespace — `Persistence/SurrealDb/Models/<Name>.Extensions.cs` (domain
+predicates, Guid conversions) or `Persistence/SurrealDb/Models/<Name>.Validation.cs`
+(FluentValidation `OnValidating` hooks). DTOs + in-memory transients stay in
+`OASIS.WebAPI.Models.*`.
+
+**Acceptance gate:** [`AttributePocoByteEquivalenceTests`](tests/OASIS.WebAPI.Tests/Persistence/SurrealDb/AttributePocoByteEquivalenceTests.cs)
+discovers every `[SurrealTable]`-decorated type at runtime, emits its `.surql`
+via the attribute scanner, and asserts a byte-identical match against
+`Persistence/SurrealDb/Generated/Schemas/<table>.surql`. Adding a new POCO
+automatically extends coverage; a missing or drifted golden file fails CI.
+
+**Regenerating** after a POCO attribute change:
+```
+oasis-surreal generate-from-assembly bin/Debug/net8.0/OASIS.WebAPI.dll
+oasis-surreal flowcharts-from-assembly bin/Debug/net8.0/OASIS.WebAPI.dll
+```
+
 ## Related docs
 
-- [RUNBOOK.md](RUNBOOK.md) — day-to-day operations + recently-shipped log
+- [RUNBOOK.md](RUNBOOK.md) — operations: local stack, production deploy, diagnostics
 - [Persistence/SurrealDb/CONVENTION.md](Persistence/SurrealDb/CONVENTION.md) — POCO-as-schema convention
 - [packages/Oasis.SurrealDb.Client/Schema/ANNOTATIONS.md](packages/Oasis.SurrealDb.Client/Schema/ANNOTATIONS.md) — attribute reference
 - [Persistence/SurrealDb/Migrations/README.md](Persistence/SurrealDb/Migrations/README.md) — data-migration authoring

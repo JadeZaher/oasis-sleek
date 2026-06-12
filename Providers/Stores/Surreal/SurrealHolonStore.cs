@@ -303,7 +303,6 @@ public sealed class SurrealHolonStore : IHolonStore
     }
 
     // ── Inline POCO ───────────────────────────────────────────────────────────
-    // TODO: replace with generated POCO when source-gen catches up to wave-2 aggregates.
 
     private sealed class HolonPoco : ISurrealRecord
     {

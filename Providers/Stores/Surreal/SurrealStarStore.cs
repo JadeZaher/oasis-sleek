@@ -49,6 +49,34 @@ public sealed class SurrealStarStore : ISTARStore
         }
     }
 
+    public async Task<OASISResult<ISTARODK>> GetByNameAndAvatarAsync(string name, Guid avatarId, CancellationToken ct = default)
+    {
+        try
+        {
+            // Owner-scoped name lookup. Closes the POST IDOR: only records owned
+            // by the calling avatar can be overwritten by name collision.
+            // Name comparison is case-insensitive (string::lowercase on both sides)
+            // to preserve the prior CreateOrUpdateAsync semantic.
+            var q = SurrealQuery
+                .Of("SELECT * FROM type::table($_t) WHERE string::lowercase(name) = string::lowercase($_name) AND avatar_id = $_avatar LIMIT 1")
+                .WithParam("_t",      StarRecord.StarTable)
+                .WithParam("_name",   name)
+                .WithParam("_avatar", ToSurrealId(avatarId));
+
+            var row = await _executor.QuerySingleAsync<StarRecord>(q, ct);
+            return new OASISResult<ISTARODK>
+            {
+                IsError = false,
+                Message = row == null ? "No matching STAR ODK." : "Success",
+                Result  = row == null ? null : FromPoco(row)
+            };
+        }
+        catch (Exception ex)
+        {
+            return new OASISResult<ISTARODK>().CaptureException(ex, $"SurrealStarStore.GetByNameAndAvatarAsync failed: {ex.Message}");
+        }
+    }
+
     public async Task<OASISResult<IEnumerable<ISTARODK>>> GetAllAsync(CancellationToken ct = default)
     {
         try
@@ -198,7 +226,6 @@ public sealed class SurrealStarStore : ISTARStore
     }
 
     // ── Inline SurrealDB record type ──────────────────────────────────────────
-    // TODO: replace with generated POCO when source-gen catches up to wave-2 aggregates.
 
     private sealed class StarRecord : Oasis.SurrealDb.Client.ISurrealRecord
     {

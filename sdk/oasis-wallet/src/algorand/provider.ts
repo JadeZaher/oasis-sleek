@@ -13,32 +13,32 @@ import type {
 import type { Result } from "../core/result.js";
 import { ok, err } from "../core/result.js";
 import { SdkError, SdkErrorCode } from "../core/errors.js";
+import {
+  encodeAlgorandTransaction,
+  buildSignedTransactionEnvelope,
+} from "./msgpack.js";
 
-// Optional peer dependency: @noble/curves for Ed25519 signing.
-// Dynamically imported so the SDK works without it — wallet adapters that
-// handle their own signing can operate with the json-descriptor format.
-// The type is declared inline to avoid a compile-time module resolution error
-// when @noble/curves is not installed.
-type NobleEd25519 = { sign(msg: Uint8Array, privKey: Uint8Array): Uint8Array };
-let _ed25519: NobleEd25519 | null = null;
-let _ed25519LoadAttempted = false;
-
-async function getEd25519(): Promise<NobleEd25519 | null> {
-  if (_ed25519LoadAttempted) return _ed25519;
-  _ed25519LoadAttempted = true;
-  try {
-    // Dynamic import — will throw/reject when @noble/curves is not installed,
-    // which we catch and treat as "not available".
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mod = (await import("@noble/curves/ed25519" as string)) as any;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-    _ed25519 = mod.ed25519 as NobleEd25519;
-  } catch {
-    // @noble/curves not installed — JSON-descriptor mode only
-    _ed25519 = null;
-  }
-  return _ed25519;
-}
+// Algorand transaction signing has two supported paths:
+//
+//  1. Delegated path (signTransaction + signer adapter). The legacy path.
+//     The SDK passes the json-descriptor bytes to the consumer's Signer
+//     (typically Pera, Defly, MyAlgo, etc.). Adapters that understand the
+//     descriptor convert it to canonical Algorand msgpack internally
+//     before signing, then return the algod-submittable envelope. The
+//     SDK never sees the private key. This path is appropriate for
+//     wallet-adapter integrations that already speak the descriptor
+//     format end-to-end.
+//
+//  2. Encode-then-sign path (signAndEncodeTransaction). The SDK performs
+//     the canonical Algorand msgpack encoding itself, hands the
+//     "TX"-prefixed bytes to the Signer, then assembles the algod-
+//     submittable signed-transaction envelope from the returned
+//     signature. Consumers wire their own ed25519 implementation into
+//     the Signer (`@noble/curves`, a KMS, a hardware wallet exposed as
+//     a Signer) — the SDK does not import any crypto library directly.
+//     Use this path for generic Signers (server-side custody, raw
+//     keypairs, tests) and any caller that needs `encoded` to be the
+//     final submittable envelope rather than an opaque adapter response.
 
 // ─── Cross-platform base64 helpers ───────────────────────────────────────────
 // Pure JS — no btoa/atob which are unavailable in React Native / older Node.
@@ -93,26 +93,6 @@ interface SuggestedParams {
   genesisHash: string;
   genesisId: string;
   flatFee: boolean;
-}
-
-/**
- * Result of signAndEncodeTransaction — carries both the raw Ed25519 signature
- * and, if native encoding is available, the msgpack-encoded signed transaction
- * ready to POST to algod.
- */
-export interface AlgorandSignedTransaction {
-  /** Raw Ed25519 signature (64 bytes). */
-  signature: Uint8Array;
-  /** Signer public key (32 bytes). */
-  publicKey: Uint8Array;
-  /**
-   * Msgpack-encoded signed transaction suitable for direct algod submission.
-   * Present only when native encoding succeeded (requires algosdk or a
-   * bundled msgpack implementation — see encodeAlgorandTransaction()).
-   */
-  encoded?: Uint8Array;
-  /** The original unsigned transaction descriptor bytes (always present). */
-  descriptorBytes: Uint8Array;
 }
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -365,81 +345,75 @@ export class AlgorandProvider implements ChainProvider {
   }
 
   /**
-   * Signs a transaction with full Ed25519 awareness using @noble/curves.
+   * Encode-then-sign path: produces an algod-submittable signed-transaction
+   * envelope directly from a `json-descriptor` UnsignedTransaction.
    *
-   * Unlike signTransaction() (which delegates entirely to the Signer adapter),
-   * this method:
-   *   1. Calls encodeAlgorandTransaction() to build the canonical signing bytes
-   *      (the "TX" prefix + msgpack payload that Algorand nodes verify).
-   *   2. Uses @noble/curves ed25519.sign() directly when available, falling
-   *      back to signer.sign() on the descriptor bytes when the lib is absent.
-   *   3. Returns an AlgorandSignedTransaction with the raw signature,
-   *      public key, original descriptor, and — if native encoding is
-   *      available — the fully-encoded signed transaction.
+   * Steps:
+   *  1. Run the descriptor through canonical Algorand encoding
+   *     ({@link encodeAlgorandTransaction}) to obtain the "TX"-prefixed
+   *     bytes that ed25519 signs over.
+   *  2. Pass those bytes to `signer.sign()`. The Signer is the only place
+   *     a private key is referenced — the SDK does not hold raw keys.
+   *  3. Assemble the canonical `{ sig, txn }` envelope via
+   *     {@link buildSignedTransactionEnvelope} so the result is exactly
+   *     what `POST /v2/transactions` expects.
    *
-   * Requires @noble/curves as an optional peer dependency.
-   * When not installed, falls back to signer.sign() on the descriptor bytes.
+   * Returns `{ signature, encoded }` where `signature` is the bare 64-byte
+   * ed25519 signature (useful for downstream verification) and `encoded`
+   * is the submittable envelope. Unlike the legacy `signTransaction()`
+   * path, `encoded` is guaranteed to be defined on the success arm — the
+   * SDK owns the encoding step.
    *
-   * @param tx - Unsigned transaction (json-descriptor format)
-   * @param signer - Signer with publicKey and sign()
-   * @param privateKey - Optional raw 32-byte Ed25519 private key for direct
-   *   @noble/curves signing. When omitted signer.sign() is used.
+   * Only `format: "json-descriptor"` is accepted; native / base64 inputs
+   * are passed through `signTransaction()` instead because re-encoding
+   * already-encoded bytes would be lossy.
    */
   async signAndEncodeTransaction(
     tx: UnsignedTransaction,
-    signer: Signer,
-    privateKey?: Uint8Array,
-  ): Promise<Result<AlgorandSignedTransaction, SdkError>> {
+    signer: Signer
+  ): Promise<Result<{ signature: Uint8Array; encoded: Uint8Array }, SdkError>> {
     try {
-      const ed25519 = await getEd25519();
-
-      let signature: Uint8Array;
-      let encoded: Uint8Array | undefined;
-
-      if (ed25519 && privateKey) {
-        // Ed25519 direct signing requires native-format transactions (msgpack-encoded).
-        // json-descriptor format cannot produce valid Algorand signing bytes because
-        // algod verifies signatures against canonical msgpack, not JSON.
-        if (tx.format === "json-descriptor") {
-          return err(new SdkError(
+      if (tx.format !== "json-descriptor") {
+        return err(
+          new SdkError(
             SdkErrorCode.UNSUPPORTED_OPERATION,
-            "signAndEncodeTransaction with Ed25519 requires native-format transactions. " +
-            "json-descriptor format cannot produce valid Algorand signing bytes without " +
-            "a msgpack encoder. Use signTransaction() with a wallet adapter instead, or " +
-            "install algosdk to produce native transactions.",
+            `signAndEncodeTransaction requires format='json-descriptor', got '${tx.format}'. Use signTransaction() for pre-encoded payloads.`,
             { chain: "algorand" }
-          ));
-        }
-
-        // Native format: prefix with "TX" and sign
-        const signingBytes = this.encodeAlgorandTransaction(tx);
-        signature = ed25519.sign(signingBytes, privateKey);
-        encoded = undefined; // Full msgpack envelope needs algosdk.encodeObj()
-      } else {
-        // Fallback: delegate entirely to the signer adapter. The adapter is
-        // responsible for encoding and signing (e.g., a MyAlgo or Pera adapter
-        // will receive the descriptor and produce algod-ready bytes).
-        signature = await signer.sign(tx.bytes);
+          )
+        );
       }
 
-      return ok({
-        signature,
-        publicKey: signer.publicKey,
-        encoded,
-        descriptorBytes: tx.bytes,
-      });
+      const signingBytes = encodeAlgorandTransaction(tx);
+      const signature = await signer.sign(signingBytes);
+
+      if (signature.length !== 64) {
+        return err(
+          new SdkError(
+            SdkErrorCode.SIGNING_ERROR,
+            `Signer returned ${signature.length}-byte signature; expected 64 (ed25519).`,
+            { chain: "algorand" }
+          )
+        );
+      }
+
+      const encoded = buildSignedTransactionEnvelope(tx, signature, signer.publicKey);
+      return ok({ signature, encoded });
     } catch (e) {
-      return err(new SdkError(SdkErrorCode.SIGNING_ERROR, `signAndEncodeTransaction failed: ${e}`, { chain: "algorand", cause: e as Error }));
+      return err(
+        new SdkError(SdkErrorCode.SIGNING_ERROR, `signAndEncodeTransaction failed: ${e}`, {
+          chain: "algorand",
+          cause: e as Error,
+        })
+      );
     }
   }
 
   /**
    * Submits a signed transaction to the algod node.
    *
-   * Accepts either:
-   *   - Raw signed bytes (Uint8Array) from signTransaction()
-   *   - The `encoded` field from AlgorandSignedTransaction when native
-   *     encoding was available
+   * Accepts the raw signed bytes produced by signTransaction() (which the
+   * caller obtains by passing the unsigned descriptor to a wallet adapter
+   * such as Pera or Defly — the adapter owns the msgpack encoding step).
    */
   async submitTransaction(signedTx: Uint8Array): Promise<Result<TransactionResult, SdkError>> {
     try {
@@ -469,40 +443,7 @@ export class AlgorandProvider implements ChainProvider {
     }
   }
 
-  // ─── Encoding ─────────────────────────────────────────────────────────────
-
-  /**
-   * Builds the canonical Algorand signing bytes for a json-descriptor
-   * transaction.
-   *
-   * Algorand's signing domain is:
-   *   bytes_to_sign = b"TX" + msgpack_encode(transaction_object)
-   *
-   * This implementation extracts the JSON descriptor from `tx.bytes` and
-   * prepends the "TX" domain prefix so it can be passed directly to an
-   * Ed25519 signing function.
-   *
-   * IMPORTANT: The output is NOT a valid msgpack-encoded transaction object.
-   * It is: [0x54, 0x58, ...json_bytes]. This is sufficient for signing when
-   * the receiving node/adapter understands the descriptor convention. For a
-   * fully spec-compliant encoding suitable for direct algod submission you
-   * must msgpack-encode the transaction fields (not the JSON string) and
-   * prefix with b"TX". Use algosdk or a msgpack library for that path.
-   *
-   * Future enhancement: when a msgpack library is available, replace the
-   * JSON passthrough with proper field-level msgpack encoding:
-   *   const txFields = JSON.parse(new TextDecoder().decode(tx.bytes));
-   *   const encoded = msgpack.encode(txFields); // canonical key ordering required
-   *   return new Uint8Array([0x54, 0x58, ...encoded]);
-   */
-  encodeAlgorandTransaction(tx: UnsignedTransaction): Uint8Array {
-    // "TX" prefix as bytes [0x54, 0x58]
-    const prefix = new Uint8Array([0x54, 0x58]);
-    const combined = new Uint8Array(prefix.length + tx.bytes.length);
-    combined.set(prefix, 0);
-    combined.set(tx.bytes, prefix.length);
-    return combined;
-  }
+  // ─── Encoding helpers ─────────────────────────────────────────────────────
 
   /**
    * Encodes bytes as a base64 string using a cross-platform approach that

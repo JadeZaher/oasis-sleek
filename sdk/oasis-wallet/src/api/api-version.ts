@@ -77,6 +77,7 @@ export const API_PATHS = {
   HOLON_DESCENDANTS: (id: string) => `/api/holon/${id}/descendants`,
   HOLON_MINT: (id: string) => `/api/holon/${id}/mint`,
   HOLON_EXCHANGE: (id: string) => `/api/holon/${id}/exchange`,
+  HOLON_COMPOSE: (id: string) => `/api/holon/${id}/compose`,
 
   // Wallet
   WALLET_GET: (id: string) => `/api/wallet/${id}`,
@@ -108,4 +109,8 @@ export const API_PATHS = {
   // Search
   SEARCH: "/api/search",
   SEARCH_FACETS: "/api/search/facets",
+
+  // Swap (SwapController)
+  SWAP_QUOTE: "/api/swap/quote",
+  SWAP_EXECUTE: "/api/swap/execute",
 } as const;

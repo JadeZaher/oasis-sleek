@@ -752,4 +752,396 @@ public class QuestManager : IQuestManager
     {
         return await _questStore.GetAllQuestNodeTemplatesAsync();
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // QUEST NODES SUB-RESOURCE (post-hoc edits on a persisted Quest)
+    // ═══════════════════════════════════════════════════════════════════
+
+    public async Task<OASISResult<IEnumerable<QuestNode>>> ListNodesAsync(Guid questId, OASISRequest? request = null)
+    {
+        var questResult = await _questStore.GetQuestAsync(questId);
+        if (questResult.IsError || questResult.Result == null)
+            return new OASISResult<IEnumerable<QuestNode>> { IsError = true, Message = questResult.Message };
+
+        return new OASISResult<IEnumerable<QuestNode>>
+        {
+            Result = questResult.Result.Nodes,
+            Message = "Success"
+        };
+    }
+
+    public async Task<OASISResult<QuestNode>> AddNodeAsync(Guid questId, QuestNodeCreateModel model, OASISRequest? request = null)
+    {
+        var questResult = await _questStore.GetQuestAsync(questId);
+        if (questResult.IsError || questResult.Result == null)
+            return new OASISResult<QuestNode> { IsError = true, Message = questResult.Message };
+
+        var quest = questResult.Result;
+
+        var node = new QuestNode
+        {
+            Id = Guid.NewGuid(),
+            QuestId = quest.Id,
+            Name = model.Name,
+            NodeType = model.NodeType,
+            Config = model.Config,
+            IsEntry = model.IsEntry,
+            IsTerminal = model.IsTerminal,
+            NodeTemplateId = model.NodeTemplateId
+        };
+        quest.Nodes.Add(node);
+
+        var upsert = await _questStore.UpsertQuestAsync(quest);
+        if (upsert.IsError)
+            return new OASISResult<QuestNode> { IsError = true, Message = upsert.Message };
+
+        return new OASISResult<QuestNode> { Result = node, Message = "Node added." };
+    }
+
+    public async Task<OASISResult<QuestNode>> UpdateNodeAsync(Guid questId, Guid nodeId, QuestNodeUpdateModel model, OASISRequest? request = null)
+    {
+        var questResult = await _questStore.GetQuestAsync(questId);
+        if (questResult.IsError || questResult.Result == null)
+            return new OASISResult<QuestNode> { IsError = true, Message = questResult.Message };
+
+        var quest = questResult.Result;
+        var node = quest.Nodes.FirstOrDefault(n => n.Id == nodeId);
+        if (node == null)
+            return new OASISResult<QuestNode> { IsError = true, Message = $"Node {nodeId} not found in quest {questId}." };
+
+        // Patch semantics: only non-null fields are applied.
+        if (model.Name != null) node.Name = model.Name;
+        if (model.Config != null) node.Config = model.Config;
+        if (model.IsEntry.HasValue) node.IsEntry = model.IsEntry.Value;
+        if (model.IsTerminal.HasValue) node.IsTerminal = model.IsTerminal.Value;
+
+        var upsert = await _questStore.UpsertQuestAsync(quest);
+        if (upsert.IsError)
+            return new OASISResult<QuestNode> { IsError = true, Message = upsert.Message };
+
+        return new OASISResult<QuestNode> { Result = node, Message = "Node updated." };
+    }
+
+    public async Task<OASISResult<bool>> DeleteNodeAsync(Guid questId, Guid nodeId, OASISRequest? request = null)
+    {
+        var questResult = await _questStore.GetQuestAsync(questId);
+        if (questResult.IsError || questResult.Result == null)
+            return new OASISResult<bool> { IsError = true, Message = questResult.Message };
+
+        var quest = questResult.Result;
+        var node = quest.Nodes.FirstOrDefault(n => n.Id == nodeId);
+        if (node == null)
+            return new OASISResult<bool> { IsError = true, Message = $"Node {nodeId} not found in quest {questId}." };
+
+        // Reject if node has any edges referencing it — orphaning edges would
+        // produce an invalid DAG. Callers must clear edges first via
+        // RemoveEdgeAsync. This preserves the graph invariant that every edge
+        // endpoint references an existing node.
+        var referencingEdges = quest.Edges
+            .Where(e => e.SourceNodeId == nodeId || e.TargetNodeId == nodeId)
+            .ToList();
+        if (referencingEdges.Count > 0)
+        {
+            return new OASISResult<bool>
+            {
+                IsError = true,
+                Result = false,
+                Message = $"Cannot delete node {nodeId}: {referencingEdges.Count} edge(s) reference it. Remove the referencing edges first."
+            };
+        }
+
+        quest.Nodes.Remove(node);
+        var upsert = await _questStore.UpsertQuestAsync(quest);
+        if (upsert.IsError)
+            return new OASISResult<bool> { IsError = true, Message = upsert.Message };
+
+        return new OASISResult<bool> { Result = true, Message = "Node deleted." };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // QUEST EDGES SUB-RESOURCE
+    // ═══════════════════════════════════════════════════════════════════
+
+    public async Task<OASISResult<QuestEdge>> AddEdgeAsync(Guid questId, QuestEdgeAddModel model, OASISRequest? request = null)
+    {
+        var questResult = await _questStore.GetQuestAsync(questId);
+        if (questResult.IsError || questResult.Result == null)
+            return new OASISResult<QuestEdge> { IsError = true, Message = questResult.Message };
+
+        var quest = questResult.Result;
+
+        // Endpoint existence guard — both ends must reference nodes already in
+        // the quest. Without this an invalid graph can be persisted and only
+        // discovered at validate/execute time.
+        if (quest.Nodes.All(n => n.Id != model.SourceNodeId))
+            return new OASISResult<QuestEdge> { IsError = true, Message = $"SourceNodeId {model.SourceNodeId} is not present in quest {questId}." };
+        if (quest.Nodes.All(n => n.Id != model.TargetNodeId))
+            return new OASISResult<QuestEdge> { IsError = true, Message = $"TargetNodeId {model.TargetNodeId} is not present in quest {questId}." };
+        if (model.SourceNodeId == model.TargetNodeId)
+            return new OASISResult<QuestEdge> { IsError = true, Message = "SourceNodeId and TargetNodeId must not be the same node (self-loops not allowed)." };
+
+        var edge = new QuestEdge
+        {
+            Id = Guid.NewGuid(),
+            QuestId = quest.Id,
+            SourceNodeId = model.SourceNodeId,
+            TargetNodeId = model.TargetNodeId,
+            Condition = model.Condition,
+            EdgeType = model.EdgeType
+        };
+        quest.Edges.Add(edge);
+
+        // Cycle guard: run the DAG validator after staging the new edge and
+        // reject only on cycle-class errors. We deliberately ignore the
+        // entry/terminal/orphan checks because a Quest is editable in-flight
+        // — terminal/entry flags and full reachability are only required
+        // immediately before ExecuteAsync (which runs the full ValidateDAGAsync).
+        // Allowing orphan-class errors here would prevent any incremental
+        // edge wiring on a partially-built graph.
+        var validation = _dagValidator.Validate(quest);
+        var cycleErrors = validation.Errors
+            .Where(e => e.Contains("Cycle detected", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (cycleErrors.Count > 0)
+        {
+            quest.Edges.Remove(edge);
+            return new OASISResult<QuestEdge>
+            {
+                IsError = true,
+                Message = $"Edge would invalidate DAG: {string.Join("; ", cycleErrors)}"
+            };
+        }
+
+        var upsert = await _questStore.UpsertQuestAsync(quest);
+        if (upsert.IsError)
+            return new OASISResult<QuestEdge> { IsError = true, Message = upsert.Message };
+
+        return new OASISResult<QuestEdge> { Result = edge, Message = "Edge added." };
+    }
+
+    public async Task<OASISResult<bool>> RemoveEdgeAsync(Guid questId, Guid edgeId, OASISRequest? request = null)
+    {
+        var questResult = await _questStore.GetQuestAsync(questId);
+        if (questResult.IsError || questResult.Result == null)
+            return new OASISResult<bool> { IsError = true, Message = questResult.Message };
+
+        var quest = questResult.Result;
+        var edge = quest.Edges.FirstOrDefault(e => e.Id == edgeId);
+        if (edge == null)
+            return new OASISResult<bool> { IsError = true, Message = $"Edge {edgeId} not found in quest {questId}." };
+
+        quest.Edges.Remove(edge);
+        var upsert = await _questStore.UpsertQuestAsync(quest);
+        if (upsert.IsError)
+            return new OASISResult<bool> { IsError = true, Message = upsert.Message };
+
+        return new OASISResult<bool> { Result = true, Message = "Edge removed." };
+    }
+
+    public async Task<OASISResult<IEnumerable<Guid>>> GetTopologicalOrderAsync(Guid questId, OASISRequest? request = null)
+    {
+        var questResult = await _questStore.GetQuestAsync(questId);
+        if (questResult.IsError || questResult.Result == null)
+            return new OASISResult<IEnumerable<Guid>> { IsError = true, Message = questResult.Message };
+
+        var quest = questResult.Result;
+
+        // QuestDagValidator is the single ExecutionOrder authority — Validate
+        // mutates node.ExecutionOrder in-place. Persist the order so subsequent
+        // reads of the quest definition see the validator-assigned positions.
+        var validation = _dagValidator.Validate(quest);
+        if (!validation.IsValid)
+        {
+            return new OASISResult<IEnumerable<Guid>>
+            {
+                IsError = true,
+                Message = $"DAG validation failed: {string.Join("; ", validation.Errors)}"
+            };
+        }
+
+        await _questStore.UpsertQuestAsync(quest);
+
+        var ordered = quest.Nodes
+            .OrderBy(n => n.ExecutionOrder)
+            .Select(n => n.Id)
+            .ToList();
+
+        return new OASISResult<IEnumerable<Guid>> { Result = ordered, Message = "Success" };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // QUEST DEPENDENCIES SUB-RESOURCE
+    // ═══════════════════════════════════════════════════════════════════
+
+    public async Task<OASISResult<QuestDependency>> AddDependencyAsync(Guid questId, QuestDependencyCreateModel model, OASISRequest? request = null)
+    {
+        var questResult = await _questStore.GetQuestAsync(questId);
+        if (questResult.IsError || questResult.Result == null)
+            return new OASISResult<QuestDependency> { IsError = true, Message = questResult.Message };
+
+        var quest = questResult.Result;
+
+        if (model.DependsOnQuestId == Guid.Empty)
+            return new OASISResult<QuestDependency> { IsError = true, Message = "DependsOnQuestId must not be an empty GUID." };
+        if (model.DependsOnQuestId == questId)
+            return new OASISResult<QuestDependency> { IsError = true, Message = "A quest may not depend on itself." };
+
+        var dependency = new QuestDependency
+        {
+            Id = Guid.NewGuid(),
+            QuestId = quest.Id,
+            DependsOnQuestId = model.DependsOnQuestId,
+            DependsOnNodeId = model.DependsOnNodeId,
+            DependencyType = model.DependencyType
+        };
+        quest.Dependencies.Add(dependency);
+
+        var upsert = await _questStore.UpsertQuestAsync(quest);
+        if (upsert.IsError)
+            return new OASISResult<QuestDependency> { IsError = true, Message = upsert.Message };
+
+        return new OASISResult<QuestDependency> { Result = dependency, Message = "Dependency added." };
+    }
+
+    public async Task<OASISResult<bool>> RemoveDependencyAsync(Guid questId, Guid depId, OASISRequest? request = null)
+    {
+        var questResult = await _questStore.GetQuestAsync(questId);
+        if (questResult.IsError || questResult.Result == null)
+            return new OASISResult<bool> { IsError = true, Message = questResult.Message };
+
+        var quest = questResult.Result;
+        var dep = quest.Dependencies.FirstOrDefault(d => d.Id == depId);
+        if (dep == null)
+            return new OASISResult<bool> { IsError = true, Message = $"Dependency {depId} not found in quest {questId}." };
+
+        quest.Dependencies.Remove(dep);
+        var upsert = await _questStore.UpsertQuestAsync(quest);
+        if (upsert.IsError)
+            return new OASISResult<bool> { IsError = true, Message = upsert.Message };
+
+        return new OASISResult<bool> { Result = true, Message = "Dependency removed." };
+    }
+
+    public async Task<OASISResult<DependencyCheckResult>> CheckDependenciesAsync(Guid questId, OASISRequest? request = null)
+    {
+        var questResult = await _questStore.GetQuestAsync(questId);
+        if (questResult.IsError || questResult.Result == null)
+            return new OASISResult<DependencyCheckResult> { IsError = true, Message = questResult.Message };
+
+        var quest = questResult.Result;
+        var unsatisfied = new List<Guid>();
+
+        foreach (var dep in quest.Dependencies)
+        {
+            var runs = await _runStore.GetByQuestIdAsync(dep.DependsOnQuestId);
+            var anySucceeded = runs.Result?.Any(r => r.Status == QuestRunStatus.Succeeded) ?? false;
+            if (!anySucceeded)
+                unsatisfied.Add(dep.Id);
+        }
+
+        var check = new DependencyCheckResult
+        {
+            AllSatisfied = unsatisfied.Count == 0,
+            UnsatisfiedDependencyIds = unsatisfied,
+            Message = unsatisfied.Count == 0
+                ? "All dependencies satisfied."
+                : $"{unsatisfied.Count} dependency(ies) not yet satisfied."
+        };
+
+        return new OASISResult<DependencyCheckResult> { Result = check, Message = "Success" };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // QUESTRUN READ SURFACE
+    // ═══════════════════════════════════════════════════════════════════
+
+    public async Task<OASISResult<QuestRun>> GetRunAsync(Guid runId, OASISRequest? request = null)
+    {
+        return await _runStore.GetByIdAsync(runId);
+    }
+
+    public async Task<OASISResult<IEnumerable<QuestRun>>> ListRunsByQuestAsync(Guid questId, OASISRequest? request = null)
+    {
+        return await _runStore.GetByQuestIdAsync(questId);
+    }
+
+    public async Task<OASISResult<QuestExecutionState>> GetExecutionStateAsync(Guid runId, OASISRequest? request = null)
+    {
+        var runResult = await _runStore.GetByIdAsync(runId);
+        if (runResult.IsError || runResult.Result == null)
+            return new OASISResult<QuestExecutionState> { IsError = true, Message = runResult.Message };
+
+        var run = runResult.Result;
+        var execsResult = await _executionStore.GetByRunIdAsync(runId);
+        var execs = (execsResult.Result ?? Enumerable.Empty<QuestNodeExecution>()).ToList();
+
+        // Counts are derived from rows on every read — no risk of drift.
+        // "Pending" here groups Pending + Running as the not-yet-terminal bucket
+        // because the API consumer cares about "how many are still in flight".
+        var state = new QuestExecutionState
+        {
+            RunId = run.Id,
+            QuestId = run.QuestId,
+            Status = run.Status,
+            StartedAt = run.StartedAt,
+            EndedAt = run.EndedAt,
+            TotalNodes = execs.Count,
+            CompletedNodes = execs.Count(e => e.State == QuestNodeState.Succeeded),
+            FailedNodes = execs.Count(e => e.State == QuestNodeState.Failed),
+            PendingNodes = execs.Count(e => e.State == QuestNodeState.Pending || e.State == QuestNodeState.Running),
+            NodeExecutions = execs
+        };
+
+        return new OASISResult<QuestExecutionState> { Result = state, Message = "Success" };
+    }
+
+    public async Task<OASISResult<QuestRun>> MarkRunCompletedAsync(Guid runId, OASISRequest? request = null)
+    {
+        var runResult = await _runStore.GetByIdAsync(runId);
+        if (runResult.IsError || runResult.Result == null)
+            return new OASISResult<QuestRun> { IsError = true, Message = runResult.Message };
+
+        var run = runResult.Result;
+
+        // State-machine guard, mirrored from MarkRunFailedAsync: only Running
+        // runs may be transitioned to Succeeded/Failed by this supervisor path.
+        if (run.Status != QuestRunStatus.Running)
+        {
+            return new OASISResult<QuestRun>
+            {
+                IsError = true,
+                Message = $"Cannot mark run {runId} completed: status is {run.Status} (only Running runs accept supervisor complete)."
+            };
+        }
+
+        // In-flight guard: every QuestNodeExecution must be terminal before the
+        // run can be marked completed. Pending / Running rows indicate the run
+        // still has work outstanding — refusing this transition prevents an
+        // orchestrator from prematurely closing a run that has live work.
+        var execsResult = await _executionStore.GetByRunIdAsync(runId);
+        var execs = (execsResult.Result ?? Enumerable.Empty<QuestNodeExecution>()).ToList();
+        var inFlight = execs
+            .Where(e => e.State == QuestNodeState.Pending || e.State == QuestNodeState.Running)
+            .ToList();
+        if (inFlight.Count > 0)
+        {
+            return new OASISResult<QuestRun>
+            {
+                IsError = true,
+                Message = $"Cannot mark run {runId} completed: {inFlight.Count} node execution(s) still in flight (Pending/Running)."
+            };
+        }
+
+        // Terminal status is Failed if any node execution failed, otherwise
+        // Succeeded. Mirrors the same derivation used at the end of
+        // ExecuteAsync so the supervisor-driven completion produces the same
+        // overall verdict as the in-process loop would have.
+        run.Status = execs.Any(e => e.State == QuestNodeState.Failed)
+            ? QuestRunStatus.Failed
+            : QuestRunStatus.Succeeded;
+        run.EndedAt = DateTime.UtcNow;
+        var updated = await _runStore.UpdateAsync(run);
+
+        return new OASISResult<QuestRun> { Result = updated.Result, Message = $"Run marked {run.Status}." };
+    }
 }

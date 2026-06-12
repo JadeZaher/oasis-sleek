@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: UNLICENSED
-// Oasis.SurrealDb.Client -- marker interface implemented by every generated
-// SurrealDB POCO (via [[surrealdb-schema-source-gen]] Oasis.SurrealDb.SourceGen).
+// Oasis.SurrealDb.Client -- marker interface implemented by every SurrealDB POCO.
+// The POCOs are hand-authored under Persistence/SurrealDb/Models/ and decorated
+// with [SurrealTable]; the AttributeSchemaScanner in Oasis.SurrealDb.Schema
+// reflects over them to emit .surql DDL.
 //
 // The interface exposes the SurrealDB table name as an instance property
 // (netstandard2.0 cannot host `static abstract` members on interfaces).

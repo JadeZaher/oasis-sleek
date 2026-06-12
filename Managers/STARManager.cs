@@ -28,20 +28,51 @@ public class STARManager : ISTARManager
         return await _starStore.GetAllAsync(default);
     }
 
-    public async Task<OASISResult<ISTARODK>> CreateOrUpdateAsync(STARODKCreateModel model, OASISRequest? request = null)
+    public async Task<OASISResult<ISTARODK>> CreateOrUpdateAsync(
+        STARODKCreateModel model,
+        Guid avatarId,
+        Guid? routeId = null,
+        OASISRequest? request = null)
     {
-        var existing = await _starStore.GetAllAsync(default);
-        var match = existing.Result?.FirstOrDefault(s => s.Name.Equals(model.Name, StringComparison.OrdinalIgnoreCase));
+        // IDOR-safe upsert:
+        //   - PUT (routeId != null): load by id, then require IsOwnedBy(record, avatarId)
+        //   - POST (routeId == null): load by (name, avatarId) — name collisions
+        //     across avatars never overwrite each other.
+        // The caller-supplied model.AvatarId is intentionally ignored — the
+        // authenticated avatar id from the controller is the only source of truth.
 
-        var odk = match as STARODK ?? new STARODK();
-        odk.Name = model.Name;
-        odk.Description = model.Description;
-        odk.PublicKey = model.PublicKey;
-        odk.AvatarId = model.AvatarId;
+        STARODK odk;
+        if (routeId.HasValue)
+        {
+            var loaded = await _starStore.GetByIdAsync(routeId.Value, default);
+            if (loaded.IsError || loaded.Result == null)
+                return Fail(STARODKAuthorizationError.NotFound + "STAR ODK not found.");
+
+            if (!IsOwnedBy(loaded.Result, avatarId))
+                return Fail(STARODKAuthorizationError.Forbidden + "STAR ODK is owned by a different avatar.");
+
+            odk = (STARODK)loaded.Result;
+        }
+        else
+        {
+            var match = await _starStore.GetByNameAndAvatarAsync(model.Name, avatarId, default);
+            odk = (match.Result as STARODK) ?? new STARODK { AvatarId = avatarId };
+        }
+
+        odk.Name         = model.Name;
+        odk.Description  = model.Description;
+        odk.PublicKey    = model.PublicKey;
+        odk.AvatarId     = avatarId; // authoritative — never trust model.AvatarId
         odk.ModifiedDate = DateTime.UtcNow;
 
         return await _starStore.UpsertAsync(odk, default);
     }
+
+    private static bool IsOwnedBy(ISTARODK record, Guid avatarId) =>
+        record.AvatarId.HasValue && record.AvatarId.Value == avatarId;
+
+    private static OASISResult<ISTARODK> Fail(string message) =>
+        new() { IsError = true, Message = message };
 
     public async Task<OASISResult<bool>> DeleteAsync(Guid id, OASISRequest? request = null)
     {

@@ -31,7 +31,7 @@ public class OASISTestWebApplicationFactory : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseEnvironment("Testing");
+        builder.UseEnvironment("IntegrationTest");
 
         builder.ConfigureAppConfiguration((_, config) =>
         {
@@ -44,8 +44,11 @@ public class OASISTestWebApplicationFactory : WebApplicationFactory<Program>
                 ["Jwt:Audience"] = "test",
 
                 // SurrealDB connection for the test host (wave 2: adapter wiring).
+                // The options class properties are Endpoint / User / Password -- the
+                // ":Username" key on the previous baseline did NOT bind, so requests
+                // hit Surreal anonymous and got rejected with -32002 permission errors.
                 ["SurrealDb:Endpoint"] = SurrealTestDefaults.Endpoint,
-                ["SurrealDb:Username"] = SurrealTestDefaults.User,
+                ["SurrealDb:User"]     = SurrealTestDefaults.User,
                 ["SurrealDb:Password"] = SurrealTestDefaults.Password,
 
                 // Keep the OASIS provider key so Program.cs provider-selection code
@@ -78,6 +81,19 @@ public class OASISTestWebApplicationFactory : WebApplicationFactory<Program>
     {
         var client = CreateClient();
         client.DefaultRequestHeaders.Add(TestAuthHandler.AuthHeaderName, "true");
+        return client;
+    }
+
+    /// <summary>
+    /// Create an HTTP client authenticated as a specific avatar id. Used by
+    /// IDOR / multi-tenant integration tests that need to act as Avatar A in
+    /// one request and Avatar B in the next.
+    /// </summary>
+    public HttpClient CreateAuthenticatedClientForAvatar(Guid avatarId)
+    {
+        var client = CreateClient();
+        client.DefaultRequestHeaders.Add(TestAuthHandler.AuthHeaderName, "true");
+        client.DefaultRequestHeaders.Add(TestAuthHandler.AvatarHeaderName, avatarId.ToString());
         return client;
     }
 }

@@ -120,6 +120,91 @@ public class DappSeriesUpdateModel
 
 ---
 
+## 3.5 POCO authoring walkthrough
+
+Use this four-step flow any time you add or modify a persisted table.
+
+**Step 1 — Edit the POCO in `Persistence/SurrealDb/Models/<Name>.cs`**
+
+```csharp
+[SurrealTable("star_odk", Schemafull = true)]
+[Slice("domain")]
+public partial class StarOdk : ISurrealRecord
+{
+    public const string SchemaNameConst = "star_odk";
+    public string SchemaName => SchemaNameConst;
+
+    [Column(Order = 1, Type = "string")]
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = "";
+
+    [Column(Order = 2, Type = "string")]
+    [References(typeof(Avatar), Optional = false)]
+    [JsonPropertyName("avatar_id")]
+    public string AvatarId { get; set; } = "";
+
+    [Column(Order = 3, Type = "int")]
+    [Default("0")]
+    [JsonPropertyName("karma_score")]
+    public int KarmaScore { get; set; }
+}
+```
+
+Key decoration rules:
+- Class: `[SurrealTable("<name>", Schemafull = true)]` + `[Slice("<aggregate>")]`
+- Class must implement `ISurrealRecord` (provides `SchemaNameConst` + `SchemaName`)
+- Each persisted property: `[Column(Order = N, Type = "<surreal-type>")]`
+- Optional FK column: `[References(typeof(Target), Optional = true/false)]`
+- Closed-set column: `[Inside("A", "B", "C")]` with a matching nested enum (see §4)
+- Non-null default: `[Default("<value>")]`
+- Index: `[Index(Fields = new[] { "field" }, Unique = true)]` at class level
+- Computed / helper properties belong in a sibling partial — do NOT add `[Column]` to them
+- Wire name: `[JsonPropertyName("<name>")]` on every persisted property
+
+**Step 2 — Build the project**
+
+```
+dotnet build
+```
+
+The build must succeed before the generator can reflect over the assembly.
+
+**Step 3 — Regenerate `.surql` and flowchart artifacts**
+
+```
+oasis-surreal generate-from-assembly bin/Debug/net8.0/OASIS.WebAPI.dll
+oasis-surreal flowcharts-from-assembly bin/Debug/net8.0/OASIS.WebAPI.dll
+```
+
+The first command runs `AttributeSchemaScanner` → `SurqlEmitter` and overwrites
+the `.surql` files in `Persistence/SurrealDb/Generated/Schemas/`. The second
+command runs `AttributeSchemaScanner` → `MermaidFlowchartEmitter` and overwrites
+the flowchart files in `Persistence/SurrealDb/Generated/Flowcharts/`. Both
+commands source from the same compiled assembly; both must be run when the POCO
+changes affect the flowchart grouping (`aggregate` field on `[SurrealTable]`).
+
+**Step 4 — Confirm the generated artifacts**
+
+- `.surql` file appears (or updates) at
+  `Persistence/SurrealDb/Generated/Schemas/<name>.surql`
+- The relevant slice flowchart updates at
+  `Persistence/SurrealDb/Generated/Flowcharts/<slice>.flowchart.mermaid`
+- Run the acceptance gate to confirm no drift:
+
+  ```
+  dotnet test --filter "FullyQualifiedName~AttributePocoByteEquivalenceTests"
+  ```
+
+  A passing run means every committed `.surql` file is byte-for-byte reproducible
+  from the current POCO definitions. A failing run means either a POCO was edited
+  without regenerating, or a `.surql` was hand-edited (see §8, anti-pattern 1).
+
+> **Do not edit anything under `Persistence/SurrealDb/Generated/`.** Every file
+> there is overwritten on the next `generate-from-assembly` run. The POCOs in
+> `Models/` are the only authoring surface.
+
+---
+
 ## 4. Closed-set enum fields
 
 Fields with `[Inside("A", "B", "C")]` should be typed to a **nested
@@ -185,6 +270,18 @@ SurrealQL on the parent table's column.
 ---
 
 ## 7. Generated output
+
+> **Canonical counts as of 2026-06-10:** **26 POCOs** in
+> `Persistence/SurrealDb/Models/` (`ApiKey`, `Avatar`, `BridgeTx`,
+> `ConsumedVaaLedger`, `DappSeries`, `DappSeriesQuest`, `Executes`,
+> `ForkedFrom`, `HnswHolonEmbedding`, `HnswQuestEmbedding`, `Holon`,
+> `IdempotencyKeyStore`, `NftOwnership`, `OperationLog`, `Quest`,
+> `QuestDependency`, `QuestEdge`, `QuestNode`, `QuestNodeExecution`,
+> `QuestNodeTemplate`, `QuestRun`, `QuestTemplate`, `SagaSteps`, `StarOdk`,
+> `SwapState`, `Wallet`) producing **26 `.surql` schema files** and
+> **6 slice flowcharts** (`bridge`, `dapp_composition`, `identity`,
+> `quest`, `quest_templates`, `wallet_nft`) plus the `domain.flowchart.mermaid`
+> master — **7 generated files total** under `Persistence/SurrealDb/Generated/Flowcharts/`.
 
 The build emits derived artifacts to `Persistence/SurrealDb/Generated/`:
 
@@ -325,6 +422,16 @@ out-of-band setup step is required on a fresh SurrealDB server.
 | `--connection <url>` | (required) | SurrealDB HTTP endpoint, e.g. `http://127.0.0.1:8000` |
 | `--user <s>` / `--pass <s>` | (required) | Basic-auth credentials |
 | `--namespace <s>` / `--database <s>` | (required) | Target scope. Created automatically if missing. |
+
+### `migrate` command matrix
+
+| Command | Status |
+|---|---|
+| `oasis-surreal migrate up` | Implemented (also: `oasis-surreal up` — the two-phase apply documented above) |
+| `oasis-surreal migrate status` | Implemented |
+| `oasis-surreal migrate dry-run` | Implemented |
+| `oasis-surreal migrate reset` | Implemented |
+| `oasis-surreal migrate down` | Stubbed — manual rollback only (intentional pre-launch) |
 
 ### Status check
 

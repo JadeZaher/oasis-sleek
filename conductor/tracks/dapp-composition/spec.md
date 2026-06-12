@@ -199,13 +199,20 @@ series.DeployedDate = DateTime.UtcNow;
 ```
 
 ## Acceptance Criteria
-- [ ] All endpoints return `OASISResult<T>` or `OASISResponse`
-- [ ] `[Authorize]` on all controllers; avatar-scoped access
-- [ ] Composition validates all rules before producing manifest
-- [ ] `GenerateAsync` correctly builds `STARDappGenerationRequest` and delegates to `ISTARManager`
-- [ ] `DeployAsync` correctly delegates to `ISTARManager.DeployAsync`
-- [ ] Input mappings enable data flow between quests
-- [ ] Series status machine enforced (Draft → Building → Ready → Deployed)
-- [ ] `DateTime` used throughout (not `DateTimeOffset`)
-- [ ] Swagger UI documents all dApp composition endpoints
-- [ ] Builds cleanly with `dotnet build`
+- [x] All endpoints return `OASISResult<T>` or `OASISResponse`
+- [x] `[Authorize]` on all controllers; avatar-scoped access
+- [x] Composition validates all rules before producing manifest
+- [x] `GenerateAsync` correctly builds `STARDappGenerationRequest` and delegates to `ISTARManager`
+- [x] `DeployAsync` correctly delegates to `ISTARManager.DeployAsync`
+- [x] Input mappings enable data flow between quests
+- [x] Series status machine enforced (Draft → Building → Ready → Deployed)
+- [x] `DateTime` used throughout (not `DateTimeOffset`)
+- [x] Swagger UI documents all dApp composition endpoints — verified by `SwaggerJson_ShouldListAllDappCompositionEndpoints` integration test (asserts all 12 route paths present in `/swagger/v1/swagger.json`)
+- [x] Builds cleanly with `dotnet build` — 0 warnings / 0 errors on both `OASIS.WebAPI.csproj` and the integration test project
+
+## Phase-G verification (closeout)
+- Unit tests: **567 / 567 passing** (`OASIS.WebAPI.Tests`, includes 12 manager tests in `DappCompositionManagerTests`).
+- Integration tests: **18 / 18 passing** (`DappSeriesControllerIntegrationTests` — series CRUD, quest management, compose/validate/manifest/generate/deploy/status, auth probes, Swagger smoke).
+- Two test-harness fixes applied during closeout (pre-existing baseline issues, not dapp-composition bugs):
+  1. `OASISTestWebApplicationFactory` + `McpAuthScopingIntegrationTests`: env name changed from `"Testing"` → `"IntegrationTest"` to match the boot-probe skip gate in `Program.cs:549`.
+  2. `Program.cs:527`: Swagger middleware now mounts in `IntegrationTest` env too (not just `Development`), so the smoke test can hit `/swagger/v1/swagger.json` against the test host.

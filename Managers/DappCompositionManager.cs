@@ -295,7 +295,7 @@ public sealed class DappCompositionManager : IDappCompositionManager
             Description = series.Description ?? string.Empty,
             AvatarId = avatarId,
         };
-        var starUpsert = await _starManager.CreateOrUpdateAsync(starCreate);
+        var starUpsert = await _starManager.CreateOrUpdateAsync(starCreate, avatarId);
         if (starUpsert.IsError || starUpsert.Result is null) return Fail<ISTARODK>(starUpsert.Message);
 
         var generationRequest = new STARDappGenerationRequest

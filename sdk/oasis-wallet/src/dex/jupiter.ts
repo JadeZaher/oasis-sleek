@@ -2,6 +2,7 @@ import type { DexAdapter, SwapParams, SwapQuote, UnsignedTransaction } from "../
 import type { Result } from "../core/result.js";
 import { ok, err } from "../core/result.js";
 import { SdkError, SdkErrorCode } from "../core/errors.js";
+import { base64Decode } from "../core/encoding.js";
 
 export interface JupiterConfig {
   /** Jupiter API base URL. Defaults to v2 Router API. */
@@ -119,9 +120,8 @@ export class JupiterAdapter implements DexAdapter {
       return ok({
         chain: "solana",
         format: "base64" as const,
-        bytes: Buffer.from(data.swapTransaction, "base64"),
+        bytes: base64Decode(data.swapTransaction),
         description: `Jupiter v2 swap: ${quote.amountIn} → ${quote.expectedAmountOut}`,
-        requiresSigning: true,
         raw: data,
       });
     } catch (e) {

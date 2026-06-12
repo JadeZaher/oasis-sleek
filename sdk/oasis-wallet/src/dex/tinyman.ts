@@ -164,8 +164,13 @@ export class TinymanAdapter implements DexAdapter {
         );
       }
 
-      // Assume 6 decimals for ALGO/USDC testnet pair
-      const decimals = { assetIn: 6, assetOut: 6 };
+      // Resolve decimals: caller-provided wins; otherwise default to 6 (ALGO).
+      // TODO: indexer ASA lookup for decimals when caller does not supply them
+      // — Tinyman quotes for non-6-decimal ASAs will be inaccurate without it.
+      const decimals = {
+        assetIn: params.assetInDecimals ?? 6,
+        assetOut: params.assetOutDecimals ?? 6,
+      };
 
       // getQuote(type, pool, assetIn, decimals)
       const quote = Swap.v2.getQuote(
@@ -188,6 +193,9 @@ export class TinymanAdapter implements DexAdapter {
         priceImpact,
         fee: feeAmount.toString(),
         raw: quote,
+        slippageBps: params.slippageBps,
+        assetInDecimals: decimals.assetIn,
+        assetOutDecimals: decimals.assetOut,
       });
     } catch (e) {
       return err(
@@ -229,7 +237,10 @@ export class TinymanAdapter implements DexAdapter {
       const assetInId = Number(quote.tokenIn);
       const assetOutId = Number(quote.tokenOut);
       const amountIn = BigInt(quote.amountIn);
-      // const slippage = 0.005; // unused
+
+      // Derive slippage ratio from the quote's bps (default 50 bps / 0.5%).
+      const slippageBps = quote.slippageBps ?? 50;
+      const slippage = slippageBps / 10_000;
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { poolUtils, Swap, SwapType } = sdk as any;
@@ -251,8 +262,13 @@ export class TinymanAdapter implements DexAdapter {
         );
       }
 
-      // Re-derive the quote if raw is not present or is stale
-      const decimals = { assetIn: 6, assetOut: 6 };
+      // Re-derive the quote if raw is not present or is stale.
+      // Decimals come from the quote (caller-supplied or echoed defaults).
+      // TODO: indexer ASA lookup for decimals if quote does not carry them.
+      const decimals = {
+        assetIn: quote.assetInDecimals ?? 6,
+        assetOut: quote.assetOutDecimals ?? 6,
+      };
       const sdkQuote = quote.raw ?? Swap.v2.getQuote(
         SwapType.FixedInput,
         poolData,
@@ -274,7 +290,7 @@ export class TinymanAdapter implements DexAdapter {
         assetIn: assetInObj,
         assetOut: assetOutObj,
         initiatorAddr: sender,
-        slippage: 0.005,
+        slippage,
       }) as any;
 
       let txnBytes: Uint8Array[];

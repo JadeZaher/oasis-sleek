@@ -253,7 +253,8 @@ public sealed class SurrealApiKeyStoreTests : IAsyncLifetime
 
     /// <summary>
     /// Applies the minimal DDL for <c>api_key</c> matching
-    /// <c>Persistence/SurrealDb/Schemas/source/120_api_key.mermaid</c>.
+    /// the committed schema at <c>Persistence/SurrealDb/Generated/Schemas/api_key.surql</c>
+    /// (authored from <c>Persistence/SurrealDb/Models/ApiKey.cs</c>).
     /// </summary>
     private async Task BootstrapSchemaAsync()
     {

@@ -524,7 +524,7 @@ if (debugRequested && app.Environment.IsProduction())
 // blank HTTP 500.
 app.UseMiddleware<DebugExceptionMiddleware>();
 
-if (app.Environment.IsDevelopment())
+if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("IntegrationTest"))
 {
     app.UseSwagger();
     app.UseSwaggerUI();

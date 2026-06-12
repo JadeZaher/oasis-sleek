@@ -7,6 +7,11 @@ export type {
   NftMintParams,
   NftTransferParams,
   NftBurnParams,
+  NftQueryParams,
+  // Swap types
+  SwapQuoteParams,
+  SwapExecuteParams,
+  SwapQuoteResponse,
   BridgeTransactionResult,
   BridgeRouteInfo,
   BridgeInitiateParams,

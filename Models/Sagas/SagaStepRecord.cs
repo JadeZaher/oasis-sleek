@@ -11,7 +11,8 @@ namespace OASIS.WebAPI.Models.Sagas;
 /// api-safety-hardening single-winner primitive.
 ///
 /// <para><b>Storage backend.</b> Persisted in the SurrealDB <c>saga_steps</c>
-/// table (schema source: <c>Persistence/SurrealDb/Schemas/source/080_saga_steps.mermaid</c>).
+/// table (POCO: <c>Persistence/SurrealDb/Models/SagaSteps.cs</c>;
+/// committed DDL: <c>Persistence/SurrealDb/Generated/Schemas/saga_steps.surql</c>).
 /// The mapping between this POCO and the SurrealDB row lives in
 /// <see cref="OASIS.WebAPI.Sagas.SurrealSagaStore"/>.</para>
 ///

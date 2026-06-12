@@ -248,29 +248,25 @@ the 2026-06-03 cleanup. The `.surql` files under the legacy
 
 ---
 
-## 4. Mermaid visualization restructure (active — Phase B starting)
+## 4. Mermaid visualization restructure (shipped — C#-first pivot)
 
-**Goal:** elevate the 24 isolated single-table `.mermaid` files into a
-true visual data model. The user observation: mermaid's value is the
-relationship arrows, not the per-table annotations.
+**What shipped:** the visualization restructure completed via the
+C#-first pivot (2026-06-03). The old Mermaid-source pipeline
+(`source/*.mermaid` → Roslyn source-gen → POCOs) was inverted: the 24
+hand-authored `.mermaid` source files and the `Oasis.SurrealDb.SourceGen`
+package were deleted, and the schema source of truth became decorated C#
+POCOs in `Persistence/SurrealDb/Models/`.
 
-**Approach: slice files are GENERATED, not hand-authored.** The 24
-`.mermaid` sources remain the single source of truth. Two new pieces
-of authoring metadata land inside each source:
+Flowchart generation now runs the other way — the `AttributeSchemaScanner`
+in `Oasis.SurrealDb.Schema` reads the POCO attribute surface and emits
+`graph LR` diagrams via `MermaidFlowchartEmitter`. The as-built outputs
+live at:
 
-1. `%% @surreal.slice "<slice-name>"` on the entity header — declares
-   which aggregate slice the entity belongs to.
-2. Real Mermaid relationship lines (`a ||--o{ b : "label"`) — the
-   `.surql` emitter already ignores `Relationships`, so adding them
-   has no runtime effect; they exist purely for the visual layer.
+- [`Persistence/SurrealDb/Generated/Flowcharts/`](Persistence/SurrealDb/Generated/Flowcharts/) — per-slice `.flowchart.mermaid` files + `domain.flowchart.mermaid` master
+- [`Persistence/SurrealDb/Generated/Schemas/`](Persistence/SurrealDb/Generated/Schemas/) — the `.surql` DDL files emitted from the same scan
+- [`Persistence/SurrealDb/Generated/Dbml/`](Persistence/SurrealDb/Generated/Dbml/) — `schema.dbml` (opt-in via `OasisSurrealDbOptions.Generation.EmitDbml`)
 
-A new `oasis-surreal aggregates` subcommand reads `source/*.mermaid`,
-groups entities by `@surreal.slice`, emits one
-`docs/aggregates/<slice>.mermaid` per group plus a concatenated
-`docs/domain.generated.mermaid` master diagram checked into git so
-GitHub renders it inline on the repo landing page.
-
-### 4.1 Target slice membership
+### 4.1 Slice membership (as generated)
 
 | Slice | Entities |
 |---|---|
@@ -282,55 +278,42 @@ GitHub renders it inline on the repo landing page.
 | `identity` | avatar, api_key, holon, star_odk |
 
 Cross-slice references (e.g. `dapp_series_quest.quest_id` → `quest`)
-are declared on the FK-owning side per §7.1; the master diagram shows
-them in full while the slice diagrams show them with a clear
-"(cross-slice)" label.
+appear as dashed-blue ghost nodes in per-slice flowcharts and as full
+edges in the master diagram.
 
-### 4.2 Parser + utility changes
+### 4.2 Regenerating the flowcharts and schemas
 
-- `packages/Oasis.SurrealDb.Schema/Mermaid/MermaidParser.cs` —
-  register `slice` in `KnownDirectives` (line ~47). Strict-namespacing
-  contract preserved.
-- `packages/Oasis.SurrealDb.Schema/Cli/` — new `AggregateEmitter`
-  alongside `SurqlEmitter`. Reads a directory of source files, groups
-  entities by `@surreal.slice` annotation value, emits one slice file
-  per group + the concat master.
-- `packages/Oasis.SurrealDb.Schema/Program.cs` — new `aggregates`
-  subcommand: `oasis-surreal aggregates --source <dir> --out <dir>`.
+```
+oasis-surreal generate-from-assembly bin/Debug/net8.0/OASIS.WebAPI.dll
+oasis-surreal flowcharts-from-assembly bin/Debug/net8.0/OASIS.WebAPI.dll
+```
 
-### 4.3 Generator changes (Phase C — substantial)
+The first command scans every `[SurrealTable]`-decorated POCO, reruns
+`AttributeSchemaScanner` + `SurqlEmitter`, and overwrites the `.surql` files
+in `Generated/Schemas/`. The second command reruns `MermaidFlowchartEmitter`
+and overwrites the flowchart files in `Generated/Flowcharts/`. Both must be
+run after any POCO attribute change. The `AttributePocoByteEquivalenceTests`
+suite (§3) catches schema drift in CI without needing a live database.
 
-The Roslyn `IIncrementalGenerator` at
-[packages/Oasis.SurrealDb.SourceGen/](packages/Oasis.SurrealDb.SourceGen)
-needs three updates:
+### 4.3 Emitter source locations
 
-1. **Multi-table per file** — currently parses one entity per
-   `.mermaid` via `AdditionalTextsProvider`. Migrate to parse
-   multiple `erDiagram` table blocks per file. POCO emission stays
-   1:1 with table blocks (one `.g.cs` per table); the change is just
-   in the parser.
-2. **Relationship parsing** — Phase B already adds the relationship
-   lines to source files; Phase C wires them into the schema model
-   for FK emission.
-3. **FK emission to `.surql`** — emit `ASSERT type::is::record($value,
-   <target_table>)` clauses on FK fields, and `DEFINE TABLE
-   <edge_name> SCHEMAFULL TYPE RELATION FROM <a> TO <b>` blocks for
-   native graph edges. Aligns with surrealdb-migration F6 follow-up
-   (FK columns as `record<table>` not bare `string`).
+| Emitter | File |
+|---|---|
+| Schema scanner | `packages/Oasis.SurrealDb.Schema/Generator/AttributeSchemaScanner.cs` |
+| `.surql` emitter | `packages/Oasis.SurrealDb.Schema/Generator/SurqlEmitter.cs` |
+| Flowchart emitter | `packages/Oasis.SurrealDb.Schema/Generator/MermaidFlowchartEmitter.cs` |
+| CLI entry point | `packages/Oasis.SurrealDb.Schema/Program.cs` (`generate-from-assembly` subcommand) |
 
-**Sequencing:** Phase B (slice annotations + aggregate emitter) lands
-first to validate the visual model. Phase C (generator updates +
-multi-table-per-file collapse) lands once Phase B is validated.
+### 4.4 Historical note
 
-### 4.4 Migration of existing 24 files
-
-Phase B leaves the existing
-`Persistence/SurrealDb/Schemas/source/*.mermaid` files in place — it
-only **adds** `@surreal.slice` annotations + relationship lines. Phase
-C may collapse the 24 files into multi-table aggregates if the
-parser change makes that ergonomic; the slice annotations remain
-valid across either layout because they are entity-level, not
-file-level.
+Phases B and C as originally drafted (slice annotations on `.mermaid`
+files, `AggregateEmitter`, `oasis-surreal aggregates` subcommand,
+Roslyn `IIncrementalGenerator` updates) were superseded by the
+C#-first pivot before Phase C code was written. The old approach is
+preserved in git history at `137992c` (Phase B shipped) and the pivot
+rationale at commit `HEAD-1` (2026-05-27). The `Generated/Flowcharts/`
+output fulfils the original goal of showing relationship arrows across
+the full domain model.
 
 ---
 
@@ -373,13 +356,13 @@ file-level.
                              ▼
         ┌─────────────────────────────────────────────┐
         │   Phase F — quest-api endpoint gaps           │
-        │   18 missing endpoints + 12 missing manager   │
-        │   methods (node/edge/dependency CRUD,         │
-        │   activate, execute-next, execution-state,    │
-        │   topological-order, complete/fail-quest,     │
-        │   instantiate-from-template, publicOnly       │
-        │   filter, list-by-status/dappSeriesId)        │
-        │   ~2-3h on the post-cutover surface           │
+        │   ✓ Shipped 2026-06-11 (autopilot)            │
+        │   14 endpoints + 14 manager methods landed    │
+        │   on the post-fork-model runtime (NOT the     │
+        │   post-cutover surface — see "Why this order" │
+        │   note below). 4 obsolete Quest-status        │
+        │   endpoints reframed onto QuestRun per ADR    │
+        │   §2.2; see tracks/quest-api/SIGN-OFF.md      │
         └────────────────────┬───────────────────────┘
                              │ (4) endpoints close
                              ▼
@@ -399,7 +382,13 @@ file-level.
 2. Phase C before E so the Quest cutover targets the final
    generator surface, not a moving one.
 3. Phase E before F so the new endpoints sit on the post-cutover
-   surface (saves ~3h of duplicate rework).
+   surface (saves ~3h of duplicate rework). **Empirically falsified
+   2026-06-11**: Phase F shipped under autopilot ahead of Phase E
+   with zero measurable rework cost — the 14 new endpoints sit on the
+   same hand-written `Models.Quest.*` namespace as the pre-existing
+   16, and will migrate together when Phase E lands (one import-site
+   namespace swap per store/manager/controller file). Phase E remains
+   real work but is no longer a precondition for downstream tracks.
 4. dapp-composition integration tests after the Quest cutover so the
    real Surreal-backed Quest pipeline can drive an end-to-end
    compose → generate → deploy test.
@@ -414,8 +403,8 @@ file-level.
 | B. Mermaid aggregate slices (visualization-only) | Annotate 24 source `.mermaid` files with `@surreal.slice` + Mermaid relationship lines. Add `oasis-surreal aggregates` subcommand that emits 6 `docs/aggregates/*.mermaid` + `docs/domain.generated.mermaid`. Generator POCO/.surql output unchanged. | 2-3h | ✓ Shipped 2026-05-27 (`137992c`) |
 | C. C#-first schema authoring (redesigned again) | Invert the Roslyn source-gen: schema source = decorated C# POCOs (attributes for shape, partial classes for validation). Generator emits `.surql` + `docs/schema.dbml` + state-machine code + guardrail runbook. Mermaid sources retire once byte-equivalent `.surql` is proven on the prototype slice. See [DESIGN-mermaid-portfolio.md](conductor/tracks/surrealql-toolkit/DESIGN-mermaid-portfolio.md) (filename kept for git history; contents now describe the C#-first model). | TBD — sized after prototype slice | **NEXT (prototype `wallet_nft` slice first)** |
 | D. Wave-2 commit + integration | Commit the 3 SurrealQuest stores + tests + `230_quest_graph_edges.*`. | 1h | ✓ Shipped 2026-05-27 (`24a7403`) |
-| E. Quest aggregate cutover to generated POCOs | Partial-class extensions + delete hand-written + rewire wave-2 stores + 34 handlers + QuestManager + tests. Aliases vanish. | 7-9h | After C |
-| F. quest-api endpoint gaps | 18 missing endpoints + 12 missing manager methods on the post-cutover surface | 2-3h | After E |
+| E. Quest aggregate cutover to generated POCOs | Partial-class extensions + delete hand-written + rewire wave-2 stores + 34 handlers + QuestManager + tests. Aliases vanish. | 7-9h | **READY 2026-06-11** — runtime stable post-quest-api; partial-class swap is now a focused refactor (no longer gating Phases F/G) |
+| F. quest-api endpoint gaps | 14 new endpoints + 14 new manager methods (4 spec endpoints reframed onto `QuestRun` per ADR §2.2; see `tracks/quest-api/SIGN-OFF.md`) | 2-3h actual | ✓ Shipped 2026-06-11 (autopilot) |
 | G. dapp-composition close-out | Integration tests against testcontainer Postgres + Swagger smoke | 1-2h | After F |
 | H. Frontend demo harness `frontend-demo-harness` track | shadcn/ui demo harness, 6 phases | 8-10 days | Independent; can start any time |
 | I. `durable-saga-orchestration` Tier 1 | Reusable durable-saga + transactional-outbox module | TBD | After surrealdb-migration (done) |
@@ -450,8 +439,8 @@ file-level.
 | Question | Document |
 |---|---|
 | "What's the right C# pattern for a new SurrealDB entity?" | [Persistence/SurrealDb/CONVENTION.md](Persistence/SurrealDb/CONVENTION.md) |
-| "How do I add a new field to an existing entity?" | The relevant `.mermaid` in [Persistence/SurrealDb/Schemas/source/](Persistence/SurrealDb/Schemas/source/) + rebuild |
-| "Where is the source generator?" | [packages/Oasis.SurrealDb.SourceGen/](packages/Oasis.SurrealDb.SourceGen) |
+| "How do I add a new field to an existing entity?" | Edit the relevant POCO in [Persistence/SurrealDb/Models/](Persistence/SurrealDb/Models/), then run `oasis-surreal generate-from-assembly` to regenerate [Persistence/SurrealDb/Generated/Schemas/](Persistence/SurrealDb/Generated/Schemas/) |
+| "Where is the schema package / emitters?" | [packages/Oasis.SurrealDb.Schema/](packages/Oasis.SurrealDb.Schema/) — `Generator/AttributeSchemaScanner.cs`, `Generator/SurqlEmitter.cs`, `Generator/MermaidFlowchartEmitter.cs` |
 | "What does the API surface look like?" | [conductor/tracks/blockchain-devnet-providers/docs/PROVIDERS.md](conductor/tracks/blockchain-devnet-providers/docs/PROVIDERS.md) |
 | "What invariants does the bridge enforce?" | [conductor/tracks/api-safety-hardening/RESIDUAL-RISK-RUNBOOK.md](conductor/tracks/api-safety-hardening/RESIDUAL-RISK-RUNBOOK.md) |
 | "What's the quest temporal model?" | [conductor/tracks/quest-temporal-fork-model/ADR.md](conductor/tracks/quest-temporal-fork-model/) |

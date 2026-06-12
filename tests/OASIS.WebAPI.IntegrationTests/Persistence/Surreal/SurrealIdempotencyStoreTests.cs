@@ -305,7 +305,8 @@ public sealed class SurrealIdempotencyStoreTests : IAsyncLifetime
 
     /// <summary>
     /// Applies the minimal DDL for <c>idempotency_key_store</c> matching
-    /// <c>Persistence/SurrealDb/Schemas/source/070_idempotency_key_store.mermaid</c>.
+    /// the committed schema at <c>Persistence/SurrealDb/Generated/Schemas/idempotency_key_store.surql</c>
+    /// (authored from <c>Persistence/SurrealDb/Models/IdempotencyKeyStore.cs</c>).
     /// The inline schema lets the tests be self-contained without requiring the
     /// schema runner to have been executed beforehand.
     /// </summary>

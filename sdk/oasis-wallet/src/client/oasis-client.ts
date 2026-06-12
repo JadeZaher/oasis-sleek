@@ -152,6 +152,15 @@ export class OasisClient {
   }
 
   /**
+   * The OASIS API base URL this client is pointed at. Public accessor so UIs
+   * (e.g. a settings page) can display the active endpoint without reaching
+   * into private fields.
+   */
+  getApiUrl(): string {
+    return this.api.getBaseUrl();
+  }
+
+  /**
    * Toggle verbose SDK diagnostics at runtime. When on, the API client logs
    * every request/response/error and renders the backend's server-side
    * exception chain (when it runs with `OASIS:DebugErrors`) in error output.

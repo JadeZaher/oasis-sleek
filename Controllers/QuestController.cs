@@ -175,6 +175,125 @@ public class QuestController : ControllerBase
         return Ok(result);
     }
 
+    // ─── Quest Nodes sub-resource ───
+
+    [HttpGet("{questId:guid}/nodes")]
+    public async Task<ActionResult<OASISResult<IEnumerable<QuestNode>>>> ListNodes(Guid questId, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.ListNodesAsync(questId, request);
+        if (result.IsError) return NotFound(result);
+        return Ok(result);
+    }
+
+    [HttpPost("{questId:guid}/nodes")]
+    public async Task<ActionResult<OASISResult<QuestNode>>> AddNode(Guid questId, [FromBody] QuestNodeCreateModel model, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.AddNodeAsync(questId, model, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
+    [HttpPut("{questId:guid}/nodes/{nodeId:guid}")]
+    public async Task<ActionResult<OASISResult<QuestNode>>> UpdateNode(Guid questId, Guid nodeId, [FromBody] QuestNodeUpdateModel model, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.UpdateNodeAsync(questId, nodeId, model, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
+    [HttpDelete("{questId:guid}/nodes/{nodeId:guid}")]
+    public async Task<ActionResult<OASISResponse>> DeleteNode(Guid questId, Guid nodeId, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.DeleteNodeAsync(questId, nodeId, request);
+        if (result.IsError || !result.Result) return BadRequest(result);
+        return Ok(new OASISResponse { Message = "Node deleted." });
+    }
+
+    // ─── Quest Edges sub-resource ───
+
+    [HttpPost("{questId:guid}/edges")]
+    public async Task<ActionResult<OASISResult<QuestEdge>>> AddEdge(Guid questId, [FromBody] QuestEdgeAddModel model, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.AddEdgeAsync(questId, model, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
+    [HttpDelete("{questId:guid}/edges/{edgeId:guid}")]
+    public async Task<ActionResult<OASISResponse>> RemoveEdge(Guid questId, Guid edgeId, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.RemoveEdgeAsync(questId, edgeId, request);
+        if (result.IsError || !result.Result) return BadRequest(result);
+        return Ok(new OASISResponse { Message = "Edge removed." });
+    }
+
+    [HttpGet("{questId:guid}/topological-order")]
+    public async Task<ActionResult<OASISResult<IEnumerable<Guid>>>> GetTopologicalOrder(Guid questId, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.GetTopologicalOrderAsync(questId, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
+    // ─── Quest Dependencies sub-resource ───
+
+    [HttpPost("{questId:guid}/dependencies")]
+    public async Task<ActionResult<OASISResult<QuestDependency>>> AddDependency(Guid questId, [FromBody] QuestDependencyCreateModel model, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.AddDependencyAsync(questId, model, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
+    [HttpDelete("{questId:guid}/dependencies/{depId:guid}")]
+    public async Task<ActionResult<OASISResponse>> RemoveDependency(Guid questId, Guid depId, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.RemoveDependencyAsync(questId, depId, request);
+        if (result.IsError || !result.Result) return BadRequest(result);
+        return Ok(new OASISResponse { Message = "Dependency removed." });
+    }
+
+    [HttpGet("{questId:guid}/dependency-status")]
+    public async Task<ActionResult<OASISResult<DependencyCheckResult>>> GetDependencyStatus(Guid questId, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.CheckDependenciesAsync(questId, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
+    // ─── QuestRun read surface ───
+
+    [HttpGet("runs/{runId:guid}")]
+    public async Task<ActionResult<OASISResult<QuestRun>>> GetRun(Guid runId, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.GetRunAsync(runId, request);
+        if (result.IsError || result.Result == null) return NotFound(result);
+        return Ok(result);
+    }
+
+    [HttpGet("{questId:guid}/runs")]
+    public async Task<ActionResult<OASISResult<IEnumerable<QuestRun>>>> ListRunsByQuest(Guid questId, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.ListRunsByQuestAsync(questId, request);
+        return Ok(result);
+    }
+
+    [HttpGet("runs/{runId:guid}/execution-state")]
+    public async Task<ActionResult<OASISResult<QuestExecutionState>>> GetExecutionState(Guid runId, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.GetExecutionStateAsync(runId, request);
+        if (result.IsError || result.Result == null) return NotFound(result);
+        return Ok(result);
+    }
+
+    [HttpPost("runs/{runId:guid}/complete")]
+    public async Task<ActionResult<OASISResult<QuestRun>>> MarkRunCompleted(Guid runId, [FromQuery] OASISRequest? request)
+    {
+        var result = await _questManager.MarkRunCompletedAsync(runId, request);
+        if (result.IsError) return BadRequest(result);
+        return Ok(result);
+    }
+
     private Guid? GetAvatarIdFromClaims()
     {
         var sub = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value

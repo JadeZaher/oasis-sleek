@@ -1,6 +1,7 @@
 import type { Result } from "../core/result.js";
 import type { SdkError } from "../core/errors.js";
 import { OasisApiClient } from "../api/client.js";
+import { API_PATHS } from "../api/api-version.js";
 
 /**
  * Matches .NET HolonQueryRequest fields.
@@ -147,7 +148,7 @@ export class HolonQueryBuilder {
 
   /** Get composite view. */
   async getComposite(id: string): Promise<Result<unknown, SdkError>> {
-    return this.api.request<unknown>("GET", `/api/holon/${id}/compose`);
+    return this.api.request<unknown>("GET", API_PATHS.HOLON_COMPOSE(id));
   }
 
   /** Create a new holon. */

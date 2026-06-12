@@ -145,6 +145,11 @@ export interface SwapQuote {
   fee: string;
   route?: SwapRouteStep[];
   raw?: unknown;
+  /** Slippage tolerance carried from the quote request, in basis points. */
+  slippageBps?: number;
+  /** Optional decimal metadata carried from the quote (echoed from SwapParams). */
+  assetInDecimals?: number;
+  assetOutDecimals?: number;
 }
 
 export interface SwapRouteStep {
@@ -161,6 +166,14 @@ export interface SwapParams {
   amountIn: string;
   slippageBps: number;
   sender: string;
+  /**
+   * Optional decimal metadata for the input/output tokens. Adapters that need
+   * decimals to compute amounts (e.g. Tinyman v2) will use these when present;
+   * if absent the adapter must resolve decimals from its own data source
+   * (e.g. an indexer) or default sensibly. Caller-provided decimals always win.
+   */
+  assetInDecimals?: number;
+  assetOutDecimals?: number;
 }
 
 export interface DexAdapter {

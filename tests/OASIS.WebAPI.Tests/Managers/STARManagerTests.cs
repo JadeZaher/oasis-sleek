@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Moq;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Managers;
 using OASIS.WebAPI.Models;
@@ -61,33 +62,125 @@ public class STARManagerTests
     [Fact]
     public async Task CreateOrUpdateAsync_New_ShouldCreate()
     {
-        _store.Setup(p => p.GetAllAsync(It.IsAny<CancellationToken>()))
-                 .ReturnsAsync(new OASISResult<IEnumerable<ISTARODK>> { Result = Array.Empty<ISTARODK>() });
+        var avatarId = Guid.NewGuid();
+        _store.Setup(p => p.GetByNameAndAvatarAsync("Genesis", avatarId, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<ISTARODK> { Result = null });
         _store.Setup(p => p.UpsertAsync(It.IsAny<ISTARODK>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((ISTARODK s, CancellationToken _) => new OASISResult<ISTARODK> { Result = s });
 
         var model = new STARODKCreateModel { Name = "Genesis", Description = "Desc" };
-        var result = await _manager.CreateOrUpdateAsync(model);
+        var result = await _manager.CreateOrUpdateAsync(model, avatarId);
 
         result.IsError.Should().BeFalse();
         result.Result!.Name.Should().Be("Genesis");
         result.Result.Description.Should().Be("Desc");
+        result.Result.AvatarId.Should().Be(avatarId, "manager always stamps the authenticated avatar");
     }
 
     [Fact]
-    public async Task CreateOrUpdateAsync_Existing_ShouldUpdate()
+    public async Task CreateOrUpdateAsync_Existing_OwnedByCaller_ShouldUpdate()
     {
-        var existing = new STARODK { Id = Guid.NewGuid(), Name = "Existing", Description = "Old" };
-        _store.Setup(p => p.GetAllAsync(It.IsAny<CancellationToken>()))
-                 .ReturnsAsync(new OASISResult<IEnumerable<ISTARODK>> { Result = new[] { existing } });
+        var avatarId = Guid.NewGuid();
+        var existing = new STARODK { Id = Guid.NewGuid(), Name = "Existing", Description = "Old", AvatarId = avatarId };
+        _store.Setup(p => p.GetByNameAndAvatarAsync("Existing", avatarId, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<ISTARODK> { Result = existing });
         _store.Setup(p => p.UpsertAsync(It.IsAny<ISTARODK>(), It.IsAny<CancellationToken>()))
                  .ReturnsAsync((ISTARODK s, CancellationToken _) => new OASISResult<ISTARODK> { Result = s });
 
         var model = new STARODKCreateModel { Name = "Existing", Description = "New" };
-        var result = await _manager.CreateOrUpdateAsync(model);
+        var result = await _manager.CreateOrUpdateAsync(model, avatarId);
 
         result.IsError.Should().BeFalse();
         result.Result!.Description.Should().Be("New");
+    }
+
+    [Fact]
+    public async Task CreateOrUpdateAsync_POST_DifferentAvatarSameName_DoesNotLoadOtherRecord()
+    {
+        // POST IDOR closure: Avatar B sending Name="A's record" must not find
+        // A's record via the name lookup -- the store query is scoped by avatarId.
+        var avatarB = Guid.NewGuid();
+        _store.Setup(p => p.GetByNameAndAvatarAsync("Shared", avatarB, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<ISTARODK> { Result = null });
+        _store.Setup(p => p.UpsertAsync(It.IsAny<ISTARODK>(), It.IsAny<CancellationToken>()))
+                 .ReturnsAsync((ISTARODK s, CancellationToken _) => new OASISResult<ISTARODK> { Result = s });
+
+        var model = new STARODKCreateModel { Name = "Shared", Description = "B's" };
+        var result = await _manager.CreateOrUpdateAsync(model, avatarB);
+
+        result.IsError.Should().BeFalse();
+        result.Result!.AvatarId.Should().Be(avatarB);
+        // GetByIdAsync was NEVER invoked -- the loaded record could only have come from name+avatar lookup.
+        _store.Verify(p => p.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateOrUpdateAsync_PUT_DifferentAvatar_ReturnsForbiddenMarker()
+    {
+        // PUT IDOR closure: route id resolves to a record owned by a different avatar -> Forbidden.
+        var ownerAvatar = Guid.NewGuid();
+        var attackerAvatar = Guid.NewGuid();
+        var existing = new STARODK { Id = Guid.NewGuid(), Name = "Owned", AvatarId = ownerAvatar };
+        _store.Setup(p => p.GetByIdAsync(existing.Id, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<ISTARODK> { Result = existing });
+
+        var model = new STARODKCreateModel { Name = "Hijacked" };
+        var result = await _manager.CreateOrUpdateAsync(model, attackerAvatar, routeId: existing.Id);
+
+        result.IsError.Should().BeTrue();
+        result.Message.Should().StartWith(STARODKAuthorizationError.Forbidden);
+        // Crucially -- no upsert was performed.
+        _store.Verify(p => p.UpsertAsync(It.IsAny<ISTARODK>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateOrUpdateAsync_PUT_OwnRecord_Updates()
+    {
+        var avatarId = Guid.NewGuid();
+        var existing = new STARODK { Id = Guid.NewGuid(), Name = "Owned", AvatarId = avatarId, Description = "Old" };
+        _store.Setup(p => p.GetByIdAsync(existing.Id, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<ISTARODK> { Result = existing });
+        _store.Setup(p => p.UpsertAsync(It.IsAny<ISTARODK>(), It.IsAny<CancellationToken>()))
+                 .ReturnsAsync((ISTARODK s, CancellationToken _) => new OASISResult<ISTARODK> { Result = s });
+
+        var model = new STARODKCreateModel { Name = "Owned", Description = "New" };
+        var result = await _manager.CreateOrUpdateAsync(model, avatarId, routeId: existing.Id);
+
+        result.IsError.Should().BeFalse();
+        result.Result!.Description.Should().Be("New");
+        result.Result.AvatarId.Should().Be(avatarId);
+    }
+
+    [Fact]
+    public async Task CreateOrUpdateAsync_PUT_UnknownId_ReturnsNotFoundMarker()
+    {
+        var avatarId = Guid.NewGuid();
+        _store.Setup(p => p.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<ISTARODK> { IsError = true, Result = null, Message = "Not found." });
+
+        var model = new STARODKCreateModel { Name = "X" };
+        var result = await _manager.CreateOrUpdateAsync(model, avatarId, routeId: Guid.NewGuid());
+
+        result.IsError.Should().BeTrue();
+        result.Message.Should().StartWith(STARODKAuthorizationError.NotFound);
+    }
+
+    [Fact]
+    public async Task CreateOrUpdateAsync_IgnoresCallerSuppliedAvatarId()
+    {
+        // Defence in depth: even if the caller pushes a forged AvatarId in the body,
+        // the manager stamps the authenticated avatar onto the persisted record.
+        var authenticated = Guid.NewGuid();
+        var forged        = Guid.NewGuid();
+        _store.Setup(p => p.GetByNameAndAvatarAsync(It.IsAny<string>(), authenticated, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new OASISResult<ISTARODK> { Result = null });
+        _store.Setup(p => p.UpsertAsync(It.IsAny<ISTARODK>(), It.IsAny<CancellationToken>()))
+                 .ReturnsAsync((ISTARODK s, CancellationToken _) => new OASISResult<ISTARODK> { Result = s });
+
+        var model = new STARODKCreateModel { Name = "Foo", AvatarId = forged };
+        var result = await _manager.CreateOrUpdateAsync(model, authenticated);
+
+        result.Result!.AvatarId.Should().Be(authenticated);
     }
 
     [Fact]

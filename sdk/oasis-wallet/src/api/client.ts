@@ -49,10 +49,20 @@ export interface NftResult {
   ownerAvatarId?: string;
   chainId: string;
   tokenId?: string;
+  /** Asset type — defaults to "NFT" on the backend. */
+  assetType?: string;
   metadata?: NftMetadata;
   createdDate?: string;
   modifiedDate?: string;
   isActive: boolean;
+}
+
+/** Mirrors the .NET NftQueryRequest fields (sent as querystring). */
+export interface NftQueryParams {
+  ownerAvatarId?: string;
+  chainId?: string;
+  tokenId?: string;
+  name?: string;
 }
 
 export interface NftMetadata {
@@ -136,6 +146,50 @@ export interface NftTransferParams {
 
 export interface NftBurnParams {
   walletId: string;
+}
+
+// ─── Swap types (match SwapController DTOs) ───
+
+/** Mirrors .NET SwapQuoteRequest (sent as querystring). */
+export interface SwapQuoteParams {
+  /** "algorand" or "solana". */
+  chain: string;
+  tokenIn: string;
+  tokenOut: string;
+  amountIn: string;
+  /** Defaults to 50 (0.5%). */
+  slippageBps?: number;
+  /** Public key of the wallet requesting the swap (required for Jupiter v2). */
+  walletAddress?: string;
+}
+
+/** Mirrors .NET SwapExecuteRequest (sent as JSON body). */
+export interface SwapExecuteParams {
+  chain: string;
+  /** The quoteId returned from getSwapQuote(). */
+  quoteId: string;
+  walletAddress: string;
+}
+
+/** Mirrors .NET SwapQuoteResponse. */
+export interface SwapQuoteResponse {
+  chain: string;
+  tokenIn: string;
+  tokenOut: string;
+  amountIn: string;
+  expectedAmountOut: string;
+  priceImpact: number;
+  fee: string;
+  route?: unknown;
+  raw?: unknown;
+  /** Unique quote identifier for downstream swap execution (Jupiter v2). */
+  quoteId?: string;
+  /** Base64-encoded unsigned swap transaction for client-side signing. */
+  swapTransaction?: string;
+  /** Last valid block height for the swap transaction (Solana). */
+  lastValidBlockHeight?: number;
+  /** Human-readable status message. */
+  message?: string;
 }
 
 export interface BridgeInitiateParams {
@@ -543,6 +597,11 @@ export class OasisApiClient {
     this.config.token = undefined;
   }
 
+  /** The OASIS API base URL this client is pointed at. */
+  getBaseUrl(): string {
+    return this.config.baseUrl;
+  }
+
   /**
    * Toggle verbose diagnostics at runtime. When on, every
    * request/response/error is logged and the backend's server-side exception
@@ -605,6 +664,21 @@ export class OasisApiClient {
   async getNft(nftId: string): Promise<Result<NftResult, SdkError>> {
     assertUuid(nftId, "nftId");
     return this.request("GET", `/api/nft/${nftId}`);
+  }
+
+  /**
+   * List NFTs matching optional query filters.
+   * Maps to `GET /api/nft` (NftController.Query) — fields mirror NftQueryRequest.
+   */
+  async listNfts(params?: NftQueryParams): Promise<Result<NftResult[], SdkError>> {
+    const qs = new URLSearchParams();
+    if (params) {
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined) qs.set(key, String(value));
+      }
+    }
+    const query = qs.toString();
+    return this.request<NftResult[]>("GET", `/api/nft${query ? `?${query}` : ""}`);
   }
 
   async mintNft(params: NftMintParams): Promise<Result<unknown, SdkError>> {
@@ -744,8 +818,25 @@ export class OasisApiClient {
     return this.request("GET", "/api/starodk");
   }
 
+  /**
+   * Create or update a STARODK record.
+   *
+   * Upsert by id — the backend's `POST /api/starodk` (STARODKController.CreateOrUpdate)
+   * is the same endpoint also used to update an existing record. See {@link updateSTARODK}
+   * for a semantically-explicit alias when the caller intends an update.
+   */
   async createSTARODK(params: STARODKCreateParams): Promise<Result<STARODKResult, SdkError>> {
     return this.request("POST", "/api/starodk", params);
+  }
+
+  /**
+   * Update an existing STARODK record via PUT. Routes through the same
+   * `CreateOrUpdateAsync` upsert path as POST but uses the explicit-id route
+   * `PUT /api/starodk/{id}`, making update intent unambiguous.
+   */
+  async updateSTARODK(id: string, model: STARODKCreateParams): Promise<Result<STARODKResult, SdkError>> {
+    assertUuid(id, "starodkId");
+    return this.request("PUT", `/api/starodk/${id}`, model);
   }
 
   async deleteSTARODK(id: string): Promise<Result<{ message: string }, SdkError>> {
@@ -761,6 +852,44 @@ export class OasisApiClient {
   async deploySTARODK(starodkId: string): Promise<Result<STARODKResult, SdkError>> {
     assertUuid(starodkId, "starodkId");
     return this.request("POST", `/api/starodk/${starodkId}/deploy`);
+  }
+
+  // ─── Swap (SwapController) ───
+
+  /**
+   * Get a swap quote from the backend's swap manager (dispatches to Tinyman
+   * for Algorand and Jupiter for Solana). Maps to `GET /api/swap/quote`.
+   */
+  async getSwapQuote(params: SwapQuoteParams): Promise<Result<SwapQuoteResponse, SdkError>> {
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) qs.set(key, String(value));
+    }
+    return this.request<SwapQuoteResponse>("GET", `/api/swap/quote?${qs}`);
+  }
+
+  /**
+   * Execute a previously-fetched swap quote — returns an unsigned swap
+   * transaction the caller signs and broadcasts. Maps to `POST /api/swap/execute`.
+   *
+   * Supply `options.idempotencyKey` to set the `Idempotency-Key` request header;
+   * the backend dedupes against this key. When absent the server falls back to
+   * a deterministic content key.
+   */
+  async executeSwap(
+    params: SwapExecuteParams,
+    options?: { idempotencyKey?: string }
+  ): Promise<Result<SwapQuoteResponse, SdkError>> {
+    const extraHeaders = options?.idempotencyKey
+      ? { "Idempotency-Key": options.idempotencyKey }
+      : undefined;
+    return this.request<SwapQuoteResponse>(
+      "POST",
+      "/api/swap/execute",
+      params,
+      false,
+      extraHeaders
+    );
   }
 
   // ─── AvatarNFT ───
@@ -967,11 +1096,22 @@ export class OasisApiClient {
     return this.request("DELETE", `/api/apikey/${keyId}`);
   }
 
-  /** Send a request to an OASISResult<T>-wrapped endpoint. Public for use by query builders. */
-  async request<T>(method: string, path: string, body?: unknown, _retried = false): Promise<Result<T, SdkError>> {
+  /**
+   * Send a request to an OASISResult<T>-wrapped endpoint. Public for use by
+   * query builders. The optional `extraHeaders` argument adds caller-supplied
+   * headers (e.g., `Idempotency-Key`) on top of the auth + content-type
+   * headers the client builds for every request.
+   */
+  async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    _retried: boolean = false,
+    extraHeaders?: Record<string, string>
+  ): Promise<Result<T, SdkError>> {
     this.logRequest(method, path, body);
     try {
-      const resp = await this.fetchWithAuth(method, path, body);
+      const resp = await this.fetchWithAuth(method, path, body, extraHeaders);
 
       if (resp.status === 401 && this.config.onTokenRefresh && !_retried) {
         try {
@@ -979,7 +1119,7 @@ export class OasisApiClient {
         } catch (refreshErr) {
           return this.handleFetchError(method, path, refreshErr);
         }
-        return this.request(method, path, body, true);
+        return this.request(method, path, body, true, extraHeaders);
       }
 
       if (resp.status === 401 && _retried) {
@@ -1103,7 +1243,12 @@ export class OasisApiClient {
     this.logger.error(`[oasis-sdk] ✗ ${e.debugString()}`);
   }
 
-  private async fetchWithAuth(method: string, path: string, body?: unknown): Promise<Response> {
+  private async fetchWithAuth(
+    method: string,
+    path: string,
+    body?: unknown,
+    extraHeaders?: Record<string, string>
+  ): Promise<Response> {
     let token = this.config.token;
     if (!token && this.config.onTokenRefresh) {
       try {
@@ -1121,6 +1266,11 @@ export class OasisApiClient {
       headers["Authorization"] = `Bearer ${token}`;
     } else if (this.config.apiKey) {
       headers["X-Api-Key"] = this.config.apiKey;
+    }
+    if (extraHeaders) {
+      for (const [k, v] of Object.entries(extraHeaders)) {
+        headers[k] = v;
+      }
     }
 
     const controller = new AbortController();

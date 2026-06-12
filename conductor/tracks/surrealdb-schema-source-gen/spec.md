@@ -1,5 +1,11 @@
 # SurrealDB Schema Source Generator — Specification
 
+> **SUPERSEDED 2026-06-03.** The Mermaid-first pipeline described in this spec was
+> replaced by the C#-first attribute scanner (`AttributeSchemaScanner` + `SurqlEmitter`
+> in `packages/Oasis.SurrealDb.Schema/`). See the authoritative as-built reference in
+> [surreal-schema-package-retro/spec.md](../surreal-schema-package-retro/spec.md) and
+> the canonical convention doc at [Persistence/SurrealDb/CONVENTION.md](../../../Persistence/SurrealDb/CONVENTION.md).
+
 ## Goal
 **Tier 1.6** — derive C# domain POCOs, typed `SurrealQuery<T>` builders, and
 typed `RecordId<T>` from the `.mermaid` schema sources that

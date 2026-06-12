@@ -39,6 +39,7 @@
 | **STARODKController** | `Get` | `GET /api/starodk/{id:guid}` | Inherited `[Authorize]` (class) | MultiScheme |
 | STARODKController | `GetAll` | `GET /api/starodk` | Inherited `[Authorize]` (class) | MultiScheme |
 | STARODKController | `CreateOrUpdate` | `POST /api/starodk` | Inherited `[Authorize]` (class) | MultiScheme |
+| STARODKController | `Update` | `PUT /api/starodk/{id}` | Inherited `[Authorize]` (class) | MultiScheme |
 | STARODKController | `Delete` | `DELETE /api/starodk/{id:guid}` | Inherited `[Authorize]` (class) | MultiScheme |
 | STARODKController | `Generate` | `POST /api/starodk/{id:guid}/generate` | Inherited `[Authorize]` (class) | MultiScheme |
 | STARODKController | `Deploy` | `POST /api/starodk/{id:guid}/deploy` | Inherited `[Authorize]` (class) | MultiScheme |

@@ -17,10 +17,17 @@
 13. [x] Create `Controllers/DappCompositionController.cs` with compose, validate, manifest, generate, deploy, status endpoints (`/api/dapp-series/{id}/...`).
 14. [x] ~~EF Core migration~~ — DEFERRED to surrealdb-migration wave-2.
 15. [x] Unit tests for composition validation rules — `tests/OASIS.WebAPI.Tests/DappCompositionManagerTests.cs` covers all 5 rules + status-machine guardrails + avatar scoping. 12 tests, all green.
-16. [ ] Integration tests for full pipeline (series → compose → generate mock → deploy mock) — DEFERRED pending convention decision on POCO partial-class extension approach across all surreal tables.
+16. [x] Integration tests for full pipeline (series → compose → generate → deploy) — `tests/OASIS.WebAPI.IntegrationTests/Controllers/DappSeriesControllerIntegrationTests.cs`, 18 tests covering series CRUD, quest management, compose/validate/manifest/generate/deploy/status endpoints, auth probes (401 paths), and the Swagger smoke. `ISTARManager` is not mocked; generate/deploy are exercised through their BadRequest paths (Draft → not-Ready), which proves the wiring end-to-end without requiring a real STAR backend. The success-path generate/deploy assertions are covered by `DappCompositionManagerTests` with Moq.
 17. [x] `dotnet build` — zero warnings.
-18. [x] Tests — 535/535 passing.
-19. [ ] Verify Swagger UI lists all dApp composition endpoints — pending manual smoke after deploy.
+18. [x] Tests — **567 unit + 18 integration = 585 passing** (567/567 unit, 18/18 integration via filter).
+19. [x] Verify Swagger UI lists all dApp composition endpoints — automated via `SwaggerJson_ShouldListAllDappCompositionEndpoints` integration test (asserts all 12 routes present in `/swagger/v1/swagger.json`). Required broadening `Program.cs:527` Swagger gate to `Development` OR `IntegrationTest` env.
+
+## Closeout harness fixes (2026-06-11)
+Two pre-existing infra issues blocked the integration test fleet (not just dapp-composition):
+
+1. **Factory env name mismatch.** `OASISTestWebApplicationFactory.cs:34` and `McpAuthScopingIntegrationTests.cs:88` set `UseEnvironment("Testing")`, but `Program.cs:549` skips the SurrealDB boot probe only when env is `"IntegrationTest"`. Switched both factory call sites to `"IntegrationTest"` — unblocks the entire integration test fleet (STARODK, Holon, Avatar, ...), not just dApp tests.
+
+2. **Swagger middleware gate.** `Program.cs:527` only mounted Swagger in `Development` env; the integration host (now `IntegrationTest`) got 404 on `/swagger/v1/swagger.json`. Broadened to `IsDevelopment() || IsEnvironment("IntegrationTest")`. Production/Staging behavior unchanged.
 
 ## Architecture decisions made during implementation
 

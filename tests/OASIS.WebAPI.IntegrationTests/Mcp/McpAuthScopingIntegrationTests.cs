@@ -85,7 +85,7 @@ public class McpAuthScopingIntegrationTests : IntegrationTestBase
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
-            builder.UseEnvironment("Testing");
+            builder.UseEnvironment("IntegrationTest");
 
             builder.ConfigureAppConfiguration((_, config) =>
             {
@@ -95,7 +95,7 @@ public class McpAuthScopingIntegrationTests : IntegrationTestBase
                     ["Jwt:Issuer"]   = "test",
                     ["Jwt:Audience"] = "test",
                     ["SurrealDb:Endpoint"] = SurrealTestDefaults.Endpoint,
-                    ["SurrealDb:Username"] = SurrealTestDefaults.User,
+                    ["SurrealDb:User"]     = SurrealTestDefaults.User,
                     ["SurrealDb:Password"] = SurrealTestDefaults.Password,
                     ["OASIS:DefaultProvider"] = "SurrealDb",
                 });

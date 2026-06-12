@@ -488,11 +488,9 @@ namespace Oasis.SurrealDb.Schema.Generator
         }
 
         /// <summary>
-        /// Best-effort CLR -> SurrealDB token mapping. Mirror image of the
-        /// <c>CSharpTypeMapper</c> in the Oasis.SurrealDb.SourceGen package;
-        /// kept here (not shared) because the SourceGen package targets
-        /// netstandard2.0-only and the dependency direction is intentionally
-        /// one-way.
+        /// Best-effort CLR -> SurrealDB token mapping. Used by the
+        /// reflection-based AttributeSchemaScanner to project POCO property
+        /// types to SurrealQL field type tokens during <c>.surql</c> emission.
         /// </summary>
         private static (string token, bool inferredNullable) MapClrTypeToSurreal(Type t)
         {

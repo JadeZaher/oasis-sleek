@@ -80,22 +80,22 @@ builder.Services.AddOasisSurrealDb(builder.Configuration);
 // ISurrealConnection per scope.
 ```
 
-## Schemas -- Mermaid is the source of truth
+## Schemas -- C# POCOs are the source of truth
 
-The seven wave-1 schemas live under
-`Persistence/SurrealDb/Schemas/source/<NNN>_<name>.mermaid`; the
-generated `.surql` siblings under `Persistence/SurrealDb/Schemas/` are
-treated as build artifacts (regeneration is byte-identical thanks to the
-deterministic emitter). The
-`tests/Oasis.SurrealDb.Schema.Tests/WaveOneInRepoSyncTests.cs` gate
-asserts the two stay in sync; CI fails red on any drift.
+The 26 decorated POCOs at `Persistence/SurrealDb/Models/<Name>.cs` are
+the canonical authoring surface. The generated `.surql` siblings under
+`Persistence/SurrealDb/Generated/Schemas/<name>.surql` are build
+artifacts (regeneration is byte-identical thanks to the deterministic
+emitter). The `AttributePocoByteEquivalenceTests` gate asserts the two
+stay in sync; CI fails red on any drift.
 
-To regenerate after a `.mermaid` edit:
+See `Persistence/SurrealDb/CONVENTION.md` for the authoritative
+convention doc covering naming, attribute usage, and field ordering.
+
+To regenerate after a POCO edit:
 
 ```
-dotnet run --project packages/Oasis.SurrealDb.Schema \
-  -- generate Persistence/SurrealDb/Schemas/source/<NNN>_<name>.mermaid \
-     --out      Persistence/SurrealDb/Schemas/<NNN>_<name>.surql
+oasis-surreal generate-from-assembly bin/Debug/net8.0/OASIS.WebAPI.dll
 ```
 
 ## Tests

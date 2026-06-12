@@ -333,6 +333,58 @@ public sealed class SurrealStarStoreTests : IAsyncLifetime
         popRt.IsActive.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Test 8: GetByNameAndAvatarAsync matches owner-scoped records (case-insensitive)
+    /// and returns Result=null without IsError when no record is owned by the avatar.
+    /// This is the IDOR-safe lookup that <see cref="STARManager.CreateOrUpdateAsync"/>
+    /// uses on POST.
+    /// </summary>
+    [SkippableFact]
+    public async Task GetByNameAndAvatarAsync_ScopesByOwnerAndIsCaseInsensitive()
+    {
+        Skip.IfNot(_surrealAvailable, "SurrealDB test container not available on " + SurrealTestDefaults.Endpoint);
+
+        var avatarA = Guid.NewGuid();
+        var avatarB = Guid.NewGuid();
+
+        var ownedByA = new STARODK
+        {
+            Id          = Guid.NewGuid(),
+            Name        = "Shared Name",
+            Description = "A's data",
+            AvatarId    = avatarA,
+            CreatedDate = DateTime.UtcNow,
+            IsActive    = true
+        };
+        var ownedByB = new STARODK
+        {
+            Id          = Guid.NewGuid(),
+            Name        = "Shared Name",
+            Description = "B's data",
+            AvatarId    = avatarB,
+            CreatedDate = DateTime.UtcNow,
+            IsActive    = true
+        };
+        await _store.UpsertAsync(ownedByA);
+        await _store.UpsertAsync(ownedByB);
+
+        // Case-insensitive match scoped to A.
+        var resultA = await _store.GetByNameAndAvatarAsync("shared name", avatarA);
+        resultA.IsError.Should().BeFalse();
+        resultA.Result.Should().NotBeNull();
+        resultA.Result!.Id.Should().Be(ownedByA.Id, "name lookup must be scoped to the calling avatar");
+        resultA.Result.Description.Should().Be("A's data");
+
+        // Same name -> B's record for avatar B.
+        var resultB = await _store.GetByNameAndAvatarAsync("Shared Name", avatarB);
+        resultB.Result!.Id.Should().Be(ownedByB.Id);
+
+        // A stranger never sees either record.
+        var resultStranger = await _store.GetByNameAndAvatarAsync("Shared Name", Guid.NewGuid());
+        resultStranger.IsError.Should().BeFalse();
+        resultStranger.Result.Should().BeNull();
+    }
+
     // ── Infrastructure ────────────────────────────────────────────────────────
 
     private static async Task<bool> ProbeSurrealAsync()

@@ -69,6 +69,61 @@ public class QuestEdgeCreateModel
     public QuestEdgeType EdgeType { get; set; } = QuestEdgeType.Control;
 }
 
+// ─── Sub-resource mutation DTOs (post-hoc edits on a persisted Quest) ────────
+// These differ from the inner-Create models above by using concrete Guid
+// references instead of array indices. The inner-Create models are kept
+// untouched so QuestManager.CreateAsync continues to compile.
+
+/// <summary>
+/// Request body for <c>PUT /api/quest/{questId}/nodes/{nodeId}</c>. Each
+/// field is nullable so callers can patch a subset; the manager applies only
+/// the non-null fields. Mutating <see cref="NodeType"/> or the underlying
+/// Config is reserved for a future schema-aware patch surface — at this stage
+/// only the cheap-to-edit shape fields are exposed.
+/// </summary>
+public class QuestNodeUpdateModel
+{
+    public string? Name { get; set; }
+    public string? Config { get; set; }
+    public bool? IsEntry { get; set; }
+    public bool? IsTerminal { get; set; }
+}
+
+/// <summary>
+/// Request body for <c>POST /api/quest/{questId}/edges</c>. Unlike the inner
+/// <see cref="QuestEdgeCreateModel"/> which uses array indices into the
+/// QuestCreateModel.Nodes payload, this variant carries concrete Guid
+/// references because the parent Quest is already persisted.
+/// </summary>
+public class QuestEdgeAddModel
+{
+    public Guid SourceNodeId { get; set; }
+    public Guid TargetNodeId { get; set; }
+    public string? Condition { get; set; }
+    public OASIS.WebAPI.Models.Quest.QuestEdgeType EdgeType { get; set; } = OASIS.WebAPI.Models.Quest.QuestEdgeType.Control;
+}
+
+/// <summary>
+/// Request body for <c>POST /api/quest/{questId}/dependencies</c>. A cross-quest
+/// edge expressing that this quest depends on the completion of another quest.
+/// </summary>
+public class QuestDependencyCreateModel
+{
+    public Guid DependsOnQuestId { get; set; }
+
+    /// <summary>
+    /// Optional: depend on a specific node output rather than full quest completion.
+    /// Mirrors <see cref="OASIS.WebAPI.Models.Quest.QuestDependency.DependsOnNodeId"/>.
+    /// </summary>
+    public Guid? DependsOnNodeId { get; set; }
+
+    public OASIS.WebAPI.Models.Quest.QuestDependencyType DependencyType { get; set; }
+        = OASIS.WebAPI.Models.Quest.QuestDependencyType.Required;
+
+    /// <summary>Optional audit description; ignored by the manager today, reserved for future use.</summary>
+    public string? Description { get; set; }
+}
+
 public class QuestTemplateCreateModel
 {
     public string Name { get; set; } = string.Empty;

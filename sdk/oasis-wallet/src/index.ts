@@ -61,7 +61,13 @@ export type { JupiterConfig } from "./dex/jupiter.js";
 
 // API client
 export { OasisApiClient } from "./api/index.js";
-export type { OasisApiConfig } from "./api/index.js";
+export type {
+  OasisApiConfig,
+  NftQueryParams,
+  SwapQuoteParams,
+  SwapExecuteParams,
+  SwapQuoteResponse,
+} from "./api/index.js";
 
 // High-level client
 export { OasisClient } from "./client/index.js";

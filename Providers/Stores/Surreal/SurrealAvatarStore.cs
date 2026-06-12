@@ -168,7 +168,6 @@ public sealed class SurrealAvatarStore : IAvatarStore
 
     // ── Inline POCO ───────────────────────────────────────────────────────────
 
-    // TODO: replace with generated POCO when source-gen catches up to wave-2 aggregates.
     private sealed class SurrealAvatar : Oasis.SurrealDb.Client.ISurrealRecord
     {
         public string SchemaName => AvatarTable;

@@ -645,7 +645,7 @@ public class BridgeInitiateRequestValidatorTests
         TargetChain = "algorand",
         TokenId = "token-1",
         RecipientAddress = SolAddr,
-        Amount = 5
+        Amount = "5"
     };
 
     [Fact]
@@ -711,9 +711,9 @@ public class BridgeInitiateRequestValidatorTests
 
     // Regression: relaxing the address charset must NOT loosen the amount rule.
     [Theory]
-    [InlineData(0)]
-    [InlineData(-1)]
-    public void NonPositiveAmount_Fails(int amount)
+    [InlineData("0")]
+    [InlineData("-1")]
+    public void NonPositiveAmount_Fails(string amount)
     {
         var m = Valid(); m.Amount = amount;
         _validator.TestValidate(m).ShouldHaveValidationErrorFor(x => x.Amount);

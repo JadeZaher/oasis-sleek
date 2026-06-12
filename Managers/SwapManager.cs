@@ -48,6 +48,9 @@ public class SwapManager : ISwapManager
             if (!_adapters.TryGetValue(request.Chain, out var adapter))
                 return new OASISResult<SwapQuoteResponse> { IsError = true, Message = "Unsupported chain" };
 
+            if (request.SlippageBps is < 0 or > 10000)
+                return new OASISResult<SwapQuoteResponse> { IsError = true, Message = "SlippageBps must be between 0 and 10000" };
+
             var quoteResult = await adapter.GetQuoteAsync(request);
             if (quoteResult.IsError || quoteResult.Result is null)
                 return new OASISResult<SwapQuoteResponse>
@@ -98,8 +101,14 @@ public class SwapManager : ISwapManager
             if (!_adapters.TryGetValue(request.Chain, out var adapter))
                 return Error<SwapQuoteResponse>($"Unsupported chain: {request.Chain}");
 
-            if (!TryGetCachedQuote(request.QuoteId, out var cachedPayload))
+            if (!TryGetCachedQuote(request.QuoteId, out var cachedChain, out var cachedPayload))
                 return Error<SwapQuoteResponse>("Quote expired or not found. Request a new quote first.");
+
+            // A quote is bound to the chain it was produced on; replaying it
+            // under a different chain would let a Solana quote drive an Algorand
+            // execution (and vice-versa).
+            if (!string.Equals(cachedChain, request.Chain, StringComparison.OrdinalIgnoreCase))
+                return Error<SwapQuoteResponse>("Quote chain does not match the requested chain.");
 
             return await adapter.BuildSwapTransactionAsync(request, cachedPayload);
         }
@@ -123,13 +132,15 @@ public class SwapManager : ISwapManager
         cacheEntry.AbsoluteExpirationRelativeToNow = QuoteCacheDuration;
     }
 
-    private bool TryGetCachedQuote(string quoteId, out string rawPayload)
+    private bool TryGetCachedQuote(string quoteId, out string chain, out string rawPayload)
     {
         if (_cache.TryGetValue(QuoteCacheKey(quoteId), out CachedQuote? cached) && cached is not null)
         {
+            chain = cached.Chain;
             rawPayload = cached.RawPayload;
             return true;
         }
+        chain = "";
         rawPayload = "";
         return false;
     }

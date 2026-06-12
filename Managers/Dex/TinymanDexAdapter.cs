@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using OASIS.WebAPI.Core;
@@ -41,6 +42,9 @@ public class TinymanDexAdapter : IDexAdapter
         if (!ulong.TryParse(req.AmountIn, out var amountInMicro))
             return Error<DexQuote>($"Invalid amount: {req.AmountIn}");
 
+        if (req.SlippageBps is < 0 or > 10000)
+            return Error<DexQuote>($"SlippageBps must be between 0 and 10000: {req.SlippageBps}");
+
         try
         {
             // Fetch real pool reserves from Algod
@@ -58,6 +62,7 @@ public class TinymanDexAdapter : IDexAdapter
                         TokenOut = req.TokenOut,
                         AmountIn = req.AmountIn,
                         ExpectedAmountOut = "0",
+                        MinAmountOut = "0",
                         PriceImpact = 0,
                         Fee = "0",
                         Unavailable = true,
@@ -68,23 +73,43 @@ public class TinymanDexAdapter : IDexAdapter
                 }, $"No Tinyman V2 pool for {asset1Id}/{asset2Id} (env condition; not a server fault).");
             }
 
-            // AMM Constant Product: x * y = k
-            var feeMultiplier = 10000UL - (uint)feeBps;
-            var amountInWithFee = amountInMicro * feeMultiplier / 10000UL;
+            // AMM Constant Product: x * y = k. Intermediate products
+            // (amountIn * reserveOut) can exceed ulong range, so the whole
+            // computation runs in UInt128 and the results are range-checked
+            // before narrowing back to ulong.
+            UInt128 amountIn128 = amountInMicro;
+            UInt128 reserveIn128 = reserveIn;
+            UInt128 reserveOut128 = reserveOut;
+            UInt128 feeMultiplier = 10000UL - (uint)feeBps;
 
-            var numerator = amountInWithFee * reserveOut;
-            var denominator = reserveIn + amountInWithFee;
-            var amountOut = numerator / denominator;
+            var amountInWithFee = amountIn128 * feeMultiplier / 10000UL;
 
-            // Apply slippage
-            var slippageMultiplier = 10000UL - (uint)req.SlippageBps;
-            var amountOutWithSlippage = amountOut * slippageMultiplier / 10000UL;
+            var numerator = amountInWithFee * reserveOut128;
+            var denominator = reserveIn128 + amountInWithFee;
+            var amountOut128 = numerator / denominator;
 
-            var priceImpactPct = denominator > 0
-                ? Math.Abs((double)((amountInMicro * reserveOut) - (reserveIn * amountOut)) / (double)(reserveIn * amountOut) * 100)
+            // Apply slippage to derive the minimum acceptable output floor.
+            UInt128 slippageMultiplier = 10000UL - (uint)req.SlippageBps;
+            var minAmountOut128 = amountOut128 * slippageMultiplier / 10000UL;
+
+            // The 30bps fee actually charged on the input (input minus the
+            // post-fee input), not the prior ~0 round-trip remainder.
+            var feeMicro128 = amountIn128 - amountInWithFee;
+
+            // Price impact uses the pre-fee marginal vs effective rate; the
+            // products are UInt128 to avoid overflow, then narrowed to double.
+            var idealOut = amountIn128 * reserveOut128;
+            var effectiveOut = reserveIn128 * amountOut128;
+            var priceImpactPct = (denominator > 0 && effectiveOut > 0)
+                ? Math.Abs(((double)idealOut - (double)effectiveOut) / (double)effectiveOut * 100)
                 : 0;
 
-            var feeMicro = amountInMicro - (amountInWithFee * 10000UL / feeMultiplier);
+            if (amountOut128 > ulong.MaxValue || feeMicro128 > ulong.MaxValue || minAmountOut128 > ulong.MaxValue)
+                return Error<DexQuote>("Swap amounts exceed supported range for this pool");
+
+            var amountOut = (ulong)amountOut128;
+            var minAmountOut = (ulong)minAmountOut128;
+            var feeMicro = (ulong)feeMicro128;
 
             var quote = new SwapQuoteResponse
             {
@@ -92,7 +117,8 @@ public class TinymanDexAdapter : IDexAdapter
                 TokenIn = req.TokenIn,
                 TokenOut = req.TokenOut,
                 AmountIn = req.AmountIn,
-                ExpectedAmountOut = amountOutWithSlippage.ToString(),
+                ExpectedAmountOut = amountOut.ToString(),
+                MinAmountOut = minAmountOut.ToString(),
                 PriceImpact = priceImpactPct,
                 Fee = feeMicro.ToString(),
                 Raw = new
@@ -101,7 +127,7 @@ public class TinymanDexAdapter : IDexAdapter
                     poolReserveOut = reserveOut.ToString(),
                     amountInWithFee = amountInWithFee.ToString(),
                     amountOut = amountOut.ToString(),
-                    amountOutWithSlippage = amountOutWithSlippage.ToString(),
+                    minAmountOut = minAmountOut.ToString(),
                     priceImpactPct,
                     feeBps,
                     method = "tinyman_v2_constant_product_amm"

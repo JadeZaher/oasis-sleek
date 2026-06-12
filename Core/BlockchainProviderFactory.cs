@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using OASIS.WebAPI.Interfaces;
 
 namespace OASIS.WebAPI.Core;
@@ -14,7 +15,7 @@ public class BlockchainProviderFactory : IBlockchainProviderFactory
 {
     private readonly IReadOnlyDictionary<string, Func<IBlockchainProvider>> _providerFactories;
     private readonly BlockchainConfig _config;
-    private readonly Dictionary<string, IBlockchainProvider> _activeProviders = new();
+    private readonly ConcurrentDictionary<string, IBlockchainProvider> _activeProviders = new();
 
     public BlockchainProviderFactory(IEnumerable<IBlockchainProvider> registeredProviders, IConfiguration config)
     {
@@ -34,24 +35,23 @@ public class BlockchainProviderFactory : IBlockchainProviderFactory
             throw new InvalidOperationException($"No provider registered for chain type: {chainType}");
 
         var key = $"{chainType}:{network}";
-        if (_activeProviders.TryGetValue(key, out var existing))
-            return existing;
-
-        var provider = factory();
-        var chainConfig = _config.Chains.FirstOrDefault(c =>
-            c.ChainType.Equals(chainType, StringComparison.OrdinalIgnoreCase));
-
-        var networkConfig = network switch
+        return _activeProviders.GetOrAdd(key, _ =>
         {
-            ChainNetwork.Devnet => chainConfig?.Devnet,
-            ChainNetwork.Testnet => chainConfig?.Testnet,
-            ChainNetwork.Mainnet => chainConfig?.Mainnet,
-            _ => chainConfig?.Devnet
-        };
+            var provider = factory();
+            var chainConfig = _config.Chains.FirstOrDefault(c =>
+                c.ChainType.Equals(chainType, StringComparison.OrdinalIgnoreCase));
 
-        provider.Initialize(networkConfig ?? new BlockchainNetworkConfig(), network);
-        _activeProviders[key] = provider;
-        return provider;
+            var networkConfig = network switch
+            {
+                ChainNetwork.Devnet => chainConfig?.Devnet,
+                ChainNetwork.Testnet => chainConfig?.Testnet,
+                ChainNetwork.Mainnet => chainConfig?.Mainnet,
+                _ => chainConfig?.Devnet
+            };
+
+            provider.Initialize(networkConfig ?? new BlockchainNetworkConfig(), network);
+            return provider;
+        });
     }
 
     public IBlockchainProvider GetDefaultProvider()

@@ -6,6 +6,8 @@ using OASIS.WebAPI.Models.Responses;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using OASIS.WebAPI.Core.Blockchain;
 using System.Net.Http;
 using Xunit;
 using System.Threading.Tasks;
@@ -47,7 +49,11 @@ public class SwapManagerTests
         var lf = new LoggerFactory();
         // Adapters are config-driven; SwapManager is a thin dispatcher over them.
         var tinyman = new TinymanDexAdapter(config, lf.CreateLogger<TinymanDexAdapter>());
-        var jupiter = new JupiterDexAdapter(_httpClient, config, lf.CreateLogger<JupiterDexAdapter>());
+        // Config-driven: bind JupiterConfig from the same appsettings section.
+        var jupiterConfig = new JupiterConfig();
+        config.GetSection(JupiterConfig.SectionName).Bind(jupiterConfig);
+        var jupiter = new JupiterDexAdapter(
+            _httpClient, Options.Create(jupiterConfig), lf.CreateLogger<JupiterDexAdapter>());
         _swapManager = new SwapManager(
             new IDexAdapter[] { tinyman, jupiter }, NewBoundedCache(), lf.CreateLogger<SwapManager>());
     }

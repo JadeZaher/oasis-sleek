@@ -13,8 +13,8 @@ namespace OASIS.WebAPI.Providers.Blockchain.Algorand;
 /// </summary>
 public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
 {
-    private readonly HttpClient _algodHttpClient;
-    private readonly HttpClient? _indexerHttpClient;
+    private HttpClient _algodHttpClient;
+    private HttpClient? _indexerHttpClient;
     private readonly BlockchainConfigurationManager _configManager;
 
     public override string ChainType => "Algorand";
@@ -29,12 +29,28 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
         var network = _configManager.GetDefaultNetwork(ChainType);
         var networkConfig = _configManager.GetNetworkConfig(ChainType, network);
 
-        _algodHttpClient = CreateHttpClient(networkConfig.NodeUrl, networkConfig.ApiToken, networkConfig.TimeoutMs);
-        _indexerHttpClient = !string.IsNullOrWhiteSpace(networkConfig.IndexerUrl)
-            ? CreateHttpClient(networkConfig.IndexerUrl, networkConfig.ApiToken, networkConfig.TimeoutMs)
-            : null;
-
+        BuildClients(networkConfig);
         Initialize(networkConfig, network);
+    }
+
+    /// <summary>
+    /// (Re)builds the Algod + Indexer clients so they bind to the network passed
+    /// to <see cref="Initialize"/> — the single place clients are constructed.
+    /// Without this, the ctor-time default network would be used regardless of
+    /// the network the factory requested.
+    /// </summary>
+    public override void Initialize(BlockchainNetworkConfig config, ChainNetwork network)
+    {
+        BuildClients(config);
+        base.Initialize(config, network);
+    }
+
+    private void BuildClients(BlockchainNetworkConfig config)
+    {
+        _algodHttpClient = CreateHttpClient(config.NodeUrl, config.ApiToken, config.TimeoutMs);
+        _indexerHttpClient = !string.IsNullOrWhiteSpace(config.IndexerUrl)
+            ? CreateHttpClient(config.IndexerUrl, config.ApiToken, config.TimeoutMs)
+            : null;
     }
 
     private static HttpClient CreateHttpClient(string baseUrl, string? apiToken, int? timeoutMs)
@@ -244,22 +260,58 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
             if (string.IsNullOrWhiteSpace(txHash))
                 return Error<Dictionary<string, object>>("Transaction hash is required");
 
-            var response = await _algodHttpClient.GetFromJsonAsync<AlgodTransactionInfo>(
+            // Algod only exposes pending-transaction status at
+            // /v2/transactions/pending/{txid} (there is no /v2/transactions/{id}
+            // route). Once a tx leaves the pending pool, fall back to the
+            // Indexer's /v2/transactions/{txid} for the confirmed record.
+            AlgodPendingTransactionInfo? pending = null;
+            try
+            {
+                pending = await _algodHttpClient.GetFromJsonAsync<AlgodPendingTransactionInfo>(
+                    $"/v2/transactions/pending/{txHash}", cancellationToken: ct);
+            }
+            catch (HttpRequestException)
+            {
+                // Not in the pending pool (404) — fall through to the indexer.
+            }
+
+            if (pending != null)
+            {
+                var pendingStatus = new Dictionary<string, object>
+                {
+                    ["txHash"] = txHash,
+                    ["chain"] = "Algorand",
+                    ["confirmed"] = pending.ConfirmedRound > 0,
+                    ["confirmedRound"] = pending.ConfirmedRound.ToString(),
+                    ["fee"] = (pending.Txn?.Transaction?.Fee ?? 0).ToString(),
+                    ["sender"] = pending.Txn?.Transaction?.Sender ?? "",
+                    ["type"] = pending.Txn?.Transaction?.TxType ?? "unknown",
+                    ["fetchedAt"] = DateTime.UtcNow
+                };
+                return Ok(pendingStatus, "Transaction status retrieved (algod pending pool)");
+            }
+
+            if (_indexerHttpClient == null)
+                return Error<Dictionary<string, object>>(
+                    "Transaction not in algod pending pool and no Indexer is configured to look up confirmed transactions");
+
+            var indexed = await _indexerHttpClient.GetFromJsonAsync<IndexerTransactionResponse>(
                 $"/v2/transactions/{txHash}", cancellationToken: ct);
 
+            var tx = indexed?.Transaction;
             var status = new Dictionary<string, object>
             {
                 ["txHash"] = txHash,
                 ["chain"] = "Algorand",
-                ["confirmed"] = response?.ConfirmedRound > 0,
-                ["confirmedRound"] = (response?.ConfirmedRound ?? 0).ToString(),
-                ["fee"] = (response?.Fee ?? 0).ToString(),
-                ["sender"] = response?.Sender ?? "",
-                ["type"] = response?.TxType ?? "unknown",
+                ["confirmed"] = tx?.ConfirmedRound > 0,
+                ["confirmedRound"] = (tx?.ConfirmedRound ?? 0).ToString(),
+                ["fee"] = (tx?.Fee ?? 0).ToString(),
+                ["sender"] = tx?.Sender ?? "",
+                ["type"] = tx?.TxType ?? "unknown",
                 ["fetchedAt"] = DateTime.UtcNow
             };
 
-            return Ok(status, "Transaction status retrieved");
+            return Ok(status, "Transaction status retrieved (indexer)");
         }
         catch (Exception ex)
         {
@@ -421,7 +473,41 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
         public string? LastVersion { get; set; }
     }
 
-    private class AlgodTransactionInfo
+    // Algod GET /v2/transactions/pending/{txid}: confirmed-round is 0 while the
+    // tx is still in the pool; the inner "txn" carries the signed transaction.
+    private class AlgodPendingTransactionInfo
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("confirmed-round")]
+        public long ConfirmedRound { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("txn")]
+        public AlgodSignedTxn? Txn { get; set; }
+    }
+
+    private class AlgodSignedTxn
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("txn")]
+        public AlgodTxnFields? Transaction { get; set; }
+    }
+
+    private class AlgodTxnFields
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("fee")]
+        public long Fee { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("snd")]
+        public string? Sender { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("type")]
+        public string? TxType { get; set; }
+    }
+
+    // Indexer GET /v2/transactions/{txid}: wraps the confirmed record under
+    // "transaction" with flat confirmed-round / fee / sender / tx-type fields.
+    private class IndexerTransactionResponse
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("transaction")]
+        public IndexerTransactionInfo? Transaction { get; set; }
+    }
+
+    private class IndexerTransactionInfo
     {
         [System.Text.Json.Serialization.JsonPropertyName("confirmed-round")]
         public long ConfirmedRound { get; set; }

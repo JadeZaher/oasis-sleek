@@ -1,7 +1,8 @@
 using System.Net;
 using FluentAssertions;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using OASIS.WebAPI.Core.Blockchain;
 using OASIS.WebAPI.Managers.Dex;
 using OASIS.WebAPI.Models.Requests;
 
@@ -15,11 +16,13 @@ namespace OASIS.WebAPI.Tests.Managers.Dex;
 /// </summary>
 public class JupiterDexAdapterTests
 {
-    private static IConfiguration EmptyConfig() =>
-        new ConfigurationBuilder().AddInMemoryCollection().Build();
+    // Base URL ends in /v2 so the adapter's "{BaseUrl}/quote" and "{BaseUrl}/swap"
+    // routes contain "/v2/quote" and "/v2/swap" — what RoutingHandler keys off.
+    private static IOptions<JupiterConfig> Config() =>
+        Options.Create(new JupiterConfig { BaseUrl = "https://api.jup.ag/swap/v2" });
 
     private static JupiterDexAdapter Build(RoutingHandler handler) =>
-        new(new HttpClient(handler), EmptyConfig(),
+        new(new HttpClient(handler), Config(),
             new LoggerFactory().CreateLogger<JupiterDexAdapter>());
 
     [Fact]

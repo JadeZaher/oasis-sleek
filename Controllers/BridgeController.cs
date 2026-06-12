@@ -59,6 +59,15 @@ public class BridgeController : ControllerBase
     {
         var avatarId = GetAvatarId();
 
+        // Amount is a precision-safe string on the wire; reject non-positive or
+        // out-of-range before handing to the service. The service amount
+        // parameter is still int — values above int.MaxValue are rejected here
+        // until that signature is widened to string end-to-end.
+        if (!System.Numerics.BigInteger.TryParse(request.Amount, out var amount) || amount <= 0)
+            return BadRequest(new { error = "Amount must be a positive integer." });
+        if (amount > int.MaxValue)
+            return BadRequest(new { error = "Amount exceeds the currently supported bridge range." });
+
         // Optional client Idempotency-Key — used verbatim as the lock→mint
         // idempotency key so a retried initiate collapses to one chain effect.
         // Absent ⇒ null ⇒ service uses its deterministic content key (safe).
@@ -66,7 +75,7 @@ public class BridgeController : ControllerBase
 
         var result = await _bridgeService.InitiateBridgeAsync(
             request.SourceChain, request.TargetChain, request.TokenId,
-            request.RecipientAddress, avatarId, request.Amount,
+            request.RecipientAddress, avatarId, (int)amount,
             request.Mode, ct, idempotencyKey);
 
         if (result.IsError)
@@ -230,7 +239,13 @@ public class BridgeInitiateRequest
     public string TargetChain { get; set; } = string.Empty;
     public string TokenId { get; set; } = string.Empty;
     public string RecipientAddress { get; set; } = string.Empty;
-    public int Amount { get; set; } = 1;
+
+    /// <summary>
+    /// Bridge amount in base units, as a decimal string for arbitrary precision
+    /// (18-decimal base units overflow int). Validated as a positive integer by
+    /// <c>BridgeInitiateRequestValidator</c>.
+    /// </summary>
+    public string Amount { get; set; } = "1";
 
     /// <summary>
     /// Bridge mode: null = server default, "Trusted" = custodial, "Wormhole" = trustless.

@@ -14,7 +14,7 @@ namespace OASIS.WebAPI.Providers.Blockchain.Solana;
 /// </summary>
 public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISolanaSPLModule
 {
-    private readonly HttpClient _rpcHttpClient;
+    private HttpClient _rpcHttpClient;
     private readonly BlockchainConfigurationManager _configManager;
     private int _requestId;
 
@@ -29,13 +29,29 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
         var network = _configManager.GetDefaultNetwork(ChainType);
         var networkConfig = _configManager.GetNetworkConfig(ChainType, network);
 
-        _rpcHttpClient = new HttpClient
-        {
-            BaseAddress = new Uri(networkConfig.NodeUrl),
-            Timeout = TimeSpan.FromMilliseconds(networkConfig.TimeoutMs ?? 30000)
-        };
-
+        _rpcHttpClient = BuildRpcClient(networkConfig);
         Initialize(networkConfig, network);
+    }
+
+    /// <summary>
+    /// (Re)builds the RPC client so it binds to the network passed to
+    /// <see cref="Initialize"/> — the single place clients are constructed.
+    /// Without this, the ctor-time default network would be used regardless of
+    /// the network the factory requested.
+    /// </summary>
+    public override void Initialize(BlockchainNetworkConfig config, ChainNetwork network)
+    {
+        _rpcHttpClient = BuildRpcClient(config);
+        base.Initialize(config, network);
+    }
+
+    private static HttpClient BuildRpcClient(BlockchainNetworkConfig config)
+    {
+        return new HttpClient
+        {
+            BaseAddress = new Uri(config.NodeUrl),
+            Timeout = TimeSpan.FromMilliseconds(config.TimeoutMs ?? 30000)
+        };
     }
 
     private async Task<SolanaRpcResponse<T>> RpcCallAsync<T>(string method, object[] parameters, CancellationToken ct = default)
@@ -287,14 +303,14 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
     {
         try
         {
-            var slotResp = await RpcCallAsync<SolanaSlotResult>("getSlot", Array.Empty<object>(), ct);
+            var slotResp = await RpcCallAsync<long>("getSlot", Array.Empty<object>(), ct);
             var supplyResp = await RpcCallAsync<SolanaSupplyResult>("getSupply", Array.Empty<object>(), ct);
 
             var info = new Dictionary<string, object>
             {
                 ["chain"] = "Solana",
                 ["network"] = ActiveNetwork.ToString(),
-                ["currentSlot"] = slotResp.Result?.ToString() ?? "unknown",
+                ["currentSlot"] = slotResp.Error == null ? slotResp.Result.ToString() : "unknown",
                 ["totalSupply"] = supplyResp.Result?.Value?.Total.ToString() ?? "unknown",
                 ["circulatingSupply"] = supplyResp.Result?.Value?.Circulating.ToString() ?? "unknown",
                 ["rpcEndpoint"] = _rpcHttpClient.BaseAddress?.ToString() ?? "",
@@ -508,12 +524,6 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
         public object? Err { get; set; }
         [System.Text.Json.Serialization.JsonPropertyName("fee")]
         public long Fee { get; set; }
-    }
-
-    private class SolanaSlotResult
-    {
-        [System.Text.Json.Serialization.JsonPropertyName("result")]
-        public long? Result { get; set; }
     }
 
     private class SolanaSupplyResult

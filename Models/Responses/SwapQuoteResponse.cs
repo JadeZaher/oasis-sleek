@@ -7,6 +7,15 @@ public class SwapQuoteResponse
     public string TokenOut { get; set; } = string.Empty;
     public string AmountIn { get; set; } = string.Empty;
     public string ExpectedAmountOut { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Slippage-adjusted minimum acceptable output (the floor below which the
+    /// swap should revert). <see cref="ExpectedAmountOut"/> is the pre-slippage
+    /// expected output on every adapter; this is that value reduced by the
+    /// requested <c>SlippageBps</c>.
+    /// </summary>
+    public string MinAmountOut { get; set; } = string.Empty;
+
     public double PriceImpact { get; set; }
     public string Fee { get; set; } = "0";
     public object? Route { get; set; }

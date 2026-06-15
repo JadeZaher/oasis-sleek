@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Oasis.SurrealDb.Client;
 using Oasis.SurrealDb.Client.Json;
 using Oasis.SurrealDb.Client.Query;
 using OASIS.WebAPI.Interfaces;
@@ -128,8 +129,9 @@ public sealed class SurrealNftStore : INftStore
     {
         try
         {
+            var avatarLink = SurrealLink.ToLink("avatar", ToSurrealId(avatarId));
             var q = SurrealQuery<GeneratedNft>.From()
-                .Where(n => n.AvatarId == avatarId.ToString("N").ToLowerInvariant());
+                .Where(n => n.AvatarId == avatarLink);
 
             var rows = await _executor.QueryAsync<GeneratedNft>(q, ct);
             return new OASISResult<IEnumerable<IAvatarNFT>>
@@ -388,7 +390,7 @@ public sealed class SurrealNftStore : INftStore
         return new GeneratedNft
         {
             Id                = ToSurrealId(n.Id),
-            AvatarId          = ToSurrealId(n.AvatarId),
+            AvatarId          = SurrealLink.ToLink("avatar", ToSurrealId(n.AvatarId))!,
             ChainType         = n.ChainType,
             ContractAddress   = n.NFTContractAddress,
             TokenId           = n.TokenId,
@@ -432,7 +434,7 @@ public sealed class SurrealNftStore : INftStore
         return new AvatarNFT
         {
             Id                  = FromSurrealId(p.Id),
-            AvatarId            = FromSurrealId(p.AvatarId),
+            AvatarId            = FromSurrealId(SurrealLink.FromLink(p.AvatarId)!),
             ChainType           = p.ChainType,
             NFTContractAddress  = p.ContractAddress,
             TokenId             = p.TokenId,

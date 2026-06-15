@@ -1,7 +1,7 @@
 using FluentValidation;
 using OASIS.WebAPI.Models;
 
-namespace OASIS.WebAPI.Validation;
+namespace OASIS.WebAPI.Validators;
 
 public class AvatarUpdateValidator : AbstractValidator<AvatarUpdateModel>
 {

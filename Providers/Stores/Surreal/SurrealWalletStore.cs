@@ -1,3 +1,4 @@
+using Oasis.SurrealDb.Client;
 using Oasis.SurrealDb.Client.Query;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
@@ -69,7 +70,7 @@ public sealed class SurrealWalletStore : IWalletStore
         try
         {
             var q = SurrealQuery<GeneratedWallet>.From()
-                .Where(w => w.AvatarId == avatarId.ToString("N").ToLowerInvariant());
+                .Where(w => w.AvatarId == SurrealLink.ToLink("avatar", avatarId.ToString("N").ToLowerInvariant()));
             var rows = await _executor.QueryAsync<GeneratedWallet>(q, ct);
             return new OASISResult<IEnumerable<IWallet>>
             {
@@ -148,7 +149,7 @@ public sealed class SurrealWalletStore : IWalletStore
     private static GeneratedWallet ToPoco(IWallet w) => new()
     {
         Id                   = ToSurrealId(w.Id),
-        AvatarId             = ToSurrealId(w.AvatarId),
+        AvatarId             = SurrealLink.ToLink("avatar", ToSurrealId(w.AvatarId)),
         ChainType            = w.ChainType,
         Address              = w.Address,
         PublicKey            = w.PublicKey,
@@ -164,7 +165,7 @@ public sealed class SurrealWalletStore : IWalletStore
     private static Wallet FromPoco(GeneratedWallet p) => new()
     {
         Id                  = FromSurrealId(p.Id),
-        AvatarId            = FromSurrealId(p.AvatarId),
+        AvatarId            = FromSurrealId(SurrealLink.FromLink(p.AvatarId)!),
         ChainType           = p.ChainType,
         Address             = p.Address,
         PublicKey           = p.PublicKey,

@@ -206,7 +206,7 @@ public sealed class SurrealQuestNodeExecutionStore : IQuestNodeExecutionStore
         {
             var q = SurrealQuery
                 .Of("SELECT * FROM quest_node_execution WHERE run_id = $_rid ORDER BY started_at ASC")
-                .WithParam("_rid", ToSurrealId(runId));
+                .WithParam("_rid", SurrealLink.ToLink("quest_run", ToSurrealId(runId)));
 
             var rows = await _executor.QueryAsync<QuestNodeExecutionPoco>(q, ct);
             IEnumerable<QuestNodeExecution> result = rows.Select(ToDomain).ToList();
@@ -228,8 +228,8 @@ public sealed class SurrealQuestNodeExecutionStore : IQuestNodeExecutionStore
         {
             var q = SurrealQuery
                 .Of("SELECT * FROM quest_node_execution WHERE run_id = $_rid AND node_id = $_nid LIMIT 1")
-                .WithParam("_rid", ToSurrealId(runId))
-                .WithParam("_nid", ToSurrealId(nodeId));
+                .WithParam("_rid", SurrealLink.ToLink("quest_run", ToSurrealId(runId)))
+                .WithParam("_nid", SurrealLink.ToLink("quest_node", ToSurrealId(nodeId)));
 
             var rows = await _executor.QueryAsync<QuestNodeExecutionPoco>(q, ct);
             return rows.Count == 0
@@ -250,8 +250,8 @@ public sealed class SurrealQuestNodeExecutionStore : IQuestNodeExecutionStore
     {
         try
         {
-            var runHex  = ToSurrealId(runId);
-            var nodeHex = ToSurrealId(nodeId);
+            var runHex  = SurrealLink.ToLink("quest_run", ToSurrealId(runId));
+            var nodeHex = SurrealLink.ToLink("quest_node", ToSurrealId(nodeId));
 
             // Existence probe so the "row missing" signal (IsError == true) is
             // distinguishable from the race-loser signal (Result == null,
@@ -328,8 +328,8 @@ public sealed class SurrealQuestNodeExecutionStore : IQuestNodeExecutionStore
     private static QuestNodeExecutionPoco FromDomain(QuestNodeExecution e) => new()
     {
         Id         = ToSurrealId(e.Id),
-        RunId      = ToSurrealId(e.RunId),
-        NodeId     = ToSurrealId(e.NodeId),
+        RunId      = SurrealLink.ToLink("quest_run", ToSurrealId(e.RunId)),
+        NodeId     = SurrealLink.ToLink("quest_node", ToSurrealId(e.NodeId)),
         State      = e.State.ToString(),
         Output     = e.Output,
         Error      = e.Error,
@@ -340,8 +340,8 @@ public sealed class SurrealQuestNodeExecutionStore : IQuestNodeExecutionStore
     private static QuestNodeExecution ToDomain(QuestNodeExecutionPoco p) => new()
     {
         Id         = FromSurrealId(p.Id),
-        RunId      = string.IsNullOrEmpty(p.RunId)  ? Guid.Empty : FromSurrealId(p.RunId),
-        NodeId     = string.IsNullOrEmpty(p.NodeId) ? Guid.Empty : FromSurrealId(p.NodeId),
+        RunId      = string.IsNullOrEmpty(p.RunId)  ? Guid.Empty : FromSurrealId(SurrealLink.FromLink(p.RunId)!),
+        NodeId     = string.IsNullOrEmpty(p.NodeId) ? Guid.Empty : FromSurrealId(SurrealLink.FromLink(p.NodeId)!),
         State      = ParseState(p.State),
         Output     = p.Output,
         Error      = p.Error,

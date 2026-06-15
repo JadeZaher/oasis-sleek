@@ -16,7 +16,8 @@
       "Bash(dotnet format *)",
       "Bash(grep -c '^{' \"/mnt/c/Users/atooz/Programming/Projects/oasis-sleek/tests/OASIS.WebAPI.LiveTests/live-tests/Stress_RapidOperations.jsonl\" 2>/dev/null || wc -l < \"/mnt/c/Users/atooz/Programming/Projects/oasis-sleek/tests/OASIS.WebAPI.LiveTests/live-tests/Stress_RapidOperations.jsonl\")",
       "Read(//mnt/c/Users/atooz/Programming/Projects/oasis-sleek/tests/OASIS.WebAPI.LiveTests/live-tests/**)",
-      "Bash(curl -sS -m 3 http://localhost:5000/health)"
+      "Bash(curl -sS -m 3 http://localhost:5000/health)",
+      "Bash(podman pull *)"
     ]
   }
 }

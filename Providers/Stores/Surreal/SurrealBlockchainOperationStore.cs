@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Oasis.SurrealDb.Client;
 using Oasis.SurrealDb.Client.Query;
 using OASIS.WebAPI.Persistence.SurrealDb.Models;
 using OASIS.WebAPI.Interfaces;
@@ -79,7 +80,7 @@ public sealed class SurrealBlockchainOperationStore : IBlockchainOperationStore
     {
         try
         {
-            var avatarSurrealId = ToSurrealId(avatarId);
+            var avatarSurrealId = SurrealLink.ToLink("avatar", ToSurrealId(avatarId));
 
             // SELECT * FROM operation_log WHERE avatar_id = $avatar_id
             var q = SurrealQuery<OperationLog>.From()
@@ -248,8 +249,8 @@ public sealed class SurrealBlockchainOperationStore : IBlockchainOperationStore
         return new OperationLog
         {
             Id            = ToSurrealId(op.Id),
-            AvatarId      = op.AvatarId.HasValue  ? ToSurrealId(op.AvatarId.Value) : null,
-            WalletId      = op.WalletId.HasValue   ? ToSurrealId(op.WalletId.Value) : null,
+            AvatarId      = op.AvatarId.HasValue  ? SurrealLink.ToLink("avatar", ToSurrealId(op.AvatarId.Value)) : null,
+            WalletId      = op.WalletId.HasValue   ? SurrealLink.ToLink("wallet", ToSurrealId(op.WalletId.Value)) : null,
             OperationType = op.OperationType,
             Status        = statusKind,
             Parameters    = parametersElement,
@@ -267,10 +268,10 @@ public sealed class SurrealBlockchainOperationStore : IBlockchainOperationStore
 
             // IExchangeOperation
             SourceHolonId = concrete?.SourceHolonId.HasValue == true
-                            ? ToSurrealId(concrete.SourceHolonId!.Value)
+                            ? SurrealLink.ToLink("holon", ToSurrealId(concrete.SourceHolonId!.Value))
                             : null,
             TargetHolonId = concrete?.TargetHolonId.HasValue == true
-                            ? ToSurrealId(concrete.TargetHolonId!.Value)
+                            ? SurrealLink.ToLink("holon", ToSurrealId(concrete.TargetHolonId!.Value))
                             : null,
             ExchangeRate  = concrete?.ExchangeRate,
 
@@ -302,8 +303,8 @@ public sealed class SurrealBlockchainOperationStore : IBlockchainOperationStore
         return new BlockchainOperation
         {
             Id            = FromSurrealId(poco.Id),
-            AvatarId      = poco.AvatarId  is not null ? FromSurrealId(poco.AvatarId) : null,
-            WalletId      = poco.WalletId  is not null ? FromSurrealId(poco.WalletId) : null,
+            AvatarId      = poco.AvatarId  is not null ? FromSurrealId(SurrealLink.FromLink(poco.AvatarId)!) : null,
+            WalletId      = poco.WalletId  is not null ? FromSurrealId(SurrealLink.FromLink(poco.WalletId)!) : null,
             OperationType = poco.OperationType,
             Status        = poco.Status.ToString(), // enum.ToString() matches OperationStatus const names
             Parameters    = parameters,
@@ -316,8 +317,8 @@ public sealed class SurrealBlockchainOperationStore : IBlockchainOperationStore
             AssetType = poco.AssetType,
 
             // IExchangeOperation
-            SourceHolonId = poco.SourceHolonId is not null ? FromSurrealId(poco.SourceHolonId) : null,
-            TargetHolonId = poco.TargetHolonId is not null ? FromSurrealId(poco.TargetHolonId) : null,
+            SourceHolonId = poco.SourceHolonId is not null ? FromSurrealId(SurrealLink.FromLink(poco.SourceHolonId)!) : null,
+            TargetHolonId = poco.TargetHolonId is not null ? FromSurrealId(SurrealLink.FromLink(poco.TargetHolonId)!) : null,
             ExchangeRate  = poco.ExchangeRate,
 
             // ITransferOperation

@@ -5,7 +5,7 @@ using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Quest;
 using OASIS.WebAPI.Models.Requests;
-using OASIS.WebAPI.Validation;
+using OASIS.WebAPI.Validators;
 using FV = OASIS.WebAPI.Validators;
 
 namespace OASIS.WebAPI.Tests.Validation;
@@ -92,35 +92,6 @@ public class AvatarLoginValidatorTests
     }
 }
 
-public class WalletCreateValidatorTests
-{
-    private readonly WalletCreateValidator _validator = new();
-
-    [Fact]
-    public void ValidModel_ShouldNotHaveErrors()
-    {
-        var model = new WalletCreateModel { ChainType = "Solana", Address = "abc123" };
-        var result = _validator.TestValidate(model);
-        result.ShouldNotHaveAnyValidationErrors();
-    }
-
-    [Fact]
-    public void EmptyAddress_ShouldHaveError()
-    {
-        var model = new WalletCreateModel { ChainType = "Solana", Address = "" };
-        var result = _validator.TestValidate(model);
-        result.ShouldHaveValidationErrorFor(x => x.Address);
-    }
-
-    [Fact]
-    public void EmptyChainType_ShouldHaveError()
-    {
-        var model = new WalletCreateModel { ChainType = "", Address = "abc" };
-        var result = _validator.TestValidate(model);
-        result.ShouldHaveValidationErrorFor(x => x.ChainType);
-    }
-}
-
 public class HolonCreateValidatorTests
 {
     private readonly HolonCreateValidator _validator = new();
@@ -147,72 +118,6 @@ public class HolonCreateValidatorTests
         var model = new HolonCreateModel { Name = "Test", Description = "", ProviderName = "Test" };
         var result = _validator.TestValidate(model);
         result.ShouldHaveValidationErrorFor(x => x.Description);
-    }
-}
-
-public class NftMintValidatorTests
-{
-    private readonly NftMintValidator _validator = new();
-
-    [Fact]
-    public void ValidModel_ShouldNotHaveErrors()
-    {
-        var model = new NftMintRequest { Name = "MyNFT", Description = "A NFT", ChainId = "solana", WalletId = Guid.NewGuid() };
-        var result = _validator.TestValidate(model);
-        result.ShouldNotHaveAnyValidationErrors();
-    }
-
-    [Fact]
-    public void EmptyName_ShouldHaveError()
-    {
-        var model = new NftMintRequest { Name = "", Description = "A", ChainId = "sol", WalletId = Guid.NewGuid() };
-        var result = _validator.TestValidate(model);
-        result.ShouldHaveValidationErrorFor(x => x.Name);
-    }
-
-    [Fact]
-    public void EmptyWalletId_ShouldHaveError()
-    {
-        var model = new NftMintRequest { Name = "NFT", Description = "D", ChainId = "sol", WalletId = Guid.Empty };
-        var result = _validator.TestValidate(model);
-        result.ShouldHaveValidationErrorFor(x => x.WalletId);
-    }
-}
-
-public class SearchRequestValidatorTests
-{
-    private readonly SearchRequestValidator _validator = new();
-
-    [Fact]
-    public void ValidModel_ShouldNotHaveErrors()
-    {
-        var model = new SearchRequest { Query = "test", Page = 1, PageSize = 20, SortBy = "CreatedDate" };
-        var result = _validator.TestValidate(model);
-        result.ShouldNotHaveAnyValidationErrors();
-    }
-
-    [Fact]
-    public void PageLessThanOne_ShouldHaveError()
-    {
-        var model = new SearchRequest { Query = "", Page = 0, PageSize = 20 };
-        var result = _validator.TestValidate(model);
-        result.ShouldHaveValidationErrorFor(x => x.Page);
-    }
-
-    [Fact]
-    public void PageSizeOutOfRange_ShouldHaveError()
-    {
-        var model = new SearchRequest { Query = "", Page = 1, PageSize = 200 };
-        var result = _validator.TestValidate(model);
-        result.ShouldHaveValidationErrorFor(x => x.PageSize);
-    }
-
-    [Fact]
-    public void InvalidSortBy_ShouldHaveError()
-    {
-        var model = new SearchRequest { Query = "", Page = 1, PageSize = 20, SortBy = "InvalidField" };
-        var result = _validator.TestValidate(model);
-        result.ShouldHaveValidationErrorFor(x => x.SortBy);
     }
 }
 

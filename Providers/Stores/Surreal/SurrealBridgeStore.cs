@@ -170,14 +170,14 @@ public sealed class SurrealBridgeStore : IBridgeStore
         {
             var q = SurrealQuery
                 .Of("SELECT * FROM bridge_tx WHERE avatar_id = $_avatar ORDER BY created_at DESC")
-                .WithParam("_avatar", avatarSurrealId);
+                .WithParam("_avatar", SurrealLink.ToLink("avatar", avatarSurrealId));
             rows = await _executor.QueryAsync<BridgeTx>(q, ct);
         }
         else
         {
             var q = SurrealQuery
                 .Of("SELECT * FROM bridge_tx WHERE avatar_id = $_avatar ORDER BY created_at ASC")
-                .WithParam("_avatar", avatarSurrealId);
+                .WithParam("_avatar", SurrealLink.ToLink("avatar", avatarSurrealId));
             rows = await _executor.QueryAsync<BridgeTx>(q, ct);
         }
         return rows.Select(FromBridgePoco).ToList();
@@ -513,7 +513,7 @@ public sealed class SurrealBridgeStore : IBridgeStore
     private static BridgeTx ToBridgePoco(BridgeTransactionResult tx) => new BridgeTx
     {
         Id                       = tx.Id,
-        AvatarId                 = AvatarToSurrealId(tx.AvatarId),
+        AvatarId                 = SurrealLink.ToLink("avatar", AvatarToSurrealId(tx.AvatarId)) ?? string.Empty,
         SourceChain              = tx.SourceChain,
         TargetChain              = tx.TargetChain,
         SourceTokenId            = tx.SourceTokenId,
@@ -541,7 +541,7 @@ public sealed class SurrealBridgeStore : IBridgeStore
     private static BridgeTransactionResult FromBridgePoco(BridgeTx poco) => new BridgeTransactionResult
     {
         Id                     = StripSurrealIdPrefix(poco.Id, BridgeTable),
-        AvatarId               = AvatarFromSurrealId(poco.AvatarId),
+        AvatarId               = AvatarFromSurrealId(SurrealLink.FromLink(poco.AvatarId)),
         SourceChain            = poco.SourceChain,
         TargetChain            = poco.TargetChain,
         SourceTokenId          = poco.SourceTokenId,
@@ -576,7 +576,7 @@ public sealed class SurrealBridgeStore : IBridgeStore
         EmitterChainId      = record.EmitterChainId,
         EmitterAddress      = record.EmitterAddress,
         Sequence            = record.Sequence,
-        BridgeTransactionId = record.BridgeTransactionId,
+        BridgeTransactionId = SurrealLink.ToLink("bridge_tx", record.BridgeTransactionId),
         ConsumedAt          = ToUtcOffset(record.ConsumedAt),
     };
 
@@ -597,8 +597,8 @@ public sealed class SurrealBridgeStore : IBridgeStore
         return new BlockchainOperation
         {
             Id            = FromSurrealGuid(poco.Id),
-            AvatarId      = poco.AvatarId is not null ? FromSurrealGuid(poco.AvatarId) : null,
-            WalletId      = poco.WalletId is not null ? FromSurrealGuid(poco.WalletId) : null,
+            AvatarId      = poco.AvatarId is not null ? FromSurrealGuid(SurrealLink.FromLink(poco.AvatarId)!) : null,
+            WalletId      = poco.WalletId is not null ? FromSurrealGuid(SurrealLink.FromLink(poco.WalletId)!) : null,
             OperationType = poco.OperationType,
             Status        = poco.Status.ToString(),
             Parameters    = parameters,
@@ -607,8 +607,8 @@ public sealed class SurrealBridgeStore : IBridgeStore
             TokenUri      = poco.TokenUri,
             Amount        = poco.Amount.HasValue ? (int)poco.Amount.Value : 0,
             AssetType     = poco.AssetType,
-            SourceHolonId = poco.SourceHolonId is not null ? FromSurrealGuid(poco.SourceHolonId) : null,
-            TargetHolonId = poco.TargetHolonId is not null ? FromSurrealGuid(poco.TargetHolonId) : null,
+            SourceHolonId = poco.SourceHolonId is not null ? FromSurrealGuid(SurrealLink.FromLink(poco.SourceHolonId)!) : null,
+            TargetHolonId = poco.TargetHolonId is not null ? FromSurrealGuid(SurrealLink.FromLink(poco.TargetHolonId)!) : null,
             ExchangeRate  = poco.ExchangeRate,
             RecipientAddress = poco.RecipientAddress,
         };

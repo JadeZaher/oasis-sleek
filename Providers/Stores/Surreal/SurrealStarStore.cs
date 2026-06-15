@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Oasis.SurrealDb.Client;
 using Oasis.SurrealDb.Client.Json;
 using Oasis.SurrealDb.Client.Query;
 using OASIS.WebAPI.Core;
@@ -61,7 +62,7 @@ public sealed class SurrealStarStore : ISTARStore
                 .Of("SELECT * FROM type::table($_t) WHERE string::lowercase(name) = string::lowercase($_name) AND avatar_id = $_avatar LIMIT 1")
                 .WithParam("_t",      StarRecord.StarTable)
                 .WithParam("_name",   name)
-                .WithParam("_avatar", ToSurrealId(avatarId));
+                .WithParam("_avatar", SurrealLink.ToLink("avatar", ToSurrealId(avatarId)));
 
             var row = await _executor.QuerySingleAsync<StarRecord>(q, ct);
             return new OASISResult<ISTARODK>
@@ -176,7 +177,7 @@ public sealed class SurrealStarStore : ISTARStore
             Description      = odk.Description,
             PublicKey        = odk.PublicKey,
             PrivateKeyHash   = odk.PrivateKeyHash,
-            AvatarId         = odk.AvatarId.HasValue ? ToSurrealId(odk.AvatarId.Value) : null,
+            AvatarId         = odk.AvatarId.HasValue ? SurrealLink.ToLink("avatar", ToSurrealId(odk.AvatarId.Value)) : null,
             BoundHolonIds    = boundHolonIdsJson,
             TargetChain      = odk.TargetChain,
             GeneratedCode    = odk.GeneratedCode,
@@ -214,7 +215,7 @@ public sealed class SurrealStarStore : ISTARStore
             Description      = p.Description,
             PublicKey        = p.PublicKey,
             PrivateKeyHash   = p.PrivateKeyHash,
-            AvatarId         = p.AvatarId is not null ? FromSurrealId(p.AvatarId) : null,
+            AvatarId         = p.AvatarId is not null ? FromSurrealId(SurrealLink.FromLink(p.AvatarId)!) : null,
             BoundHolonIds    = boundHolonIds,
             TargetChain      = p.TargetChain,
             GeneratedCode    = p.GeneratedCode,

@@ -176,7 +176,7 @@ public sealed class SurrealQuestRunStore : IQuestRunStore
         {
             var q = SurrealQuery
                 .Of("SELECT * FROM quest_run WHERE quest_id = $_qid")
-                .WithParam("_qid", ToSurrealId(questId));
+                .WithParam("_qid", SurrealLink.ToLink("quest", ToSurrealId(questId)));
 
             var rows = await _executor.QueryAsync<QuestRunPoco>(q, ct);
             return OkMany(rows.Select(ToDomain).ToList());
@@ -195,7 +195,7 @@ public sealed class SurrealQuestRunStore : IQuestRunStore
         {
             var q = SurrealQuery
                 .Of("SELECT * FROM quest_run WHERE avatar_id = $_aid")
-                .WithParam("_aid", ToSurrealId(avatarId));
+                .WithParam("_aid", SurrealLink.ToLink("avatar", ToSurrealId(avatarId)));
 
             var rows = await _executor.QueryAsync<QuestRunPoco>(q, ct);
             return OkMany(rows.Select(ToDomain).ToList());
@@ -277,13 +277,13 @@ public sealed class SurrealQuestRunStore : IQuestRunStore
     private static QuestRunPoco FromDomain(QuestRun r) => new()
     {
         Id              = ToSurrealId(r.Id),
-        QuestId         = ToSurrealId(r.QuestId),
-        AvatarId        = ToSurrealId(r.AvatarId),
+        QuestId         = SurrealLink.ToLink("quest", ToSurrealId(r.QuestId)),
+        AvatarId        = SurrealLink.ToLink("avatar", ToSurrealId(r.AvatarId)),
         Status          = r.Status.ToString(),
         StartedAt       = ToUtcOffset(r.StartedAt),
         EndedAt         = r.EndedAt.HasValue ? ToUtcOffset(r.EndedAt.Value) : null,
-        ParentRunId     = r.ParentRunId.HasValue     ? ToSurrealId(r.ParentRunId.Value)     : null,
-        ForkedAtNodeId  = r.ForkedAtNodeId.HasValue  ? ToSurrealId(r.ForkedAtNodeId.Value)  : null,
+        ParentRunId     = r.ParentRunId.HasValue     ? SurrealLink.ToLink("quest_run", ToSurrealId(r.ParentRunId.Value))     : null,
+        ForkedAtNodeId  = r.ForkedAtNodeId.HasValue  ? SurrealLink.ToLink("quest_node", ToSurrealId(r.ForkedAtNodeId.Value))  : null,
         ForkReason      = r.ForkReason,
         FailReason      = r.FailReason,
     };
@@ -291,13 +291,13 @@ public sealed class SurrealQuestRunStore : IQuestRunStore
     private static QuestRun ToDomain(QuestRunPoco p) => new()
     {
         Id              = FromSurrealId(p.Id),
-        QuestId         = string.IsNullOrEmpty(p.QuestId)  ? Guid.Empty : FromSurrealIdFk(p.QuestId),
-        AvatarId        = string.IsNullOrEmpty(p.AvatarId) ? Guid.Empty : FromSurrealIdFk(p.AvatarId),
+        QuestId         = string.IsNullOrEmpty(p.QuestId)  ? Guid.Empty : FromSurrealIdFk(SurrealLink.FromLink(p.QuestId)!),
+        AvatarId        = string.IsNullOrEmpty(p.AvatarId) ? Guid.Empty : FromSurrealIdFk(SurrealLink.FromLink(p.AvatarId)!),
         Status          = ParseStatus(p.Status),
         StartedAt       = p.StartedAt.UtcDateTime,
         EndedAt         = p.EndedAt?.UtcDateTime,
-        ParentRunId     = string.IsNullOrEmpty(p.ParentRunId)    ? null : FromSurrealIdFk(p.ParentRunId),
-        ForkedAtNodeId  = string.IsNullOrEmpty(p.ForkedAtNodeId) ? null : FromSurrealIdFk(p.ForkedAtNodeId),
+        ParentRunId     = string.IsNullOrEmpty(p.ParentRunId)    ? null : FromSurrealIdFk(SurrealLink.FromLink(p.ParentRunId)!),
+        ForkedAtNodeId  = string.IsNullOrEmpty(p.ForkedAtNodeId) ? null : FromSurrealIdFk(SurrealLink.FromLink(p.ForkedAtNodeId)!),
         ForkReason      = p.ForkReason,
         FailReason      = p.FailReason,
     };

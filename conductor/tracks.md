@@ -10,7 +10,28 @@
 
 ## In flight
 
-_(none — all previously in-flight tracks shipped as of 2026-06-11)_
+### Initiative: ardanova-provider-port (started 2026-06-15)
+
+Make OASIS the custodial blockchain provider ("avatar wallet manager") for ArdaNova
+and future apps. Algorand first; generic/cross-chain where feasible. Economic/token
+domain (dual-gate, allocation, treasury) stays in ArdaNova — OASIS exposes blockchain
+primitives + wallet provisioning. KYC + Stripe folded in (ArdaNova gift). Every
+production stub tracked in [DEPLOY-STEPS-TODO.md](DEPLOY-STEPS-TODO.md). Key finding:
+**both repos stub signing today** (ArdaNova's `SignTransaction` fakes it too) — OASIS
+already has `Algorand2` + `BouncyCastle 2.x` wired, so the keystone is *finish real
+signing*, not *port working signing*. Decisions: per-user AES-GCM custody (default),
+generic `ITransactionSigner` from day one, simulated `NullBlockchainProvider` for
+DB-only mode, six focused tracks. Ordering: **signing-core-keystone first (blocks all)**
+→ tenant-onboarding + custody + db-only (parallel) → kyc → fiat.
+
+| Track | Status | Description |
+|-------|--------|-------------|
+| [signing-core-keystone](tracks/signing-core-keystone/spec.md) | `[ ]` | **Tier 0 — keystone.** Real Ed25519 keygen (replace HMAC placeholder in `WalletKeyService.cs:116-129`) + real Algorand signing behind a generic `ITransactionSigner` (replace hard-error stubs in `AlgorandProvider.cs:148-164`). Canonical msgpack via `Algorand2`; no new deps. Blocks the entire initiative. See [spec](tracks/signing-core-keystone/spec.md) + [plan](tracks/signing-core-keystone/plan.md). |
+| [custody-key-management](tracks/custody-key-management/spec.md) | `[ ]` | **Tier 0.** Per-user decrypt-just-in-time-to-sign custody resolver (`IKeyCustodyService`) with IDOR guard, key rotation/re-wrap, and a platform-signer seam. KMS/HSM is a deploy-stub (B3). `byte[]` key zeroing constraint (P1). Dep: signing-core-keystone. |
+| [db-only-null-provider](tracks/db-only-null-provider/spec.md) | `[ ]` | **Tier 1.** Simulated `NullBlockchainProvider` via the existing chain factory — deterministic `sim:`-prefixed addresses + tx hashes + a simulated balance ledger; config-selected per `OASIS:BlockchainMode`. "DB, no blockchain" mode for dev/test/demo + no-chain tenants. Distinguishability guardrail (H3). |
+| [tenant-onboarding](tracks/tenant-onboarding/spec.md) | `[ ]` | **Tier 0.5 — enabling.** Multi-tenant: a tenant Avatar owns a fleet of user Avatars via `OwnerTenantId` FK + `tenant:provision` scope on the existing API-key infra; `ExternalUserId` maps tenant's user→Avatar. Cross-tenant isolation is the security crux (B5). Dep of fiat. |
+| [kyc-module](tracks/kyc-module/spec.md) | `[ ]` | **Tier 1.** Port ArdaNova's provider-agnostic KYC (Manual default + Veriff stub) as SurrealDB POCOs keyed to AvatarId; `KycManager` → `OASISResult<T>`; reusable `IKycGateService` to gate wallet-generate + mint. No brand leak. Provider secrets are a deploy-stub (P4). |
+| [fiat-stripe-bridge](tracks/fiat-stripe-bridge/spec.md) | `[ ]` | **Tier 1.** Thin OASIS-side seam: idempotent, KYC-gated, tenant-callable wallet-provision + asset-allocation primitive that ArdaNova calls after Stripe settles. Heavy Stripe/economic lifting STAYS in ArdaNova; OASIS holds no Stripe secrets. Idempotency is a hard requirement (B4). Deps: signing-core + kyc + tenant. |
 
 ## Pending
 

@@ -29,8 +29,26 @@ public class BlockchainProviderFactory : IBlockchainProviderFactory
         _providerFactories = factories;
     }
 
+    /// <summary>
+    /// Global simulated-mode chain type (db-only-null-provider track). Matches
+    /// <see cref="OASIS.WebAPI.Providers.Blockchain.Simulated.SimulatedBlockchainProvider.ChainType"/>.
+    /// </summary>
+    private const string SimulatedChainType = "Simulated";
+
+    /// <summary>True when <c>Blockchain:Mode</c> is "Simulated" (case-insensitive).</summary>
+    private bool IsSimulatedMode =>
+        string.Equals(_config.Mode, SimulatedChainType, StringComparison.OrdinalIgnoreCase);
+
     public IBlockchainProvider GetProvider(string chainType, ChainNetwork network)
     {
+        // Global simulated mode (db-only-null-provider D2/D3): short-circuit every
+        // chain to the SimulatedBlockchainProvider so dev/test/demo and no-chain
+        // tenants get deterministic, marked, network-free settlement regardless of
+        // the requested chain. The Live-mode throw below is preserved for
+        // genuinely-unregistered chains.
+        if (IsSimulatedMode)
+            chainType = SimulatedChainType;
+
         if (!_providerFactories.TryGetValue(chainType, out var factory))
             throw new InvalidOperationException($"No provider registered for chain type: {chainType}");
 

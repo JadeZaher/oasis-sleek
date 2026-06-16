@@ -26,4 +26,15 @@ public class BlockchainConfig
     public string DefaultChain { get; set; } = "Algorand";
     public ChainNetwork DefaultNetwork { get; set; } = ChainNetwork.Devnet;
     public List<BlockchainChainConfig> Chains { get; set; } = new();
+
+    /// <summary>
+    /// Global blockchain settlement mode. <c>"Live"</c> (default) routes every
+    /// chain to its real provider. <c>"Simulated"</c> short-circuits the factory
+    /// to the <c>SimulatedBlockchainProvider</c> regardless of requested chain —
+    /// mint/transfer/burn/balance are satisfied with deterministic, clearly
+    /// marked (<c>sim:</c> prefixed) synthetic results and NO network I/O. The
+    /// dev/test/demo and "no-chain" tenant default. Per-chain mode is a
+    /// documented follow-up (db-only-null-provider plan D2).
+    /// </summary>
+    public string Mode { get; set; } = "Live";
 }

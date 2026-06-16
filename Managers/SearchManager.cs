@@ -56,8 +56,7 @@ public class SearchManager : ISearchManager
                     Fields = new Dictionary<string, object>
                     {
                         ["Email"] = a.Email,
-                        ["IsActive"] = a.IsActive,
-                        ["Karma"] = a.Karma
+                        ["IsActive"] = a.IsActive
                     },
                     CreatedDate = a.CreatedDate
                 }));

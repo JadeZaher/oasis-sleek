@@ -16,6 +16,10 @@ public interface IAvatar
     DateTime? LastBeamedInDate { get; set; }
     bool IsActive { get; set; }
     bool IsVerified { get; set; }
-    int Karma { get; set; }
-    int Level { get; set; }
+
+    // Tenant ownership (tenant-onboarding). OwnerTenantId is the provisioning
+    // tenant principal's avatar id (self-FK); null = not tenant-managed.
+    Guid? OwnerTenantId { get; set; }
+    string? ExternalUserId { get; set; }
+    string? ExternalRef { get; set; }
 }

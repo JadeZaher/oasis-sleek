@@ -14,9 +14,12 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         Aggregate = "Avatar (Models/Avatar.cs)",
         Guardrail = "G6 SCHEMAFULL")]
     [SurrealNote("Wallets navigation list is NOT persisted here — owned by IWalletStore via wallet.avatar_id FK.")]
+    [SurrealNote("Tenant ownership (tenant-onboarding): owner_tenant_id is a self-FK to the tenant principal's avatar; external_user_id is the tenant's own user id for this child. The avatar_tenant_extuser composite UNIQUE is only meaningful for rows where BOTH owner_tenant_id AND external_user_id are non-NONE — same NULL-equals-NULL collision caveat the ApiKey POCO documents (ApiKey.cs:17). A tenant-managed row ALWAYS sets both (TenantManager.ProvisionChildAsync), so dedup-per-tenant is correct by construction; legacy/self-registered avatars leave both NONE and never collide.")]
     [Slice("identity")]
     [Index("avatar_username", Fields = new[] { "username" }, Unique = true)]
     [Index("avatar_email", Fields = new[] { "email" }, Unique = true)]
+    [Index("avatar_owner_tenant", Fields = new[] { "owner_tenant_id" })]
+    [Index("avatar_tenant_extuser", Fields = new[] { "owner_tenant_id", "external_user_id" }, Unique = true)]
     public partial class Avatar : ISurrealRecord
     {
         public const string SchemaNameConst = "avatar";
@@ -71,14 +74,17 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [JsonPropertyName("is_verified")]
         public bool IsVerified { get; set; }
 
-        [Column(Order = 12, Type = "int")]
-        [Default("0")]
-        [JsonPropertyName("karma")]
-        public long Karma { get; set; }
+        [Column(Order = 12, Type = "option<record<avatar>>")]
+        [References(typeof(Avatar), Optional = true)]
+        [JsonPropertyName("owner_tenant_id")]
+        public string? OwnerTenantId { get; set; }
 
-        [Column(Order = 13, Type = "int")]
-        [Default("1")]
-        [JsonPropertyName("level")]
-        public long Level { get; set; }
+        [Column(Order = 13, Type = "option<string>")]
+        [JsonPropertyName("external_user_id")]
+        public string? ExternalUserId { get; set; }
+
+        [Column(Order = 14, Type = "option<string>")]
+        [JsonPropertyName("external_ref")]
+        public string? ExternalRef { get; set; }
     }
 }

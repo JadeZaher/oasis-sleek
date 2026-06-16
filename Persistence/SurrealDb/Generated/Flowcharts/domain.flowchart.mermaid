@@ -6,7 +6,7 @@ graph LR
     %% Slices in this diagram:
     %%   bridge: bridge_tx, consumed_vaa_ledger, idempotency_key_store, operation_log, saga_steps
     %%   dapp_composition: dapp_series, dapp_series_quest
-    %%   identity: api_key, avatar, holon, star_odk
+    %%   identity: api_key, avatar, holon, kyc_document, kyc_submission, star_odk
     %%   quest: executes, forked_from, quest, quest_dependency, quest_edge, quest_node, quest_node_execution, quest_run
     %%   quest_templates: quest_node_template, quest_template
     %%   wallet_nft: nft_ownership, swap_state, wallet
@@ -16,6 +16,9 @@ graph LR
     %%   bridge_tx.status: Initiated, Locked, AwaitingVAA, VAAReady, Redeeming, Completed, Failed, Refunded, Reversing  (BridgeTx.StatusKind)
     %%   dapp_series.status: Draft, Building, Ready, Deployed, Archived  (DappSeries.StatusKind)
     %%   idempotency_key_store.state: InProgress, Completed, Failed  (IdempotencyKeyStore.StateKind)
+    %%   kyc_document.type: GOVERNMENT_ID, PASSPORT, DRIVERS_LICENSE, SELFIE, PROOF_OF_ADDRESS  (KycDocument.KycDocumentType)
+    %%   kyc_submission.provider: MANUAL, VERIFF  (KycSubmission.KycProvider)
+    %%   kyc_submission.status: PENDING, IN_REVIEW, APPROVED, REJECTED, EXPIRED  (KycSubmission.KycStatus)
     %%   operation_log.status: Pending, Unknown, Failed, Completed, AwaitingSignature, Minted, Burned, Exchanged, Swapped, Transferred, Deployed, Called  (OperationLog.StatusKind)
     %%   quest_dependency.dependency_type: Required, Optional  (QuestDependency.QuestDependencyTypeKind)
     %%   quest_edge.edge_type: Control, Conditional  (QuestEdge.QuestEdgeTypeKind)
@@ -44,6 +47,8 @@ graph LR
         api_key["api_key: Node"]:::nodeClass
         avatar["avatar: Node"]:::nodeClass
         holon["holon: Node"]:::nodeClass
+        kyc_document["kyc_document: Node"]:::nodeClass
+        kyc_submission["kyc_submission: Node"]:::nodeClass
         star_odk["star_odk: Node"]:::nodeClass
     end
 
@@ -71,6 +76,7 @@ graph LR
 
     %% Edges (slice-local + cross-slice)
     api_key -- "avatar_id [N:1]" --> avatar
+    avatar -- "owner_tenant_id [N:1]" --> avatar
     bridge_tx -- "avatar_id [N:1]" --> avatar
     consumed_vaa_ledger -- "bridge_transaction_id [N:0..1]" --> bridge_tx
     dapp_series -- "avatar_id [N:1]" --> avatar
@@ -79,6 +85,8 @@ graph LR
     dapp_series_quest -- "quest_id [N:1]" --> quest
     holon -- "avatar_id [N:0..1]" --> avatar
     holon -- "parent_holon_id [N:0..1]" --> holon
+    kyc_document -- "submission_id [N:0..1]" --> kyc_submission
+    kyc_submission -- "avatar_id [N:0..1]" --> avatar
     nft_ownership -- "avatar_id [N:1]" --> avatar
     operation_log -- "avatar_id [N:0..1]" --> avatar
     operation_log -- "source_holon_id [N:0..1]" --> holon

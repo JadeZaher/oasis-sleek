@@ -3,6 +3,7 @@
 -- Aggregate: Avatar (Models/Avatar.cs)
 -- Guardrail: G6 SCHEMAFULL
 -- Note: Wallets navigation list is NOT persisted here — owned by IWalletStore via wallet.avatar_id FK.
+-- Note: Tenant ownership (tenant-onboarding): owner_tenant_id is a self-FK to the tenant principal's avatar; external_user_id is the tenant's own user id for this child. The avatar_tenant_extuser composite UNIQUE is only meaningful for rows where BOTH owner_tenant_id AND external_user_id are non-NONE — same NULL-equals-NULL collision caveat the ApiKey POCO documents (ApiKey.cs:17). A tenant-managed row ALWAYS sets both (TenantManager.ProvisionChildAsync), so dedup-per-tenant is correct by construction; legacy/self-registered avatars leave both NONE and never collide.
 -- ============================================================
 
 DEFINE TABLE IF NOT EXISTS avatar SCHEMAFULL;
@@ -23,10 +24,9 @@ DEFINE FIELD IF NOT EXISTS is_active ON TABLE avatar TYPE bool
     DEFAULT true;
 DEFINE FIELD IF NOT EXISTS is_verified ON TABLE avatar TYPE bool
     DEFAULT false;
-DEFINE FIELD IF NOT EXISTS karma ON TABLE avatar TYPE int
-    DEFAULT 0;
-DEFINE FIELD IF NOT EXISTS level ON TABLE avatar TYPE int
-    DEFAULT 1;
+DEFINE FIELD IF NOT EXISTS owner_tenant_id ON TABLE avatar TYPE option<record<avatar>>;
+DEFINE FIELD IF NOT EXISTS external_user_id ON TABLE avatar TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS external_ref ON TABLE avatar TYPE option<string>;
 
 -- ── Indexes ──────────────────────────────────────────────────
 
@@ -38,4 +38,13 @@ DEFINE INDEX IF NOT EXISTS avatar_username
 DEFINE INDEX IF NOT EXISTS avatar_email
     ON TABLE avatar
     FIELDS email
+    UNIQUE;
+
+DEFINE INDEX IF NOT EXISTS avatar_owner_tenant
+    ON TABLE avatar
+    FIELDS owner_tenant_id;
+
+DEFINE INDEX IF NOT EXISTS avatar_tenant_extuser
+    ON TABLE avatar
+    FIELDS owner_tenant_id, external_user_id
     UNIQUE;

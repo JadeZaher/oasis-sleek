@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Oasis.SurrealDb.Client;
 using Oasis.SurrealDb.Client.Query;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
@@ -131,6 +132,53 @@ public sealed class SurrealAvatarStore : IAvatarStore
         }
     }
 
+    public async Task<OASISResult<IEnumerable<IAvatar>>> ListByOwnerTenantAsync(Guid tenantId, CancellationToken ct = default)
+    {
+        try
+        {
+            // Owner-scoped: only rows whose owner_tenant_id links to this tenant.
+            // owner_tenant_id is a record<avatar> link, matched the same way
+            // SurrealApiKeyStore.ListByAvatarAsync matches avatar_id.
+            var q = SurrealQuery
+                .Of("SELECT * FROM avatar WHERE owner_tenant_id = $_tenant ORDER BY created_date DESC")
+                .WithParam("_tenant", SurrealLink.ToLink(AvatarTable, ToSurrealId(tenantId)));
+            var rows = await _executor.QueryAsync<SurrealAvatar>(q, ct);
+            return new OASISResult<IEnumerable<IAvatar>>
+            {
+                Result  = rows.Select(FromPoco).ToList(),
+                Message = "Success"
+            };
+        }
+        catch (Exception ex)
+        {
+            return new OASISResult<IEnumerable<IAvatar>>().CaptureException(ex, $"SurrealAvatarStore.ListByOwnerTenantAsync failed: {ex.Message}");
+        }
+    }
+
+    public async Task<OASISResult<IAvatar>> GetByTenantAndExternalUserAsync(Guid tenantId, string externalUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            // Owner-scoped resolve. A miss returns Result == null with NO error so
+            // the manager treats it as "create new" (idempotency), mirroring
+            // ISTARStore.GetByNameAndAvatarAsync.
+            var q = SurrealQuery
+                .Of("SELECT * FROM avatar WHERE owner_tenant_id = $_tenant AND external_user_id = $_ext LIMIT 1")
+                .WithParam("_tenant", SurrealLink.ToLink(AvatarTable, ToSurrealId(tenantId)))
+                .WithParam("_ext", externalUserId);
+            var row = await _executor.QuerySingleAsync<SurrealAvatar>(q, ct);
+            return new OASISResult<IAvatar>
+            {
+                Result  = row == null ? null : FromPoco(row),
+                Message = "Success"
+            };
+        }
+        catch (Exception ex)
+        {
+            return new OASISResult<IAvatar>().CaptureException(ex, $"SurrealAvatarStore.GetByTenantAndExternalUserAsync failed: {ex.Message}");
+        }
+    }
+
     // ── Mapping ───────────────────────────────────────────────────────────────
 
     private static string ToSurrealId(Guid id)
@@ -156,8 +204,13 @@ public sealed class SurrealAvatarStore : IAvatarStore
                                : null,
         IsActive         = a.IsActive,
         IsVerified       = a.IsVerified,
-        Karma            = a.Karma,
-        Level            = a.Level
+        // owner_tenant_id is a record<avatar> link; encode the same way the
+        // ApiKey store encodes avatar_id. null tenant => null link column.
+        OwnerTenantId    = a.OwnerTenantId.HasValue
+                               ? SurrealLink.ToLink(AvatarTable, ToSurrealId(a.OwnerTenantId.Value))
+                               : null,
+        ExternalUserId   = a.ExternalUserId,
+        ExternalRef      = a.ExternalRef
     };
 
     private static Avatar FromPoco(SurrealAvatar p) => new()
@@ -173,8 +226,11 @@ public sealed class SurrealAvatarStore : IAvatarStore
         LastBeamedInDate = p.LastBeamedInDate?.UtcDateTime,
         IsActive         = p.IsActive,
         IsVerified       = p.IsVerified,
-        Karma            = p.Karma,
-        Level            = p.Level
+        OwnerTenantId    = string.IsNullOrEmpty(p.OwnerTenantId)
+                               ? null
+                               : Guid.ParseExact(SurrealLink.FromLink(p.OwnerTenantId)!, "N"),
+        ExternalUserId   = p.ExternalUserId,
+        ExternalRef      = p.ExternalRef
     };
 
     // ── Inline POCO ───────────────────────────────────────────────────────────
@@ -216,10 +272,13 @@ public sealed class SurrealAvatarStore : IAvatarStore
         [JsonPropertyName("is_verified")]
         public bool IsVerified { get; set; }
 
-        [JsonPropertyName("karma")]
-        public int Karma { get; set; }
+        [JsonPropertyName("owner_tenant_id")]
+        public string? OwnerTenantId { get; set; }
 
-        [JsonPropertyName("level")]
-        public int Level { get; set; } = 1;
+        [JsonPropertyName("external_user_id")]
+        public string? ExternalUserId { get; set; }
+
+        [JsonPropertyName("external_ref")]
+        public string? ExternalRef { get; set; }
     }
 }

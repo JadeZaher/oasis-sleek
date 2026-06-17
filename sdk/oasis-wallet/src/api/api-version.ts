@@ -27,7 +27,8 @@ export type ApiController =
   | "blockchainoperation"
   | "starodk"
   | "quest"
-  | "apikey";
+  | "apikey"
+  | "tenant";
 
 /**
  * Resolves the API path for a given controller and sub-path.
@@ -113,4 +114,17 @@ export const API_PATHS = {
   // Swap (SwapController)
   SWAP_QUOTE: "/api/swap/quote",
   SWAP_EXECUTE: "/api/swap/execute",
+
+  // Durable workflow engine (durable-workflow-engine) — run-driver surface on
+  // QuestController. `start-workflow` starts a durable run on an existing quest;
+  // `advance` is the `.step(nodeId)` primitive; `signal` un-parks a gate.
+  QUEST_START_WORKFLOW: (questId: string) => `/api/quest/${questId}/start-workflow`,
+  QUEST_RUN_ADVANCE: (runId: string) => `/api/quest/runs/${runId}/advance`,
+  QUEST_RUN_SIGNAL: (runId: string) => `/api/quest/runs/${runId}/signal`,
+  QUEST_RUN_STATUS: (runId: string) => `/api/quest/runs/${runId}`,
+  QUEST_RUN_EXECUTION_STATE: (runId: string) => `/api/quest/runs/${runId}/execution-state`,
+
+  // Tenant onboarding (tenant-onboarding) — child credential issuance the
+  // `forActor` actor abstraction threads (tenant acts FOR a child avatar).
+  TENANT_CHILD_CREDENTIAL: (avatarId: string) => `/api/tenant/avatars/${avatarId}/credential`,
 } as const;

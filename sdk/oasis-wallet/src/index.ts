@@ -80,3 +80,36 @@ export { OasisAuthProvider } from "./client/index.js";
 export type { AuthProfile } from "./client/index.js";
 export { PortfolioAggregator } from "./client/index.js";
 export type { ChainBalance, PortfolioSummary } from "./client/index.js";
+
+// Workflow SDK (workflow-sdk) — template authoring + the fluent quest() run driver
+export {
+  WorkflowClient,
+  WorkflowRunHandle,
+  createQuestFactory,
+  nodeConfig,
+  isAwaiting,
+  isTerminal,
+  AWAITING_STATUSES,
+  TERMINAL_STATUSES,
+} from "./workflow/index.js";
+export type {
+  QuestFactory,
+  SuspendCallback,
+  WorkflowRunStatus,
+  WorkflowRunResult,
+  WorkflowNodeExecution,
+  WorkflowExecutionState,
+  AdvanceParams,
+  SignalParams,
+  StartRunParams,
+  AdvanceOptions,
+  ChildCredentialResult,
+  GateCheckConfig,
+  EmitConfig,
+  SwapConfig,
+  GrantConfig,
+  TransferConfig,
+  RefundConfig,
+  NftMintRequestParams,
+  NftTransferRequestParams,
+} from "./workflow/index.js";

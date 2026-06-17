@@ -7,6 +7,7 @@ import { HolonQueryBuilder } from "./holon-query.js";
 import { OasisAuthProvider } from "./auth-provider.js";
 import type { AuthProviderConfig } from "./auth-provider.js";
 import { PortfolioAggregator } from "./portfolio.js";
+import { WorkflowClient } from "../workflow/index.js";
 
 export interface OasisClientConfig {
   /** OASIS API base URL */
@@ -100,6 +101,13 @@ export class OasisClient {
   /** Cross-chain portfolio aggregator. */
   readonly portfolio: PortfolioAggregator;
 
+  /**
+   * Workflow surface — template authoring + run reads, plus the fluent
+   * `oasis.workflow.quest(...)` run driver. The headline ergonomics of the
+   * workflow-engine initiative.
+   */
+  readonly workflow: WorkflowClient;
+
   private _network: ChainNetwork;
   private readonly _chainsForNetwork?: (
     network: ChainNetwork
@@ -144,6 +152,7 @@ export class OasisClient {
     this.auth = new OasisAuthProvider(this.api, this.session);
     this.holons = new HolonQueryBuilder(this.api);
     this.portfolio = new PortfolioAggregator(this.api, this.wallet);
+    this.workflow = new WorkflowClient(this.api);
   }
 
   /** Create an auth provider with custom config (e.g., for a specific app). */

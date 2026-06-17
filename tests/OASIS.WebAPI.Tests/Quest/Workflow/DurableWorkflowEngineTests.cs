@@ -435,4 +435,37 @@ public sealed class DurableWorkflowEngineTests
         node.CountFor(cont.Id).Should().Be(1, "the single successor ran after the gate resumed");
         h.RunStatus(runId).Should().Be(QuestRunStatus.Succeeded);
     }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // CASE 6 — Compensation payload type-pun is field-bound (regression guard)
+    // ════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void ForwardPayloadJson_DeserializesIntoCompensationPayload_FieldsPreserved()
+    {
+        // The saga's CompensateStepAsync flows the FORWARD step's QuestStepPayload
+        // JSON verbatim into the compensation step, where SagaStep<QuestCompensatePayload>
+        // deserializes it by matching property names. This guards that the shared
+        // identity triple (RunId/QuestId/AvatarId) survives that round-trip: a
+        // rename of any shared field would make these assertions fail loudly
+        // instead of silently yielding Guid.Empty (a refund that no-ops).
+        var forward = new QuestStepPayload(
+            RunId: Guid.NewGuid(),
+            QuestId: Guid.NewGuid(),
+            AvatarId: Guid.NewGuid(),
+            NodeId: Guid.NewGuid(),
+            SignalPayload: "phase-met");
+
+        var forwardJson = SagaStep<QuestStepPayload>.Serialize(forward);
+        var comp = System.Text.Json.JsonSerializer.Deserialize<QuestCompensatePayload>(forwardJson);
+
+        comp.Should().NotBeNull();
+        comp!.RunId.Should().Be(forward.RunId, "RunId must survive the type-pun round-trip");
+        comp.QuestId.Should().Be(forward.QuestId, "QuestId must survive the type-pun round-trip");
+        comp.AvatarId.Should().Be(forward.AvatarId, "AvatarId must survive the type-pun round-trip");
+
+        // The ToCompensation() projection is the compile-time witness of the same
+        // correspondence — it must agree with the JSON round-trip.
+        forward.ToCompensation().Should().Be(comp);
+    }
 }

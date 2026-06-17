@@ -87,17 +87,17 @@ public sealed class QuestNodeStepHandler : IStepHandler<QuestStepPayload>
         {
             if (advance is WorkflowAdvance.Timer)
             {
-                // A pure WAIT node parks with an EMPTY gate id + a forward timer
-                // so GetDueStepIdsAsync's fire-timers clause (which matches only
-                // empty-gate parks) auto-resumes it with no external signal. A
-                // non-empty gate would strand the wait node forever (only a
-                // signal could release it) — gate_id is meaningless for a timer.
+                // A pure WAIT node parks as a TIMER park (resumeAt set, no gate):
+                // the store records gate_id NONE + next_run_at, and the
+                // fire-timers scan auto-resumes it with no external signal. The
+                // resumeAt presence IS the timer/signal discriminator — gate id
+                // is meaningless for a timer, so none is supplied.
                 var resumeAt = DateTime.UtcNow.AddSeconds(Math.Max(1, marker?.ResumeInSeconds ?? 0));
                 await ProjectRunStatusAsync(p.RunId, QuestRunStatus.AwaitingTimer, ct);
                 return StepResult.Parked(gateId: string.Empty, resumeAt: resumeAt);
             }
 
-            // A GATE node parks on its signal id with no timer: only
+            // A GATE node parks as a SIGNAL park (gate id, no timer): only
             // signal(runId, gateId, …) un-parks it.
             var gateId = marker?.GateId ?? node.Id.ToString();
             await ProjectRunStatusAsync(p.RunId, QuestRunStatus.AwaitingSignal, ct);
@@ -158,7 +158,17 @@ public sealed class QuestNodeStepHandler : IStepHandler<QuestStepPayload>
             execution.Output = result.Output;
         }
         execution.EndedAt = DateTime.UtcNow;
-        await _executionStore.UpdateAsync(execution, expectedState: QuestNodeState.Running, ct);
+        var recorded = await _executionStore.UpdateAsync(
+            execution, expectedState: QuestNodeState.Running, ct);
+        if (recorded.IsError)
+        {
+            // The guarded write lost: a concurrent actor (a lease-reclaimed
+            // sibling dispatch, a fork-cancel) already moved this execution off
+            // Running. Our in-memory `result` is stale — do NOT advance off it.
+            // Re-drive from the durably-recorded outcome, which is the single
+            // source of truth (idempotent replay).
+            return await ReplayAdvancementAsync(quest, node, p, advance, ct);
+        }
 
         // A failed node fails the saga step: the saga's retry/compensation
         // machinery takes over (refund-on-failure routes through the declared
@@ -197,30 +207,34 @@ public sealed class QuestNodeStepHandler : IStepHandler<QuestStepPayload>
             return StepResult.Ok(output);
         }
 
-        var successors = NextControlNodeIds(quest, node.Id);
-
-        if (successors.Count == 0)
+        var hop = QuestWorkflowEdges.ResolveSingleSuccessor(quest, node.Id);
+        switch (hop.Kind)
         {
-            // Terminal node ⇒ the run is complete (no Pending saga rows remain).
-            await ProjectRunStatusAsync(p.RunId, QuestRunStatus.Succeeded, ct);
-            return StepResult.Ok(output);
+            case SuccessorKind.Terminal:
+                // No Control successors ⇒ the run is complete (no Pending saga
+                // rows remain).
+                await ProjectRunStatusAsync(p.RunId, QuestRunStatus.Succeeded, ct);
+                return StepResult.Ok(output);
+
+            case SuccessorKind.FanOut:
+                return StepResult.Fail(
+                    $"Node {node.Id} has {hop.Count} Control successors — " +
+                    "fan-out is not supported (fork-merge is out of scope).");
+
+            default: // Single
+                await EnqueueNodeAsync(p, hop.NodeId!.Value, signalPayload: null, ct);
+                await ProjectRunStatusAsync(p.RunId, QuestRunStatus.Running, ct);
+                return StepResult.Ok(output);
         }
-
-        if (successors.Count > 1)
-            return StepResult.Fail(
-                $"Node {node.Id} has {successors.Count} Control successors — " +
-                "fan-out is not supported (fork-merge is out of scope).");
-
-        await EnqueueNodeAsync(p, successors[0], signalPayload: null, ct);
-        await ProjectRunStatusAsync(p.RunId, QuestRunStatus.Running, ct);
-        return StepResult.Ok(output);
     }
 
     /// <summary>
     /// Idempotent-replay advancement: the node already executed on a prior
-    /// attempt of this saga step. Re-derive its recorded outcome and re-enqueue
-    /// the downstream step if it is not already present, so a crash between
-    /// "node executed" and "next step enqueued" is resumable, not lost.
+    /// attempt of this saga step. Re-derive its recorded outcome and re-drive
+    /// advancement — the downstream enqueue is guarded by
+    /// <see cref="EnqueueNodeAsync"/>'s <c>StepExistsAsync</c> check, so a crash
+    /// between "node executed" and "next step enqueued" is resumable WITHOUT
+    /// creating a duplicate successor.
     /// </summary>
     private async Task<StepResult> ReplayAdvancementAsync(
         Models.Quest.Quest quest, QuestNode node, QuestStepPayload p,
@@ -252,29 +266,37 @@ public sealed class QuestNodeStepHandler : IStepHandler<QuestStepPayload>
         return await AdvanceAsync(quest, node, p, advance, existing.Result?.Output, ct);
     }
 
-    /// <summary>Enqueue a downstream quest node as a fresh saga step (a fresh
-    /// payload pointing at the next node — never the current payload forwarded
-    /// unchanged).</summary>
+    /// <summary>
+    /// Enqueue a downstream quest node as a fresh saga step (a fresh payload
+    /// pointing at the next node — never the current payload forwarded unchanged).
+    /// IDEMPOTENT: a replayed advance (the producing step re-dispatched after a
+    /// crash, then routed through <see cref="ReplayAdvancementAsync"/>) must not
+    /// CREATE a second successor row — <c>step_idempotency_key</c> is deliberately
+    /// non-unique, so a duplicate enqueue would amplify the DAG with phantom
+    /// steps. We check the saga instance for an existing step of this node name
+    /// first; the guard is the run-scoped one-step-per-node-name invariant (a
+    /// quest node maps to exactly one saga step per run).
+    /// </summary>
     private async Task EnqueueNodeAsync(
         QuestStepPayload current, Guid nextNodeId, string? signalPayload, CancellationToken ct)
     {
-        var nextPayload = current with { NodeId = nextNodeId, SignalPayload = signalPayload };
+        var correlationKey = current.RunId.ToString();
         var nextName = nextNodeId.ToString();
-        var idemKey = SagaKeys.StepIdempotencyKey(current.RunId.ToString(), nextName);
+
+        if (await _sagaStore.StepExistsAsync(correlationKey, nextName, ct))
+        {
+            _logger.LogInformation(
+                "Quest workflow: successor node {NodeId} (run {RunId}) already enqueued — " +
+                "skipping duplicate (idempotent replay).", nextNodeId, current.RunId);
+            return;
+        }
+
+        var nextPayload = current with { NodeId = nextNodeId, SignalPayload = signalPayload };
+        var idemKey = SagaKeys.StepIdempotencyKey(correlationKey, nextName);
         await _sagaStore.EnqueueNextStepAsync(
-            QuestWorkflowSaga.Name, nextName, current.RunId.ToString(),
+            QuestWorkflowSaga.Name, nextName, correlationKey,
             idemKey, SagaStep<QuestStepPayload>.Serialize(nextPayload), ct);
     }
-
-    /// <summary>Outgoing Control-edge target node ids (the DAG hop). Conditional
-    /// edges are not forward hops here — they gate failed-predecessor skipping,
-    /// the same role they play in the in-process executor.</summary>
-    private static List<Guid> NextControlNodeIds(Models.Quest.Quest quest, Guid nodeId) =>
-        quest.Edges
-            .Where(e => e.SourceNodeId == nodeId && e.EdgeType == QuestEdgeType.Control)
-            .Select(e => e.TargetNodeId)
-            .Distinct()
-            .ToList();
 
     private async Task<IReadOnlyDictionary<Guid, QuestNodeExecution>> LoadUpstreamAsync(
         Models.Quest.Quest quest, Guid nodeId, Guid runId, CancellationToken ct)
@@ -310,19 +332,20 @@ public sealed class QuestNodeStepHandler : IStepHandler<QuestStepPayload>
             return;
         var run = runResult.Result;
 
-        if (IsTerminal(run.Status))
+        if (run.Status.IsTerminal())
             return; // never regress a terminal run
 
         if (run.Status == status)
             return; // idempotent no-op
 
+        var expected = run.Status;
         run.Status = status;
-        if (IsTerminal(status))
+        if (status.IsTerminal())
             run.EndedAt = DateTime.UtcNow;
-        await _runStore.UpdateAsync(run, ct);
+        // Conditional on the status we just read: a concurrent projector that
+        // moved the run between our read and write loses (zero-row no-op), so the
+        // read-model can't be clobbered or a terminal verdict regressed. A lost
+        // write is benign — the winning projector already advanced the run.
+        await _runStore.UpdateAsync(run, expectedStatus: expected, ct);
     }
-
-    private static bool IsTerminal(QuestRunStatus s) =>
-        s is QuestRunStatus.Succeeded or QuestRunStatus.Failed
-          or QuestRunStatus.Forked or QuestRunStatus.Cancelled;
 }

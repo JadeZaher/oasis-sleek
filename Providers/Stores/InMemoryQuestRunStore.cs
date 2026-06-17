@@ -42,9 +42,10 @@ public sealed class InMemoryQuestRunStore : IQuestRunStore
         });
     }
 
-    public Task<OASISResult<QuestRun>> UpdateAsync(QuestRun run, CancellationToken ct = default)
+    public Task<OASISResult<QuestRun>> UpdateAsync(
+        QuestRun run, QuestRunStatus? expectedStatus = null, CancellationToken ct = default)
     {
-        if (!_runs.ContainsKey(run.Id))
+        if (!_runs.TryGetValue(run.Id, out var current))
         {
             return Task.FromResult(new OASISResult<QuestRun>
             {
@@ -53,6 +54,25 @@ public sealed class InMemoryQuestRunStore : IQuestRunStore
                 Result = null
             });
         }
+
+        if (expectedStatus is { } expected)
+        {
+            // G2 single-winner conditional update: apply only if the stored
+            // status still matches. Compare-and-swap on the dictionary entry so
+            // two concurrent projectors don't clobber each other.
+            if (current.Status != expected ||
+                !_runs.TryUpdate(run.Id, run, current))
+            {
+                return Task.FromResult(new OASISResult<QuestRun>
+                {
+                    IsError = true,
+                    Message = $"QuestRun {run.Id} conditional update lost: status is no longer {expected}.",
+                    Result = null
+                });
+            }
+            return Task.FromResult(new OASISResult<QuestRun> { Result = run, Message = "Updated." });
+        }
+
         _runs[run.Id] = run;
         return Task.FromResult(new OASISResult<QuestRun> { Result = run, Message = "Updated." });
     }

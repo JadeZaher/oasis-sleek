@@ -1287,32 +1287,32 @@ public class QuestManager : IQuestManager
             return new OASISResult<QuestRun> { IsError = true, Message = questResult.Message };
         var quest = questResult.Result;
 
-        var successors = quest.Edges
-            .Where(e => e.SourceNodeId == fromNodeId && e.EdgeType == QuestEdgeType.Control)
-            .Select(e => e.TargetNodeId)
-            .Distinct()
-            .ToList();
-
-        if (successors.Count == 0)
+        // Resolve the next hop through the SAME authority the engine's
+        // auto-advance uses, so the manual and auto paths can never route the
+        // same graph to different successors (or disagree on the fan-out guard).
+        var hop = QuestWorkflowEdges.ResolveSingleSuccessor(quest, fromNodeId);
+        switch (hop.Kind)
         {
-            // Manual-advance from a terminal node ⇒ the run completes.
-            run.Status = QuestRunStatus.Succeeded;
-            run.EndedAt = DateTime.UtcNow;
-            var done = await _runStore.UpdateAsync(run);
-            return new OASISResult<QuestRun> { Result = done.Result ?? run, Message = "Workflow run completed (advanced past terminal node)." };
+            case SuccessorKind.Terminal:
+                // Manual-advance from a terminal node ⇒ the run completes.
+                run.Status = QuestRunStatus.Succeeded;
+                run.EndedAt = DateTime.UtcNow;
+                var done = await _runStore.UpdateAsync(run);
+                return new OASISResult<QuestRun> { Result = done.Result ?? run, Message = "Workflow run completed (advanced past terminal node)." };
+
+            case SuccessorKind.FanOut:
+                return new OASISResult<QuestRun>
+                {
+                    IsError = true,
+                    Message = $"Cannot advance: node {fromNodeId} has {hop.Count} Control successors (fan-out is out of scope)."
+                };
+
+            default: // Single
+                await EnqueueWorkflowNodeAsync(run.Id, run.QuestId, run.AvatarId, hop.NodeId!.Value, signalPayload: null);
+                run.Status = QuestRunStatus.Running;
+                var updated = await _runStore.UpdateAsync(run);
+                return new OASISResult<QuestRun> { Result = updated.Result ?? run, Message = "Workflow run advanced." };
         }
-
-        if (successors.Count > 1)
-            return new OASISResult<QuestRun>
-            {
-                IsError = true,
-                Message = $"Cannot advance: node {fromNodeId} has {successors.Count} Control successors (fan-out is out of scope)."
-            };
-
-        await EnqueueWorkflowNodeAsync(run.Id, run.QuestId, run.AvatarId, successors[0], signalPayload: null);
-        run.Status = QuestRunStatus.Running;
-        var updated = await _runStore.UpdateAsync(run);
-        return new OASISResult<QuestRun> { Result = updated.Result ?? run, Message = "Workflow run advanced." };
     }
 
     /// <summary>

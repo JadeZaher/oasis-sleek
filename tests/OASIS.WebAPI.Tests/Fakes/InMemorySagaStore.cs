@@ -24,11 +24,6 @@ public sealed class InMemorySagaStore : ISagaStore
 {
     private readonly ConcurrentDictionary<Guid, SagaStepRecord> _steps = new();
 
-    // Mirror SurrealSagaStore.ParkForeverAt: a signal-only park sets next_run_at
-    // far enough forward that the due scan never claims it, yet finite.
-    private static readonly DateTime ParkForeverAt =
-        DateTime.SpecifyKind(DateTime.MaxValue.AddDays(-1), DateTimeKind.Utc);
-
     // ── EnqueueAsync / EnqueueNextStepAsync ───────────────────────────────────
 
     public Task<SagaStepRecord> EnqueueAsync(
@@ -270,18 +265,27 @@ public sealed class InMemorySagaStore : ISagaStore
         Guid id, string gateId, DateTime? resumeAt, CancellationToken ct)
     {
         var nowUtc = DateTime.UtcNow;
-        var nextRunUtc = resumeAt.HasValue
-            ? DateTime.SpecifyKind(resumeAt.Value, DateTimeKind.Utc)
-            : ParkForeverAt;
 
+        // Mirror SurrealSagaStore: park KIND is the single discriminator (no
+        // sentinel). TIMER park (resumeAt set) ⇒ gate_id null + NextRunAt set;
+        // SIGNAL park (resumeAt null) ⇒ gate_id set + NextRunAt LEFT UNCHANGED.
         var applied = MutateIf(id,
             r => r.Status == StepStatus.InProgress,
             r =>
             {
                 r.Status = StepStatus.Parked;
-                r.GateId = gateId;
                 r.ClaimedAt = null;
-                r.NextRunAt = nextRunUtc;
+                if (resumeAt.HasValue)
+                {
+                    r.GateId = null;
+                    r.NextRunAt = DateTime.SpecifyKind(resumeAt.Value, DateTimeKind.Utc);
+                }
+                else
+                {
+                    r.GateId = gateId;
+                    // NextRunAt untouched — a signal-only park is never timer-due
+                    // and never claimed by the due scan (status is Parked).
+                }
                 r.UpdatedAt = nowUtc;
             }) is not null;
         return Task.FromResult(applied);
@@ -339,6 +343,12 @@ public sealed class InMemorySagaStore : ISagaStore
             .FirstOrDefault();
         return Task.FromResult<SagaStepRecord?>(parked);
     }
+
+    // ── StepExistsAsync — idempotent-enqueue guard ────────────────────────────
+
+    public Task<bool> StepExistsAsync(string correlationKey, string stepName, CancellationToken ct)
+        => Task.FromResult(_steps.Values.Any(r =>
+            r.CorrelationKey == correlationKey && r.StepName == stepName));
 
     // ── GetAsync ──────────────────────────────────────────────────────────────
 

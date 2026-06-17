@@ -87,11 +87,19 @@ public sealed class WorkflowNodeConfig
 
         var advance = marker.Advance?.Trim().ToLowerInvariant() switch
         {
-            "manual" => WorkflowAdvance.Manual,
-            "gated"  => WorkflowAdvance.Gated,
-            "timer"  => WorkflowAdvance.Timer,
-            _         => WorkflowAdvance.Auto
+            AdvanceManual => WorkflowAdvance.Manual,
+            AdvanceGated  => WorkflowAdvance.Gated,
+            AdvanceTimer  => WorkflowAdvance.Timer,
+            _             => WorkflowAdvance.Auto
         };
         return (advance, marker);
     }
+
+    // The node Config._workflow.advance wire vocabulary — named so a new mode is
+    // added here (and greppable from tests/docs) rather than as a bare inline
+    // literal. "auto" is the implicit default (absent marker / unknown value).
+    public const string AdvanceAuto   = "auto";
+    public const string AdvanceManual = "manual";
+    public const string AdvanceGated  = "gated";
+    public const string AdvanceTimer  = "timer";
 }

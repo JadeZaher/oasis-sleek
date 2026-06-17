@@ -127,7 +127,8 @@ public sealed class SurrealQuestRunStore : IQuestRunStore
 
     // ── Update ────────────────────────────────────────────────────────────────
 
-    public async Task<OASISResult<QuestRun>> UpdateAsync(QuestRun run, CancellationToken ct = default)
+    public async Task<OASISResult<QuestRun>> UpdateAsync(
+        QuestRun run, QuestRunStatus? expectedStatus = null, CancellationToken ct = default)
     {
         if (run is null)
             return Err<QuestRun>("UpdateAsync: run must not be null.");
@@ -151,6 +152,26 @@ public sealed class SurrealQuestRunStore : IQuestRunStore
                 return Missing<QuestRun>($"QuestRun {run.Id} not found.");
 
             var poco = FromDomain(run);
+
+            if (expectedStatus is { } expected)
+            {
+                // G2 single-winner conditional UPDATE: apply only if the
+                // persisted status is still `expected`. A concurrent projector
+                // that already moved the run loses (zero rows affected).
+                var condQ = SurrealQuery
+                    .Of("UPDATE type::record($_t, $_id) CONTENT $_body WHERE status = $_expected RETURN AFTER")
+                    .WithParam("_t",        RunTable)
+                    .WithParam("_id",       surrealId)
+                    .WithParam("_body",     poco)
+                    .WithParam("_expected", expected.ToString());
+
+                var condResp = await _executor.ExecuteAsync(condQ, ct);
+                if (condResp.Count == 0 || !condResp[0].IsOk || condResp[0].AffectedCount() != 1)
+                    return Err<QuestRun>(
+                        $"QuestRun {run.Id} conditional update lost: status is no longer {expected}.");
+                return Ok(run, "Updated.");
+            }
+
             var q = SurrealQuery
                 .Of("UPSERT type::record($_t, $_id) CONTENT $_body RETURN AFTER")
                 .WithParam("_t",    RunTable)

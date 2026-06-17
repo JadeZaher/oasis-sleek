@@ -150,6 +150,17 @@ public interface ISagaStore
     Task<SagaStepRecord?> GetParkedStepAsync(
         string correlationKey, string gateId, CancellationToken ct);
 
+    /// <summary>
+    /// Whether a step named <paramref name="stepName"/> already exists for the
+    /// saga instance <paramref name="correlationKey"/> (any status). Used to make
+    /// a self-advancing consumer's downstream enqueue IDEMPOTENT: a replayed
+    /// advance (the producing step re-dispatched after a crash) must not CREATE a
+    /// duplicate successor row, since <c>step_idempotency_key</c> is deliberately
+    /// non-unique. The producing consumer checks this before
+    /// <see cref="EnqueueNextStepAsync"/>.
+    /// </summary>
+    Task<bool> StepExistsAsync(string correlationKey, string stepName, CancellationToken ct);
+
     /// <summary>Fetch a step by id (diagnostics / tests). No tracking.</summary>
     Task<SagaStepRecord?> GetAsync(Guid id, CancellationToken ct);
 }

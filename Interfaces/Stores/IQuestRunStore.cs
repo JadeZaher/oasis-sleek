@@ -22,8 +22,19 @@ public interface IQuestRunStore
     /// <summary>Loads a single run by id; <c>IsError</c> when not found.</summary>
     Task<OASISResult<QuestRun>> GetByIdAsync(Guid id, CancellationToken ct = default);
 
-    /// <summary>Updates an existing run (status transition, ended_at, fork fields, etc.).</summary>
-    Task<OASISResult<QuestRun>> UpdateAsync(QuestRun run, CancellationToken ct = default);
+    /// <summary>
+    /// Updates an existing run (status transition, ended_at, fork fields, etc.).
+    /// When <paramref name="expectedStatus"/> is supplied, the write is a G2
+    /// single-winner conditional UPDATE — it applies ONLY if the persisted row
+    /// is still in that status, mirroring <see cref="IQuestNodeExecutionStore"/>'s
+    /// <c>expectedState</c> guard. A concurrent projector that already moved the
+    /// run loses (zero-row write ⇒ <c>IsError</c>), so two racing status
+    /// projections never clobber each other and a terminal verdict is never
+    /// regressed by a stale read-modify-write. <c>null</c> ⇒ unconditional
+    /// update (back-compat for the existing supervisor/fork paths).
+    /// </summary>
+    Task<OASISResult<QuestRun>> UpdateAsync(
+        QuestRun run, QuestRunStatus? expectedStatus = null, CancellationToken ct = default);
 
     /// <summary>All runs for a single <see cref="Quest"/> definition.</summary>
     Task<OASISResult<IEnumerable<QuestRun>>> GetByQuestIdAsync(Guid questId, CancellationToken ct = default);

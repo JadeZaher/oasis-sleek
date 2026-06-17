@@ -63,18 +63,18 @@ public sealed class QuestCompensateStepHandler : IStepHandler<QuestCompensatePay
         // Settle the run: project Cancelled. A compensation step succeeding
         // settles the saga as compensated (SagaProcessor.OnStepSucceededAsync),
         // so this is the terminal projection for the cancelled branch.
+        // Settle the run Cancelled — conditional on the current (non-terminal)
+        // status so a concurrent settler/projector can't clobber it and a
+        // terminal run is never regressed (Fix 3 conditional UpdateAsync).
         var runResult = await _runStore.GetByIdAsync(p.RunId, ct);
-        if (runResult.Result is { } run && !IsTerminal(run.Status))
+        if (runResult.Result is { } run && !run.Status.IsTerminal())
         {
+            var expected = run.Status;
             run.Status = QuestRunStatus.Cancelled;
             run.EndedAt = DateTime.UtcNow;
-            await _runStore.UpdateAsync(run, ct);
+            await _runStore.UpdateAsync(run, expectedStatus: expected, ct);
         }
 
         return StepResult.Ok($"compensated run {p.RunId}; settled {succeeded.Count} node(s)");
     }
-
-    private static bool IsTerminal(QuestRunStatus s) =>
-        s is QuestRunStatus.Succeeded or QuestRunStatus.Failed
-          or QuestRunStatus.Forked or QuestRunStatus.Cancelled;
 }

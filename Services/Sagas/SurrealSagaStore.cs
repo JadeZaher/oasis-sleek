@@ -45,13 +45,6 @@ public sealed class SurrealSagaStore : ISagaStore
     private const string StatusDeadLettered = "DeadLettered";
     private const string StatusParked       = "Parked";
 
-    // A park with no timer parks "indefinitely" — far enough forward that the
-    // due scan never claims it, yet a finite datetime so the SCHEMAFULL
-    // next_run_at column stays a plain datetime (no option<> needed). Only a
-    // signal (TrySignalAsync) un-parks such a row.
-    private static readonly DateTime ParkForeverAt =
-        DateTime.SpecifyKind(DateTime.MaxValue.AddDays(-1), DateTimeKind.Utc);
-
     private const int LastErrorMaxLength = 2048;
     private const int OutputMaxLength    = 4096;
 
@@ -129,23 +122,42 @@ public sealed class SurrealSagaStore : ISagaStore
         var nowUtc = DateTime.UtcNow;
         var surrealId = ToSurrealId(id);
 
-        // A timer-armed park sets next_run_at forward so GetDueStepIdsAsync fires
-        // it when due; a signal-only park sets it to ParkForeverAt so the due
-        // scan never claims it (only TrySignalAsync un-parks). Conditional on the
-        // row still being InProgress — same single-winner discipline as Complete.
-        var nextRunUtc = resumeAt.HasValue
-            ? DateTime.SpecifyKind(resumeAt.Value, DateTimeKind.Utc)
-            : ParkForeverAt;
-
-        var q = SurrealQuery
-            .Of("UPDATE type::thing($_t, $_id) SET status = $_parked, gate_id = $_gate, next_run_at = $_next, claimed_at = NONE, updated_at = $_now WHERE status = $_in_progress RETURN AFTER")
-            .WithParam("_t", TableName)
-            .WithParam("_id", surrealId)
-            .WithParam("_parked", StatusParked)
-            .WithParam("_gate", (object?)gateId)
-            .WithParam("_next", nextRunUtc)
-            .WithParam("_in_progress", StatusInProgress)
-            .WithParam("_now", nowUtc);
+        // The park KIND is the single discriminator (no magic sentinel, no
+        // empty-string overload — review finding):
+        //   • TIMER park  (resumeAt set)  ⇒ gate_id = NONE, next_run_at = resumeAt.
+        //     GetDueStepIdsAsync's fire-timers clause (gate_id NONE AND
+        //     next_run_at <= now) auto-resumes it; no signal needed.
+        //   • SIGNAL park (resumeAt null) ⇒ gate_id = <gate>, next_run_at LEFT
+        //     UNCHANGED. The due scan never claims it (status is Parked, not
+        //     Pending) and fire-timers never fires it (gate_id is not NONE), so
+        //     ONLY TrySignalAsync un-parks it — no far-future datetime sentinel.
+        // Conditional on InProgress — same single-winner discipline as Complete.
+        // Two literal query variants keep gate_id strictly NONE-or-real (G3: no
+        // value interpolation; the variant choice is structural, not data).
+        SurrealQuery q;
+        if (resumeAt.HasValue)
+        {
+            var nextRunUtc = DateTime.SpecifyKind(resumeAt.Value, DateTimeKind.Utc);
+            q = SurrealQuery
+                .Of("UPDATE type::thing($_t, $_id) SET status = $_parked, gate_id = NONE, next_run_at = $_next, claimed_at = NONE, updated_at = $_now WHERE status = $_in_progress RETURN AFTER")
+                .WithParam("_t", TableName)
+                .WithParam("_id", surrealId)
+                .WithParam("_parked", StatusParked)
+                .WithParam("_next", nextRunUtc)
+                .WithParam("_in_progress", StatusInProgress)
+                .WithParam("_now", nowUtc);
+        }
+        else
+        {
+            q = SurrealQuery
+                .Of("UPDATE type::thing($_t, $_id) SET status = $_parked, gate_id = $_gate, claimed_at = NONE, updated_at = $_now WHERE status = $_in_progress RETURN AFTER")
+                .WithParam("_t", TableName)
+                .WithParam("_id", surrealId)
+                .WithParam("_parked", StatusParked)
+                .WithParam("_gate", gateId)
+                .WithParam("_in_progress", StatusInProgress)
+                .WithParam("_now", nowUtc);
+        }
 
         var response = await _executor.ExecuteAsync(q, ct);
         if (response.Count == 0 || !response[0].IsOk) return false;
@@ -218,11 +230,12 @@ public sealed class SurrealSagaStore : ISagaStore
         //   [0] Reclaim stale leases: any InProgress row whose claimed_at is
         //       older than the lease boundary is a crashed processor — return
         //       it to Pending+due so it is included in the scan.
-        //   [1] Fire due timers: a TIMER-armed Parked row (gate_id is NONE/empty
-        //       — a pure wait node) whose next_run_at has passed returns to
-        //       Pending so it auto-resumes. Signal-only parks carry a far-future
-        //       next_run_at sentinel (and a non-empty gate_id), so they are never
-        //       timer-due and only TrySignalAsync un-parks them.
+        //   [1] Fire due timers: a TIMER-armed Parked row (gate_id IS NONE — a
+        //       pure wait node) whose next_run_at has passed returns to Pending
+        //       so it auto-resumes. Signal-only parks carry a non-NONE gate_id
+        //       (and never touch next_run_at), so they are never timer-due and
+        //       only TrySignalAsync un-parks them. gate_id NONE-vs-real is the
+        //       sole timer/signal discriminator — no empty-string, no sentinel.
         //   [2] Select due step ids ordered by next_run_at ASC, bounded by batch.
         //
         // Statements [0]/[1] are conditional UPDATEs — only the truly-due rows
@@ -237,7 +250,7 @@ public sealed class SurrealSagaStore : ISagaStore
             .WithParam("_lease_cutoff", leaseCutoff);
 
         var fireTimers = SurrealQuery
-            .Of("UPDATE saga_steps SET status = $_pending, gate_id = NONE, updated_at = $_now WHERE status = $_parked AND (gate_id = NONE OR gate_id = \"\") AND next_run_at <= $_now")
+            .Of("UPDATE saga_steps SET status = $_pending, updated_at = $_now WHERE status = $_parked AND gate_id = NONE AND next_run_at <= $_now")
             .WithParam("_pending", StatusPending)
             .WithParam("_parked", StatusParked)
             .WithParam("_now", nowUtc);
@@ -461,6 +474,20 @@ public sealed class SurrealSagaStore : ISagaStore
 
         var rows = await _executor.QueryAsync<SagaStepPoco>(q, ct);
         return rows.Count == 0 ? null : ToDomain(rows[0]);
+    }
+
+    // ── StepExistsAsync — idempotent-enqueue guard ────────────────────────────
+
+    public async Task<bool> StepExistsAsync(
+        string correlationKey, string stepName, CancellationToken ct)
+    {
+        var q = SurrealQuery
+            .Of("SELECT id FROM saga_steps WHERE correlation_key = $_corr AND step_name = $_name LIMIT 1")
+            .WithParam("_corr", correlationKey)
+            .WithParam("_name", stepName);
+
+        var rows = await _executor.QueryAsync<SagaStepIdProjection>(q, ct);
+        return rows.Count > 0;
     }
 
     // ── GetAsync ──────────────────────────────────────────────────────────────

@@ -50,7 +50,19 @@ public sealed record QuestStepPayload(
     Guid QuestId,
     Guid AvatarId,
     Guid NodeId,
-    string? SignalPayload = null);
+    string? SignalPayload = null)
+{
+    /// <summary>
+    /// Project the shared identity triple onto the compensation payload. The
+    /// saga's <c>CompensateStepAsync</c> actually flows the forward payload's
+    /// JSON verbatim and lets <c>QuestCompensatePayload</c> deserialize the
+    /// matching fields — this method is the COMPILE-TIME witness of that
+    /// field correspondence (and the constructor any future direct caller
+    /// should use), so a rename of a shared field is caught here and by the
+    /// round-trip test rather than silently yielding <c>Guid.Empty</c>.
+    /// </summary>
+    public QuestCompensatePayload ToCompensation() => new(RunId, QuestId, AvatarId);
+}
 
 /// <summary>
 /// The compensation step's payload. A DISTINCT type from

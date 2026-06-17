@@ -61,3 +61,23 @@ public enum QuestRunStatus
     /// </summary>
     AwaitingTimer
 }
+
+/// <summary>
+/// Helpers over <see cref="QuestRunStatus"/>. The single source of truth for
+/// which run states are terminal — every projector (the workflow node-step
+/// handler, the compensation handler, any future supervisor) must consult this
+/// rather than re-listing the terminal set, so adding a lifecycle state can
+/// never leave one projector's terminal-guard stale.
+/// </summary>
+public static class QuestRunStatusExtensions
+{
+    /// <summary>
+    /// A terminal run accepts no further transitions: <see cref="QuestRunStatus.Succeeded"/>,
+    /// <see cref="QuestRunStatus.Failed"/>, <see cref="QuestRunStatus.Forked"/>,
+    /// <see cref="QuestRunStatus.Cancelled"/>. The Suspended/AwaitingSignal/
+    /// AwaitingTimer states are explicitly NON-terminal (the run resumes).
+    /// </summary>
+    public static bool IsTerminal(this QuestRunStatus status) =>
+        status is QuestRunStatus.Succeeded or QuestRunStatus.Failed
+               or QuestRunStatus.Forked or QuestRunStatus.Cancelled;
+}

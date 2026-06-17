@@ -8,6 +8,7 @@ using OASIS.WebAPI.Models.Quest;
 using OASIS.WebAPI.Models.Responses;
 using OASIS.WebAPI.Providers.Stores;
 using OASIS.WebAPI.Services.Quest;
+using OASIS.WebAPI.Tests.Fakes;
 using Xunit;
 using QuestEntity = OASIS.WebAPI.Models.Quest.Quest;
 
@@ -92,7 +93,8 @@ public class QuestNodeHandlerRegistryTests
             new InMemoryQuestRunStore(),
             execStore,
             validator.Object,
-            emptyRegistry);
+            emptyRegistry,
+            new InMemorySagaStore());
 
         var result = await manager.ExecuteNodeAsync(questId, node.Id, quest.AvatarId);
 

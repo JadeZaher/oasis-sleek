@@ -10,6 +10,7 @@ using OASIS.WebAPI.Providers.Stores;
 using OASIS.WebAPI.Services;
 using OASIS.WebAPI.Services.Quest;
 using OASIS.WebAPI.Services.Quest.Handlers;
+using OASIS.WebAPI.Tests.Fakes;
 using Xunit;
 using QuestEntity = OASIS.WebAPI.Models.Quest.Quest;
 
@@ -67,7 +68,7 @@ public class QuestForkLineageTests
         var runs = new InMemoryQuestRunStore();
         var execs = new InMemoryQuestNodeExecutionStore();
         var registry = new QuestNodeHandlerRegistry(new IQuestNodeHandler[] { new ConditionNodeHandler() });
-        var manager = new QuestManager(store.Object, runs, execs, new QuestDagValidator(), registry);
+        var manager = new QuestManager(store.Object, runs, execs, new QuestDagValidator(), registry, new InMemorySagaStore());
 
         return (manager, runs, execs, quest);
     }
@@ -345,7 +346,8 @@ public class QuestForkLineageTests
             runsStore,
             execStore,
             new QuestDagValidator(),
-            new QuestNodeHandlerRegistry(Array.Empty<IQuestNodeHandler>()));
+            new QuestNodeHandlerRegistry(Array.Empty<IQuestNodeHandler>()),
+            new InMemorySagaStore());
 
         var internalFail = await manager.ExecuteAsync(quest.Id, quest.AvatarId);
         internalFail.Result!.Status.Should().Be(QuestRunStatus.Failed);

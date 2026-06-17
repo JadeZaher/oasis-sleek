@@ -162,12 +162,16 @@ public sealed class QuestNodeStepHandler : IStepHandler<QuestStepPayload>
 
         // A failed node fails the saga step: the saga's retry/compensation
         // machinery takes over (refund-on-failure routes through the declared
-        // CompensationStepName — durable-workflow-engine §5).
+        // CompensationStepName — durable-workflow-engine §5). Do NOT project a
+        // terminal Failed here — the node-step ALWAYS declares a compensation,
+        // so a failing attempt is not yet the run's verdict. The run stays in
+        // flight (Running) while it retries; the terminal projection is owned
+        // downstream: the compensate handler settles it Cancelled, or — if
+        // compensation itself dead-letters — it stays Running for an operator.
+        // Pre-empting with Failed here would suppress the Cancelled projection
+        // (the terminal-guard would never let compensation overwrite it).
         if (result.IsError)
-        {
-            await ProjectRunStatusAsync(p.RunId, QuestRunStatus.Failed, ct);
             return StepResult.Fail(result.Message ?? $"Node {p.NodeId} failed.");
-        }
 
         // ── 5. Self-advance ───────────────────────────────────────────────────
         return await AdvanceAsync(quest, node, p, advance, result.Output, ct);
@@ -232,7 +236,12 @@ public sealed class QuestNodeStepHandler : IStepHandler<QuestStepPayload>
 
         if (state is QuestNodeState.Failed)
         {
-            await ProjectRunStatusAsync(p.RunId, QuestRunStatus.Failed, ct);
+            // Re-fail the saga step so its retry/compensation machinery owns the
+            // outcome. Do NOT project a terminal Failed here (same reasoning as
+            // the forward-failure path): the node-step always declares a
+            // compensation, so the terminal verdict is Cancelled (compensation)
+            // or, only if compensation itself dead-letters, Failed — both owned
+            // downstream, not pre-empted on a replay.
             return StepResult.Fail(existing.Result?.Error ?? $"Node {p.NodeId} failed.");
         }
 

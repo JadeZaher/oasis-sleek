@@ -10,6 +10,7 @@ using OASIS.WebAPI.Providers.Stores;
 using OASIS.WebAPI.Services;
 using OASIS.WebAPI.Services.Quest;
 using OASIS.WebAPI.Services.Quest.Handlers;
+using OASIS.WebAPI.Tests.Fakes;
 using Xunit;
 using QuestEntity = OASIS.WebAPI.Models.Quest.Quest;
 
@@ -64,7 +65,8 @@ public class QuestManagerExecutionOrderTests
             new InMemoryQuestRunStore(),
             new InMemoryQuestNodeExecutionStore(),
             new QuestDagValidator(),
-            new QuestNodeHandlerRegistry(Array.Empty<IQuestNodeHandler>()));
+            new QuestNodeHandlerRegistry(Array.Empty<IQuestNodeHandler>()),
+            new InMemorySagaStore());
 
         var result = await manager.ValidateDAGAsync(questId);
 
@@ -117,7 +119,8 @@ public class QuestManagerExecutionOrderTests
             runStore,
             execStore,
             new QuestDagValidator(),
-            new QuestNodeHandlerRegistry(new IQuestNodeHandler[] { new ConditionNodeHandler() }));
+            new QuestNodeHandlerRegistry(new IQuestNodeHandler[] { new ConditionNodeHandler() }),
+            new InMemorySagaStore());
 
         var result = await manager.ExecuteAsync(questId, quest.AvatarId);
 

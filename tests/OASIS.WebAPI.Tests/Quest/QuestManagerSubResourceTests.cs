@@ -6,6 +6,7 @@ using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Providers.Stores;
 using OASIS.WebAPI.Services;
 using OASIS.WebAPI.Services.Quest;
+using OASIS.WebAPI.Tests.Fakes;
 using Xunit;
 using QuestEntity = OASIS.WebAPI.Models.Quest.Quest;
 
@@ -73,7 +74,8 @@ public class QuestManagerSubResourceTests
             runStore,
             execStore,
             new QuestDagValidator(),
-            new QuestNodeHandlerRegistry(Array.Empty<IQuestNodeHandler>()));
+            new QuestNodeHandlerRegistry(Array.Empty<IQuestNodeHandler>()),
+            new InMemorySagaStore());
 
         return (manager, questStore, runStore, execStore, quest);
     }
@@ -209,7 +211,8 @@ public class QuestManagerSubResourceTests
         var manager = new QuestManager(
             questStore, runStore, execStore,
             new QuestDagValidator(),
-            new QuestNodeHandlerRegistry(Array.Empty<IQuestNodeHandler>()));
+            new QuestNodeHandlerRegistry(Array.Empty<IQuestNodeHandler>()),
+            new InMemorySagaStore());
 
         var first = await manager.AddEdgeAsync(quest.Id, new QuestEdgeAddModel
         {

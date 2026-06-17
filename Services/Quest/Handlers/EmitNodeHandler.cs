@@ -7,8 +7,8 @@ namespace OASIS.WebAPI.Services.Quest.Handlers;
 /// <summary>
 /// Handles <see cref="QuestNodeType.Emit"/>. Serializes the tenant-shaped
 /// <see cref="EmitNodeConfig.Payload"/> directly to
-/// <see cref="QuestNodeExecution.Output"/> so the consuming caller (e.g.
-/// ArdaNova) can read it and settle tenant-side.
+/// <see cref="QuestNodeExecution.Output"/> so the consuming tenant system
+/// can read it and settle tenant-side.
 /// </summary>
 /// <remarks>
 /// Pure pass-through — no webhook, no settlement, no fiat/payout math.

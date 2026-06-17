@@ -85,11 +85,12 @@ public class EmitNodeHandlerTests
     [Fact]
     public async Task HandleAsync_UndefinedPayload_EmitsEmptyObject()
     {
-        // Arrange — EmitNodeConfig with default (Undefined) JsonElement
-        var cfg = new EmitNodeConfig(); // Payload.ValueKind == Undefined
-        var cfgJson = JsonSerializer.Serialize(cfg, QuestNodeJson.Options);
-
-        var node = NodeWith(QuestNodeType.Emit, cfgJson);
+        // Arrange — the wire form of "no payload": config JSON with no
+        // "payload" key. Deserializing leaves EmitNodeConfig.Payload at its
+        // default (ValueKind == Undefined). (A default JsonElement cannot be
+        // re-serialized, so the config is supplied as its JSON wire form
+        // rather than by serializing a default EmitNodeConfig.)
+        var node = NodeWith(QuestNodeType.Emit, """{ "notPayload": 1 }""");
         var ctx = CtxFor(node, Guid.NewGuid());
 
         var handler = new EmitNodeHandler();

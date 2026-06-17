@@ -12,7 +12,7 @@
 -- ── Enums ─────────────────────────────────────────────────
 
 -- SagaSteps.StepStatus
-DEFINE PARAM IF NOT EXISTS $saga_steps_status VALUE ["Pending", "InProgress", "Completed", "Compensating", "DeadLettered"];
+DEFINE PARAM IF NOT EXISTS $saga_steps_status VALUE ["Pending", "InProgress", "Completed", "Compensating", "DeadLettered", "Parked"];
 
 DEFINE TABLE IF NOT EXISTS saga_steps SCHEMAFULL;
 
@@ -67,6 +67,9 @@ DEFINE FIELD IF NOT EXISTS dead_lettered ON TABLE saga_steps TYPE bool
 -- Timestamps
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE saga_steps TYPE datetime;
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE saga_steps TYPE datetime;
+
+-- Gate id a Parked step waits on (durable-workflow-engine). NONE unless status==Parked. SignalAsync(correlationKey, gateId) un-parks the matching row via a G2 conditional UPDATE; a timer-armed park leaves this NONE and relies on next_run_at instead.
+DEFINE FIELD IF NOT EXISTS gate_id ON TABLE saga_steps TYPE option<string>;
 
 -- ── Indexes ──────────────────────────────────────────────────
 

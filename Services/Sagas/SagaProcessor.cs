@@ -127,6 +127,17 @@ public sealed class SagaProcessor : ISagaProcessor
             result = StepResult.Fail($"Handler threw: {ex.GetType().Name}: {ex.Message}");
         }
 
+        // A handler may request SUSPENSION instead of completing or failing
+        // (durable-workflow-engine): park the step on its gate/timer. A parked
+        // step neither advances the saga nor consumes a retry attempt — it waits
+        // for SignalAsync or its timer. Checked before the success/fail fork so
+        // a park is never misread as a failed attempt.
+        if (result.Park is { } park)
+        {
+            await OnStepParkedAsync(step, park, ct);
+            return true;
+        }
+
         if (result.Success)
         {
             await OnStepSucceededAsync(step, stepDef, def, result.Output, ct);
@@ -135,6 +146,33 @@ public sealed class SagaProcessor : ISagaProcessor
 
         await OnStepFailedAsync(step, stepDef, attempt, result.Error ?? "unknown error", ct);
         return true;
+    }
+
+    private async Task OnStepParkedAsync(
+        SagaStepRecord step, ParkRequest park, CancellationToken ct)
+    {
+        var parked = await _store.ParkStepAsync(step.Id, park.GateId, park.ResumeAt, ct);
+        if (!parked)
+        {
+            // A concurrent reclaim already transitioned this row out of
+            // InProgress — idempotent no-op (the winner drives the outcome).
+            _logger.LogInformation(
+                "Saga processor: step {StepId} ({Saga}/{Step}) no longer InProgress " +
+                "at park (concurrent reclaim) — no-op.",
+                step.Id, step.SagaName, step.StepName);
+            return;
+        }
+
+        if (park.ResumeAt is { } resumeAt)
+            _logger.LogInformation(
+                "Saga processor: step {StepId} ({Saga}/{Step}) PARKED on gate " +
+                "'{Gate}' with timer due {ResumeAt:O} — resumes on signal or timer.",
+                step.Id, step.SagaName, step.StepName, park.GateId, resumeAt);
+        else
+            _logger.LogInformation(
+                "Saga processor: step {StepId} ({Saga}/{Step}) PARKED on gate " +
+                "'{Gate}' — suspended until signalled.",
+                step.Id, step.SagaName, step.StepName, park.GateId);
     }
 
     private async Task OnStepSucceededAsync(

@@ -35,6 +35,10 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
             Completed,
             Compensating,
             DeadLettered,
+            // Suspended on an external signal/timer (durable-workflow-engine).
+            // Invisible to the due-step claim scan until signalled or its timer
+            // fires, at which point it returns to Pending (due now).
+            Parked,
         }
 
         [Id, Column(Order = 1, Type = "string")]
@@ -73,7 +77,7 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         [Column(Order = 7, Type = "string")]
         [FieldGroup("Lifecycle state (StepStatus enum) -- drives the G2 conditional claim")]
-        [Inside("Pending", "InProgress", "Completed", "Compensating", "DeadLettered")]
+        [Inside("Pending", "InProgress", "Completed", "Compensating", "DeadLettered", "Parked")]
         [Default("\"Pending\"")]
         [JsonPropertyName("status"), JsonConverter(typeof(JsonStringEnumConverter))]
         public StepStatus Status { get; set; }
@@ -123,5 +127,10 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Column(Order = 16, Type = "datetime")]
         [JsonPropertyName("updated_at")]
         public DateTimeOffset UpdatedAt { get; set; }
+
+        [Column(Order = 17, Type = "option<string>")]
+        [FieldGroup("Gate id a Parked step waits on (durable-workflow-engine). NONE unless status==Parked. SignalAsync(correlationKey, gateId) un-parks the matching row via a G2 conditional UPDATE; a timer-armed park leaves this NONE and relies on next_run_at instead.")]
+        [JsonPropertyName("gate_id")]
+        public string? GateId { get; set; }
     }
 }

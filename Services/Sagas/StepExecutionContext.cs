@@ -65,12 +65,30 @@ public sealed class StepExecutionContext<TPayload>
 }
 
 /// <summary>
+/// A handler's request to SUSPEND its run at the current step instead of
+/// completing or failing it (the durable-workflow-engine extension). The
+/// processor parks the step: it becomes <see cref="StepStatus.Parked"/>,
+/// invisible to the due-step claim scan until either a matching
+/// <c>SignalAsync(correlationKey, <see cref="GateId"/>, …)</c> un-parks it
+/// (gate node) or — when <see cref="ResumeAt"/> is set — its timer becomes due
+/// (wait node). The park is itself an idempotent durable transition, so a
+/// crashed processor leaves a resumable parked row, never a lost suspension.
+/// </summary>
+/// <param name="GateId">The signal key the parked step waits on. A gate node
+/// supplies a stable id (e.g. "phase-met"); a pure timer/wait node may leave
+/// this an empty string and rely on <see cref="ResumeAt"/>.</param>
+/// <param name="ResumeAt">Optional forward UTC time at which the parked step
+/// becomes due even without a signal (a wait/timer node). <c>null</c> ⇒ the
+/// step parks indefinitely until signalled.</param>
+public sealed record ParkRequest(string GateId, DateTime? ResumeAt);
+
+/// <summary>
 /// Outcome of one step-handler attempt. The processor maps this to a durable
-/// state transition (advance / schedule retry / compensate / dead-letter)
-/// exactly the way <c>ReconciliationService</c> maps a chain verdict — the
+/// state transition (advance / schedule retry / compensate / dead-letter /
+/// PARK) exactly the way <c>ReconciliationService</c> maps a chain verdict — the
 /// handler itself never touches the store.
 /// </summary>
-public sealed record StepResult(bool Success, string? Output, string? Error)
+public sealed record StepResult(bool Success, string? Output, string? Error, ParkRequest? Park = null)
 {
     /// <summary>The step's irreversible effect is done (or was an idempotent
     /// replay). <paramref name="output"/> is persisted on the record for
@@ -81,4 +99,15 @@ public sealed record StepResult(bool Success, string? Output, string? Error)
     /// and either schedules a backoff retry or, at the budget, routes to the
     /// declared compensation (forward) / dead-letters (compensation).</summary>
     public static StepResult Fail(string error) => new(false, null, error);
+
+    /// <summary>
+    /// SUSPEND the run at this step (durable-workflow-engine). The step parks on
+    /// <paramref name="gateId"/> until a matching signal arrives; when
+    /// <paramref name="resumeAt"/> is supplied the step also auto-resumes once
+    /// that timer is due (a wait node). Distinct from <see cref="Ok"/> (which
+    /// advances) and <see cref="Fail"/> (which retries/compensates): a parked
+    /// step neither advances nor consumes a retry attempt.
+    /// </summary>
+    public static StepResult Parked(string gateId, DateTime? resumeAt = null) =>
+        new(false, null, null, new ParkRequest(gateId, resumeAt));
 }

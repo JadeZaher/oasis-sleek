@@ -90,6 +90,16 @@ public class SagaStepRecord
     /// <see cref="StepStatus.DeadLettered"/> for cheap querying.</summary>
     public bool DeadLettered { get; set; }
 
+    /// <summary>
+    /// The gate id a <see cref="StepStatus.Parked"/> step is suspended on
+    /// (durable-workflow-engine). <c>null</c> unless the step is parked on an
+    /// external signal. <c>SignalAsync(correlationKey, gateId, …)</c> un-parks
+    /// the matching row via a G2 single-winner conditional UPDATE. A timer-armed
+    /// park (wait node) leaves this <c>null</c> and relies on
+    /// <see cref="NextRunAt"/> instead, firing through the existing due scan.
+    /// </summary>
+    public string? GateId { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

@@ -110,6 +110,33 @@ public interface ISagaStore
         string payloadJson,
         CancellationToken ct);
 
+    /// <summary>
+    /// SUSPEND a claimed step on an external signal/timer (durable-workflow-engine).
+    /// Conditional on the row still being <see cref="StepStatus.InProgress"/>,
+    /// set <see cref="StepStatus.Parked"/>, persist <paramref name="gateId"/>,
+    /// clear the lease, and set <c>NextRunAt</c> to <paramref name="resumeAt"/>
+    /// when supplied (a wait/timer node fires through the existing
+    /// <see cref="GetDueStepIdsAsync"/> scan) or far into the future when
+    /// <c>null</c> (parks indefinitely until signalled — the gate scan never
+    /// claims a <c>Parked</c> row). Returns whether the conditional write
+    /// applied (false ⇒ a concurrent reclaim/transition already moved it).
+    /// </summary>
+    Task<bool> ParkStepAsync(
+        Guid id, string gateId, DateTime? resumeAt, CancellationToken ct);
+
+    /// <summary>
+    /// Deliver an external signal to a PARKED gate step (durable-workflow-engine).
+    /// G2 single-winner conditional UPDATE: <c>WHERE status==Parked AND
+    /// correlation_key==$c AND gate_id==$g</c> ⇒ <see cref="StepStatus.Pending"/>,
+    /// <c>NextRunAt=now</c>, clear <c>gate_id</c>, so the processor resumes it on
+    /// the next tick. A duplicate or racing signal un-parks AT MOST ONCE (the
+    /// second sees the row already <c>Pending</c> and affects zero rows).
+    /// Returns the un-parked record, or <c>null</c> if no parked row matched
+    /// (already signalled, never parked, or wrong gate).
+    /// </summary>
+    Task<SagaStepRecord?> TrySignalAsync(
+        string correlationKey, string gateId, CancellationToken ct);
+
     /// <summary>Fetch a step by id (diagnostics / tests). No tracking.</summary>
     Task<SagaStepRecord?> GetAsync(Guid id, CancellationToken ct);
 }

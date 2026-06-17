@@ -54,4 +54,19 @@ public enum StepStatus
     /// has no further recourse — parked in the dead-letter queue for an
     /// operator. Terminal.</summary>
     DeadLettered = 4,
+
+    /// <summary>
+    /// SUSPENDED on an external signal/timer (the durable-workflow-engine
+    /// extension). A handler returned <see cref="StepResult.Park"/> requesting
+    /// the run pause at this step until either a <c>SignalAsync(correlationKey,
+    /// gateId, …)</c> un-parks it (gate node) or — when the park carried a
+    /// forward <c>NextRunAt</c> — its timer becomes due (wait node).
+    ///
+    /// <para><b>Not terminal.</b> A parked step is invisible to the due-step
+    /// claim scan (<c>WHERE status==Pending</c>) until signalled or its timer
+    /// fires, at which point it returns to <see cref="Pending"/> (due now) and
+    /// the processor resumes it. The un-park is itself a G2 single-winner
+    /// conditional UPDATE so a duplicate signal un-parks at most once.</para>
+    /// </summary>
+    Parked = 5,
 }

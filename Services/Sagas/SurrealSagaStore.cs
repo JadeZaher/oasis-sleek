@@ -43,6 +43,14 @@ public sealed class SurrealSagaStore : ISagaStore
     private const string StatusCompleted    = "Completed";
     private const string StatusCompensating = "Compensating";
     private const string StatusDeadLettered = "DeadLettered";
+    private const string StatusParked       = "Parked";
+
+    // A park with no timer parks "indefinitely" — far enough forward that the
+    // due scan never claims it, yet a finite datetime so the SCHEMAFULL
+    // next_run_at column stays a plain datetime (no option<> needed). Only a
+    // signal (TrySignalAsync) un-parks such a row.
+    private static readonly DateTime ParkForeverAt =
+        DateTime.SpecifyKind(DateTime.MaxValue.AddDays(-1), DateTimeKind.Utc);
 
     private const int LastErrorMaxLength = 2048;
     private const int OutputMaxLength    = 4096;
@@ -111,6 +119,72 @@ public sealed class SurrealSagaStore : ISagaStore
 
         var response = await _executor.ExecuteAsync(q, ct);
         response.EnsureAllOk();
+    }
+
+    // ── ParkStepAsync — suspend on signal/timer (durable-workflow-engine) ─────
+
+    public async Task<bool> ParkStepAsync(
+        Guid id, string gateId, DateTime? resumeAt, CancellationToken ct)
+    {
+        var nowUtc = DateTime.UtcNow;
+        var surrealId = ToSurrealId(id);
+
+        // A timer-armed park sets next_run_at forward so GetDueStepIdsAsync fires
+        // it when due; a signal-only park sets it to ParkForeverAt so the due
+        // scan never claims it (only TrySignalAsync un-parks). Conditional on the
+        // row still being InProgress — same single-winner discipline as Complete.
+        var nextRunUtc = resumeAt.HasValue
+            ? DateTime.SpecifyKind(resumeAt.Value, DateTimeKind.Utc)
+            : ParkForeverAt;
+
+        var q = SurrealQuery
+            .Of("UPDATE type::thing($_t, $_id) SET status = $_parked, gate_id = $_gate, next_run_at = $_next, claimed_at = NONE, updated_at = $_now WHERE status = $_in_progress RETURN AFTER")
+            .WithParam("_t", TableName)
+            .WithParam("_id", surrealId)
+            .WithParam("_parked", StatusParked)
+            .WithParam("_gate", (object?)gateId)
+            .WithParam("_next", nextRunUtc)
+            .WithParam("_in_progress", StatusInProgress)
+            .WithParam("_now", nowUtc);
+
+        var response = await _executor.ExecuteAsync(q, ct);
+        if (response.Count == 0 || !response[0].IsOk) return false;
+        return response[0].AffectedCount() == 1;
+    }
+
+    // ── TrySignalAsync — un-park a gate step (G2 single-winner) ───────────────
+
+    public async Task<SagaStepRecord?> TrySignalAsync(
+        string correlationKey, string gateId, CancellationToken ct)
+    {
+        var nowUtc = DateTime.UtcNow;
+
+        // G2 single-winner un-park. The predicate (status==Parked AND matching
+        // correlation+gate) is the arbiter: a duplicate/racing signal sees the
+        // row already Pending and mutates zero rows. Un-parking sets next_run_at
+        // to now so the very next due scan resumes the step, and clears gate_id.
+        // This is a multi-row WHERE (no single id), so it drops to a typed
+        // SurrealQuery.Of with parameterized bindings (G3 enforced).
+        var q = SurrealQuery
+            .Of("UPDATE saga_steps SET status = $_pending, next_run_at = $_now, gate_id = NONE, updated_at = $_now WHERE status = $_parked AND correlation_key = $_corr AND gate_id = $_gate RETURN AFTER")
+            .WithParam("_pending", StatusPending)
+            .WithParam("_parked", StatusParked)
+            .WithParam("_corr", correlationKey)
+            .WithParam("_gate", gateId)
+            .WithParam("_now", nowUtc);
+
+        var response = await _executor.ExecuteAsync(q, ct);
+        if (response.Count == 0 || !response[0].IsOk)
+            return null;
+
+        // At most one row should match a given (correlation, gate) park; if more
+        // than one un-parks, the first is returned and the rest still resume via
+        // the due scan. Zero affected ⇒ nothing was parked on this gate.
+        if (response[0].AffectedCount() < 1)
+            return null;
+
+        var pocos = response[0].GetValues<SagaStepPoco>();
+        return pocos.Count >= 1 ? ToDomain(pocos[0]) : null;
     }
 
     // ── GetDueStepIdsAsync ────────────────────────────────────────────────────
@@ -398,6 +472,7 @@ public sealed class SurrealSagaStore : ISagaStore
         DeadLettered       = r.DeadLettered,
         CreatedAt          = new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc)),
         UpdatedAt          = new DateTimeOffset(DateTime.SpecifyKind(r.UpdatedAt, DateTimeKind.Utc)),
+        GateId             = r.GateId,
     };
 
     private static SagaStepRecord ToDomain(SagaStepPoco p) => new()
@@ -418,6 +493,7 @@ public sealed class SurrealSagaStore : ISagaStore
         DeadLettered       = p.DeadLettered,
         CreatedAt          = p.CreatedAt.UtcDateTime,
         UpdatedAt          = p.UpdatedAt.UtcDateTime,
+        GateId             = p.GateId,
     };
 
     /// <summary>
@@ -439,6 +515,7 @@ public sealed class SurrealSagaStore : ISagaStore
         StepStatus.Completed    => StatusCompleted,
         StepStatus.Compensating => StatusCompensating,
         StepStatus.DeadLettered => StatusDeadLettered,
+        StepStatus.Parked       => StatusParked,
         _ => throw new ArgumentOutOfRangeException(nameof(s), s, "Unknown StepStatus value."),
     };
 
@@ -449,6 +526,7 @@ public sealed class SurrealSagaStore : ISagaStore
         StatusCompleted    => StepStatus.Completed,
         StatusCompensating => StepStatus.Compensating,
         StatusDeadLettered => StepStatus.DeadLettered,
+        StatusParked       => StepStatus.Parked,
         _ => throw new InvalidOperationException(
             $"Unrecognised saga step status '{s}' read from SurrealDB. " +
             "Schema ASSERT INSIDE [...] should have prevented this; refresh the schema."),
@@ -483,6 +561,7 @@ public sealed class SurrealSagaStore : ISagaStore
         [JsonPropertyName("dead_lettered")]         public bool DeadLettered { get; set; }
         [JsonPropertyName("created_at")]            public DateTimeOffset CreatedAt { get; set; }
         [JsonPropertyName("updated_at")]            public DateTimeOffset UpdatedAt { get; set; }
+        [JsonPropertyName("gate_id")]               public string? GateId { get; set; }
     }
 
     /// <summary>

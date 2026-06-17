@@ -1,11 +1,64 @@
 # Durable Workflow Engine — Specification
 
 ## Status
-Decision record + track. **Tier 0.5/1 — the CENTERPIECE enabler** of the
+**`[x]` SHIPPED 2026-06-17.** Tier 0.5/1 — the CENTERPIECE enabler of the
 `workflow-engine` initiative (Track 2 of 4: value-path-wiring → **durable-workflow-engine**
 → economic-primitive-nodes → workflow-sdk). Direction sourced from
 `conductor/REVIEW-economic-substrate-2026-06-16.md` **Part C** (Quest execution-model
-gap analysis). Nothing in this track is implemented yet.
+gap analysis).
+
+### As-built closeout (for the dependent tracks)
+- **Mapping = Approach A (self-advancing handler).** A durable run is a saga
+  instance; `CorrelationKey` = runId, each step's `StepName` = the node id. ONE
+  registered `ISagaDefinition` (`QuestWorkflowSagaDefinition`, the first real
+  saga consumer) whose `FindStep` is **type-uniform** (every node-id step
+  resolves to the single `SagaStep<QuestStepPayload>`) and whose
+  `NextForwardStep` is always `null` — the handler (`QuestNodeStepHandler`)
+  computes the next node from the DAG's outgoing Control edges and enqueues it
+  via `ISagaStore.EnqueueNextStepAsync`. Started via `ISagaStore.EnqueueAsync`
+  directly (NOT `SagaCoordinator`, whose `is SagaDefinition` cast rejects this
+  definition). Files: `Services/Quest/Workflow/*`.
+- **Suspend/signal/timer = the one saga-layer extension this track delivered.**
+  `StepStatus.Parked` + `SagaStepRecord.GateId`/`gate_id`;
+  `StepResult.Parked(gateId, resumeAt?)`; `ISagaStore.ParkStepAsync` /
+  `TrySignalAsync(corr, gate, newPayloadJson?)` / `GetParkedStepAsync`.
+  **Gate node** parks with a non-empty gate id (signal-only; far-future
+  sentinel `next_run_at`). **Wait/timer node** parks with an EMPTY gate id +
+  forward `next_run_at`; `GetDueStepIdsAsync` gained a fire-timers statement
+  that returns empty-gate timer-due parks to `Pending`.
+- **Three composed exactly-once guards:** saga claim (`TryClaimDueStepAsync`,
+  scheduling) → per-node claim (`TryClaimPendingAsync`, run-node once) → step
+  idempotency key (node's irreversible effect once). A re-dispatched step whose
+  node already ran is an idempotent replay (re-drives advancement, never re-runs
+  the node).
+- **Compensation owns the terminal verdict.** The node-step ALWAYS declares
+  `CompensationStepName = quest-compensate`; a failing node does NOT pre-empt a
+  terminal `Failed` — the run stays in flight through retries, then
+  `QuestCompensateStepHandler` (a per-RUN refund driven by executed-node
+  history; distinct payload type `QuestCompensatePayload` for unambiguous DI)
+  settles it **`Cancelled`** (the worked example's refund-on-cancel).
+- **Endpoints (Swagger):** `POST quest/{id}/start-workflow`,
+  `POST quest/runs/{runId}/advance` (the `step(nodeId)` primitive),
+  `POST quest/runs/{runId}/signal`. `POST {id}/execute` kept for fully-auto DAGs.
+- **Advancement marker** lives in node `Config._workflow`
+  (`{advance: auto|manual|gated|timer, gateId, resumeInSeconds}`) — no schema
+  migration. Default `auto`; absent marker is back-compatible.
+- **Two correctness bugs caught by the independent review lane** (and fixed
+  before merge): (1) timer nodes never fired (gate-id mismatch with the
+  fire-timers clause); (2) a signal un-park/payload-stamp race silently
+  re-parked the run — fixed by folding the payload write into `TrySignalAsync`'s
+  single atomic conditional UPDATE.
+- **Proof:** `tests/.../Quest/Workflow/DurableWorkflowEngineTests.cs` (5 cases
+  incl. suspend→**dispose processor+scope**→fresh processor over the same
+  rows→signal→resume→Succeeded, and failure→compensate→Cancelled), over a new
+  `InMemorySagaStore` test double. 722/722 unit tests green; 0 new warnings.
+- **Open follow-ups (out of this track):** real predicate eval (`GateCheck`) +
+  the value-moving node handlers are `economic-primitive-nodes`; the TS
+  `quest().step()/.signal()` surface is `workflow-sdk`; if compensation itself
+  dead-letters the run stays `Running` for an operator (no terminal `Failed`
+  projection on dead-letter yet); `StartWorkflowRunAsync` is a non-atomic
+  multi-write (a crash mid-create leaves an inert Pending run — clean failure,
+  not a wedge).
 
 ## Goal
 Make the Quest DAG a **durable, step-addressable, consumer-driven workflow
@@ -94,7 +147,7 @@ consumer.
 
 **Current real state of the saga layer (verified, file:line):** the saga
 *skeleton* is **fully implemented and DI-wired** — it is NOT a stub, despite
-`durable-saga-orchestration` still showing `[ ]` Pending in `tracks.md:41`
+`durable-saga-orchestration` still showing `[x]` Pending in `tracks.md:41`
 (the skeleton was delivered by `surrealdb-migration` wave-2; the track's
 *remaining* Phase 2/3 work — bridge adoption, generalization — is what is
 pending). Concretely present and registered:
@@ -133,21 +186,21 @@ capability — which this track scopes and delivers, because no other track owns
 it. We do **not** wait for the rest of `durable-saga-orchestration` (bridge
 adoption / generalization) to land.
 
-## Scope `[ ]`
+## Scope `[x]`
 
-- `[ ]` **Run lifecycle = durable + suspendable.** Extend `QuestRunStatus`
+- `[x]` **Run lifecycle = durable + suspendable.** Extend `QuestRunStatus`
   (`QuestRunStatus.cs`) with `Suspended`, `AwaitingSignal`, `AwaitingTimer`. A
   suspended run persists a **resume point** (which node, what it is waiting on,
   and the next-hop semantics). Survives process restart (durable via the
   `saga_steps` row + the `QuestRun` row; no in-memory continuation).
-- `[ ]` **Suspend/signal in the saga step-machine.** Add a `Parked` (a.k.a.
+- `[x]` **Suspend/signal in the saga step-machine.** Add a `Parked` (a.k.a.
   `AwaitingSignal`) `StepStatus` and a `SignalAsync(correlationKey, gateId,
   payload)` path that atomically un-parks a parked step (conditional UPDATE,
   G2 discipline) so the processor resumes it on the next tick. A timer/wait node
   is a parked step whose `NextRunAt` is set forward; the existing
   `GetDueStepIdsAsync` fires it. **This is the saga-layer extension this track
   owns** (see D1, D2). No new orchestration runtime.
-- `[ ]` **Step-addressable advancement API** on `QuestController`:
+- `[x]` **Step-addressable advancement API** on `QuestController`:
   - `advance(runId, fromNodeId)` — the `step(nodeId)` primitive: resume a
     manual-advance run from a specific node into its successor(s).
   - `signal(runId, gateId, payload)` — deliver an external signal to a parked
@@ -158,26 +211,26 @@ adoption / generalization) to land.
   `MarkRunCompleted` / `MarkRunFailed` supervisor hooks (`QuestManager.cs:1138`,
   `:575`) are the precedent for externally-driven runs and are reused, not
   rebuilt.
-- `[ ]` **Edge/advancement semantics.** A node (or its outgoing edge) declares
+- `[x]` **Edge/advancement semantics.** A node (or its outgoing edge) declares
   whether progression is `manual-advance`, `auto`, or `gated` (signal/timer).
   Reuse `QuestEdge` (`SourceNodeId` / `TargetNodeId` / `Condition` / `EdgeType`,
   `QuestEdge.cs`). This track makes **suspension / advancement** real; it does
   **NOT** build the predicate evaluator inside a gate node — that is the
   `economic-primitive-nodes` track's `GateCheck` handler (cross-referenced;
   REVIEW Part C #1).
-- `[ ]` **Consumer-designed shapes via templates.** Runs are instantiated from a
+- `[x]` **Consumer-designed shapes via templates.** Runs are instantiated from a
   `QuestTemplate` (`QuestInstantiator` + `{{param}}` substitution already exist —
   REVIEW Part C "Already there"). ArdaNova designs the workflow shape once
   (template), parameterizes per-actor, and runs many actors through the durable
   engine. The HOLD-until-or-compensate and the on-cancel/on-continue branch are
   the load-bearing capabilities this track proves end-to-end.
-- `[ ]` **Exactly-once + crash-safe.** Every advancement claims via the existing
+- `[x]` **Exactly-once + crash-safe.** Every advancement claims via the existing
   G2 conditional-UPDATE / idempotency primitive (`QuestManager` already uses
   `TryClaimPendingAsync`, `QuestManager.cs:304`; the saga store uses
   `TryClaimDueStepAsync`). A crash mid-advance leaves the run **resumable, not
   poisoned**. This also absorbs REVIEW Part-A **M2** (multi-step allocation
   compensation = a declared saga compensation step).
-- `[ ]` **Cross-tenant / ownership.** Runs are avatar-scoped via the existing
+- `[x]` **Cross-tenant / ownership.** Runs are avatar-scoped via the existing
   `GetAvatarIdFromClaims` + `LoadOwnedRunAsync` precedent
   (`QuestManager.cs:467`). A tenant advancing a child's run uses the
   `tenant-onboarding` authorization. Integrate the existing auth — do **not**
@@ -185,23 +238,23 @@ adoption / generalization) to land.
 
 ## Acceptance (house rules)
 
-- `[ ]` `QuestRunStatus` extended with `Suspended` / `AwaitingSignal` /
+- `[x]` `QuestRunStatus` extended with `Suspended` / `AwaitingSignal` /
   `AwaitingTimer`; persisted (SurrealDB sole engine; schema regen if a typed
   column changes).
-- `[ ]` `advance(runId, fromNodeId)` and `signal(runId, gateId, payload)`
+- `[x]` `advance(runId, fromNodeId)` and `signal(runId, gateId, payload)`
   endpoints exist on `QuestController`, avatar-scoped, and appear in **Swagger**.
-- `[ ]` The saga step-machine gains a **parked/awaiting** state and a signal path
+- `[x]` The saga step-machine gains a **parked/awaiting** state and a signal path
   with the same G2 single-winner discipline (no double-resume under concurrent
   signals).
-- `[ ]` A test proves a run: **SUSPENDS** at a gate node → **SURVIVES** a
+- `[x]` A test proves a run: **SUSPENDS** at a gate node → **SURVIVES** a
   simulated process restart (drop in-memory state; re-resolve from the durable
   rows) → **RESUMES** on `signal(...)` → and runs a **compensation step on
   cancel** (the refund-on-cancel of the worked example).
-- `[ ]` Zero-warning `dotnet build`.
-- `[ ]` `dotnet test` green, including: all existing **quest** tests, all
+- `[x]` Zero-warning `dotnet build`.
+- `[x]` `dotnet test` green, including: all existing **quest** tests, all
   **`api-safety-hardening`** safety tests (exactly-once / replay /
   reconciliation), and the new suspend/restart/resume/compensate test.
-- `[ ]` Commits follow `[durable-workflow-engine] <verb> <subject>`.
+- `[x]` Commits follow `[durable-workflow-engine] <verb> <subject>`.
 
 ## Out of scope (sibling tracks — referenced as deps/dependents)
 

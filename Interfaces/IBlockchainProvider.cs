@@ -20,24 +20,32 @@ public interface IBlockchainProvider
     Task<OASISResult<bool>> ValidateAddressAsync(string address, CancellationToken ct = default);
 
     // ─── Token / Asset Lifecycle ───
+    // value-path-wiring H4: the value amount is `ulong` (Algorand ASA AssetAmount
+    // is ulong-native) so large allocations cannot truncate at the boundary.
+    // value-path-wiring C1/D1: the optional `signingContext` carries the
+    // avatar/wallet identity so the provider signs with the RIGHT key (per-user
+    // custody vs platform/ASA-admin). A null context = platform/ASA-admin op.
     Task<OASISResult<string>> MintAsync(
         string tokenUri,
-        int amount,
+        ulong amount,
         string assetType,
         string walletAddress,
+        SigningContext? signingContext = null,
         CancellationToken ct = default);
 
     Task<OASISResult<string>> BurnAsync(
         string tokenId,
-        int amount,
+        ulong amount,
         string walletAddress,
+        SigningContext? signingContext = null,
         CancellationToken ct = default);
 
     Task<OASISResult<string>> TransferAsync(
         string tokenId,
         string fromAddress,
         string toAddress,
-        int amount,
+        ulong amount,
+        SigningContext? signingContext = null,
         CancellationToken ct = default);
 
     // ─── Exchange / Swap ───

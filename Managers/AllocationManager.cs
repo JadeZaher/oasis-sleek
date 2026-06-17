@@ -6,6 +6,7 @@ using System.Text.Json;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Interfaces.Stores;
+using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Idempotency;
 using OASIS.WebAPI.Models.Requests;
 using OASIS.WebAPI.Models.Responses;
@@ -28,6 +29,7 @@ public sealed class AllocationManager : IAllocationManager
     private readonly IWalletManager _walletManager;
     private readonly IWalletStore _walletStore;
     private readonly INftManager _nftManager;
+    private readonly IBlockchainOperationManager _blockchainOps;
     private readonly IIdempotencyStore _idempotencyStore;
 
     public AllocationManager(
@@ -35,12 +37,14 @@ public sealed class AllocationManager : IAllocationManager
         IWalletManager walletManager,
         IWalletStore walletStore,
         INftManager nftManager,
+        IBlockchainOperationManager blockchainOps,
         IIdempotencyStore idempotencyStore)
     {
         _kycGate = kycGate ?? throw new ArgumentNullException(nameof(kycGate));
         _walletManager = walletManager ?? throw new ArgumentNullException(nameof(walletManager));
         _walletStore = walletStore ?? throw new ArgumentNullException(nameof(walletStore));
         _nftManager = nftManager ?? throw new ArgumentNullException(nameof(nftManager));
+        _blockchainOps = blockchainOps ?? throw new ArgumentNullException(nameof(blockchainOps));
         _idempotencyStore = idempotencyStore ?? throw new ArgumentNullException(nameof(idempotencyStore));
     }
 
@@ -86,7 +90,18 @@ public sealed class AllocationManager : IAllocationManager
                 return Fail(gate.Message);
             }
 
-            // ── Step 4: provision-if-absent ───────────────────────────────────
+            // ── Step 4: parse the amount (H4) — reject BEFORE any broadcast ───
+            // AllocationRequest.Amount is an arbitrary-precision string; the
+            // provider value surface is ulong. A non-numeric / negative /
+            // overflowing amount fails the idempotency key here so the claim is
+            // terminal (Failed), never leaked InProgress, and nothing is broadcast.
+            if (!TryParseAmount(request.Amount, out var amount, out var amountError))
+            {
+                await _idempotencyStore.FailAsync(idempotencyKey, amountError, CancellationToken.None);
+                return Fail(amountError);
+            }
+
+            // ── Step 5: provision-if-absent ───────────────────────────────────
             var (wallet, provisioned, walletError) = await EnsureWalletAsync(avatarId, request.ChainType);
             if (wallet is null)
             {
@@ -94,11 +109,15 @@ public sealed class AllocationManager : IAllocationManager
                 return Fail(walletError);
             }
 
-            // ── Step 5: execute allocation (D4 discriminator) ─────────────────
+            // ── Step 6: execute allocation (D4 discriminator) ─────────────────
+            // The broadcast goes through IBlockchainOperationManager.ExecuteAsync so
+            // the provider is actually called and a TxHash is recorded (D2). The
+            // alloc idempotency key is persisted on the op row (H1) so a crashed
+            // claim is recoverable by reconciliation.
             var opResult = request.Kind switch
             {
-                AllocationKind.Mint => await MintAsync(avatarId, wallet, request),
-                AllocationKind.Transfer => await TransferAsync(avatarId, wallet, request),
+                AllocationKind.Mint => await MintAsync(avatarId, wallet, request, amount, idempotencyKey),
+                AllocationKind.Transfer => await TransferAsync(avatarId, wallet, request, amount, idempotencyKey),
                 _ => Operation.Invalid($"Unsupported allocation kind: {request.Kind}.")
             };
 
@@ -109,17 +128,34 @@ public sealed class AllocationManager : IAllocationManager
                 return Fail(msg);
             }
 
-            // ── Step 6: persist result for replay, then return ────────────────
+            var op = opResult.Result;
+
+            // ── Step 7: settle the alloc idempotency key from the op outcome ──
+            // C2: complete the allocation idempotency key ONLY when the op carries a
+            // real TxHash (a confirmed broadcast, or an M1 pending-with-hash). If the
+            // op did not record a TxHash, leave the allocation record InProgress so a
+            // redelivered request replays "in progress" — NOT a false success.
             var result = new AllocationResult
             {
                 AvatarId = avatarId,
                 WalletId = wallet.Id,
                 WalletAddress = wallet.Address,
                 WalletProvisioned = provisioned,
-                OperationId = opResult.Result.Id,
+                OperationId = op.Id,
                 Replayed = false,
                 IdempotencyKey = idempotencyKey
             };
+
+            var txHash = op.Parameters.GetValueOrDefault("TxHash", string.Empty);
+            if (string.IsNullOrWhiteSpace(txHash))
+            {
+                // Broadcast did not (yet) record a TxHash. Do NOT Complete the key —
+                // leave it InProgress so reconciliation/replay can settle it from
+                // chain truth. Surface a retryable in-progress state to the caller.
+                return Fail(
+                    "Allocation broadcast is in progress; the on-chain effect has not yet " +
+                    "recorded a transaction hash. Retry once it settles.");
+            }
 
             await _idempotencyStore.CompleteAsync(
                 idempotencyKey, SerializeForReplay(result), CancellationToken.None);
@@ -164,8 +200,11 @@ public sealed class AllocationManager : IAllocationManager
     // ── Allocation execution (consumes existing surface verbatim) ──────────────
 
     private async Task<OASISResult<IBlockchainOperation>> MintAsync(
-        Guid avatarId, IWallet wallet, AllocationRequest request)
+        Guid avatarId, IWallet wallet, AllocationRequest request, ulong amount, string idempotencyKey)
     {
+        // Step A: record the Holon + KYC gate via NftManager (D2/D3). NftManager
+        // owns the metadata Holon upsert and the single-choke-point KYC gate; it is
+        // NOT the broadcast path. A KYC rejection here fails closed before broadcast.
         var mint = new NftMintRequest
         {
             WalletId = wallet.Id,
@@ -175,23 +214,96 @@ public sealed class AllocationManager : IAllocationManager
             TokenId = request.AssetId,
             Metadata = MergeAmount(request)
         };
-        return await _nftManager.MintAsync(mint, avatarId);
+        var holonResult = await _nftManager.MintAsync(mint, avatarId);
+        if (holonResult.IsError)
+            return holonResult;
+
+        // Step B: build a typed mint op and drive it through the REAL broadcast
+        // path (C2) so the provider is called and a TxHash is recorded.
+        var op = new BlockchainOperation
+        {
+            AvatarId = avatarId,
+            WalletId = wallet.Id,
+            OperationType = "Mint",
+            Status = OperationStatus.Pending,
+            // IMintOperation typed fields drive both the idempotency-key derivation
+            // and the ExecuteMintAsync provider call.
+            TokenUri = request.AssetId ?? request.Name,
+            AssetType = request.Name,
+            // D5: the typed ulong field is the SINGLE source of truth for the mint
+            // value — it drives both the idempotency-key derivation and the provider
+            // call. No int clamp, no Parameters["Amount"] side-channel for mint.
+            Amount = amount,
+            Parameters = BuildOpParameters(wallet, request, amount, idempotencyKey, holonResult.Result)
+        };
+
+        return await _blockchainOps.ExecuteAsync(op);
     }
 
     private async Task<OASISResult<IBlockchainOperation>> TransferAsync(
-        Guid avatarId, IWallet wallet, AllocationRequest request)
+        Guid avatarId, IWallet wallet, AllocationRequest request, ulong amount, string idempotencyKey)
     {
         if (request.AssetRecordId is null || request.AssetRecordId == Guid.Empty)
             return Operation.Invalid("Transfer allocation requires AssetRecordId.");
 
+        // Step A: record the ownership move via NftManager (Holon upsert + IDOR
+        // guard). The transfer target is the authorised avatar, never a body id.
         var transfer = new NftTransferRequest
         {
-            // IDOR: the transfer target is the authorised avatar, never a body id.
             TargetAvatarId = avatarId,
             WalletId = wallet.Id,
             Memo = request.Memo
         };
-        return await _nftManager.TransferAsync(request.AssetRecordId.Value, transfer, avatarId);
+        var holonResult = await _nftManager.TransferAsync(request.AssetRecordId.Value, transfer, avatarId);
+        if (holonResult.IsError)
+            return holonResult;
+
+        // Step B: build a typed transfer op and broadcast it (C2). The recipient is
+        // the target avatar's custodial wallet address; the asset is request.AssetId.
+        var op = new BlockchainOperation
+        {
+            AvatarId = avatarId,
+            WalletId = wallet.Id,
+            OperationType = "Transfer",
+            Status = OperationStatus.Pending,
+            SourceHolonId = request.AssetRecordId,
+            RecipientAddress = wallet.Address,
+            Parameters = BuildOpParameters(wallet, request, amount, idempotencyKey, holonResult.Result)
+        };
+        if (!string.IsNullOrWhiteSpace(request.AssetId))
+            op.Parameters["SourceTokenId"] = request.AssetId!;
+
+        return await _blockchainOps.ExecuteAsync(op);
+    }
+
+    /// <summary>
+    /// Build the op Parameters carrying everything the broadcast + reconciliation
+    /// need: the wallet address the provider signs/moves from, the asset
+    /// descriptor, the arbitrary-precision <c>Amount</c> string (the value channel
+    /// for op types with NO typed amount field — Transfer/Burn), the chain, and
+    /// (H1) the alloc idempotency key so an orphaned claim can be released by
+    /// <c>ReconciliationService</c>. For Mint the typed <see cref="IMintOperation.Amount"/>
+    /// ulong is authoritative; this string entry is the fallback for the typeless
+    /// op types and storage rehydration.
+    /// </summary>
+    private static Dictionary<string, string> BuildOpParameters(
+        IWallet wallet, AllocationRequest request, ulong amount, string idempotencyKey, IBlockchainOperation? holonOp)
+    {
+        var p = new Dictionary<string, string>
+        {
+            ["WalletAddress"] = wallet.Address,
+            ["Amount"] = amount.ToString(),
+            ["AssetType"] = request.Name,
+            ["ChainType"] = request.ChainType,
+            // H1: persist the alloc:{apiKeyId}:… key so reconciliation can settle an
+            // orphaned InProgress claim from chain truth (bridge precedent).
+            ["IdempotencyKey"] = idempotencyKey,
+        };
+        if (!string.IsNullOrWhiteSpace(request.AssetId))
+            p["TokenUri"] = request.AssetId!;
+        if (holonOp?.Parameters is { } hp && hp.TryGetValue("holonId", out var holonId))
+            p["holonId"] = holonId;
+        return p;
     }
 
     /// <summary>
@@ -204,6 +316,48 @@ public sealed class AllocationManager : IAllocationManager
         if (!string.IsNullOrWhiteSpace(request.Amount))
             metadata["amount"] = request.Amount;
         return metadata;
+    }
+
+    /// <summary>
+    /// Parse the arbitrary-precision <see cref="AllocationRequest.Amount"/> string
+    /// into the provider's <see cref="ulong"/> surface (H4 / D5). Rejects
+    /// non-numeric, negative, and overflowing values with a clear error so the
+    /// idempotency key is failed (no leak) before any broadcast.
+    /// </summary>
+    private static bool TryParseAmount(string raw, out ulong amount, out string error)
+    {
+        amount = 0;
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            error = "Allocation amount is required.";
+            return false;
+        }
+
+        var trimmed = raw.Trim();
+        if (trimmed.StartsWith('-'))
+        {
+            error = $"Allocation amount '{raw}' is negative; a non-negative integer base-unit amount is required.";
+            return false;
+        }
+
+        if (!ulong.TryParse(trimmed, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out amount))
+        {
+            error =
+                $"Allocation amount '{raw}' is not a valid non-negative integer in base units " +
+                $"(must fit in an unsigned 64-bit range, max {ulong.MaxValue}).";
+            return false;
+        }
+
+        if (amount == 0)
+        {
+            error = "Allocation amount must be a positive integer base-unit amount.";
+            return false;
+        }
+
+        return true;
     }
 
     // ── Idempotency helpers ────────────────────────────────────────────────────

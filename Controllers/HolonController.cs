@@ -202,7 +202,7 @@ public class MintRequest
 {
     public Guid WalletId { get; set; }
     public string TokenUri { get; set; } = string.Empty;
-    public int Amount { get; set; }
+    public ulong Amount { get; set; }
     public string AssetType { get; set; } = string.Empty;
 }
 

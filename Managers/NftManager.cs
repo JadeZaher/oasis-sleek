@@ -12,11 +12,16 @@ public class NftManager : INftManager
 {
     private readonly IHolonStore _holonStore;
     private readonly IBlockchainOperationStore _blockchainOperationStore;
+    private readonly IKycGateService _kycGate;
 
-    public NftManager(IHolonStore holonStore, IBlockchainOperationStore blockchainOperationStore)
+    public NftManager(
+        IHolonStore holonStore,
+        IBlockchainOperationStore blockchainOperationStore,
+        IKycGateService kycGate)
     {
         _holonStore = holonStore;
         _blockchainOperationStore = blockchainOperationStore;
+        _kycGate = kycGate ?? throw new ArgumentNullException(nameof(kycGate));
     }
 
     public async Task<OASISResult<INft>> GetAsync(Guid id, OASISRequest? request = null)
@@ -52,6 +57,15 @@ public class NftManager : INftManager
 
     public async Task<OASISResult<IBlockchainOperation>> MintAsync(NftMintRequest request, Guid avatarId, OASISRequest? providerRequest = null)
     {
+        // value-path-wiring H3: KYC gate at the single choke point. Both the
+        // allocation door and the raw POST /api/nft/mint door pass through here, so
+        // gating before ANY side effect (Holon upsert / op build) closes the P5 hole
+        // where a tenant could mint via the controller and sidestep the gate. The
+        // KYC_FORBIDDEN: prefix is preserved so NftController maps it to 403.
+        var gate = await _kycGate.RequireVerifiedAsync(avatarId);
+        if (gate.IsError)
+            return new OASISResult<IBlockchainOperation> { IsError = true, Message = gate.Message, Exception = gate.Exception };
+
         // Build the Holon with AssetType = "NFT"
         var metadata = new Dictionary<string, string>(request.Metadata);
         if (!string.IsNullOrEmpty(request.ImageUri)) metadata["image"] = request.ImageUri;

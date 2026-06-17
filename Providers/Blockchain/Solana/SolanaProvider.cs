@@ -134,8 +134,8 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
     // ─── Token / Asset Lifecycle ───
 
     public override Task<OASISResult<string>> MintAsync(
-        string tokenUri, int amount, string assetType, string walletAddress,
-        CancellationToken ct = default)
+        string tokenUri, ulong amount, string assetType, string walletAddress,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
             OperationIdGenerator.Generate("solana", "mint", walletAddress),
@@ -143,7 +143,8 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
     }
 
     public override Task<OASISResult<string>> BurnAsync(
-        string tokenId, int amount, string walletAddress, CancellationToken ct = default)
+        string tokenId, ulong amount, string walletAddress,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
             OperationIdGenerator.Generate("solana", "burn", walletAddress, tokenId, amount),
@@ -151,8 +152,8 @@ public class SolanaProvider : BaseBlockchainProvider, ISolanaMetaplexModule, ISo
     }
 
     public override Task<OASISResult<string>> TransferAsync(
-        string tokenId, string fromAddress, string toAddress, int amount,
-        CancellationToken ct = default)
+        string tokenId, string fromAddress, string toAddress, ulong amount,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
         return Task.FromResult(Ok(
             OperationIdGenerator.Generate("solana", "transfer", fromAddress, toAddress, amount),

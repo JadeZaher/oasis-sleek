@@ -271,6 +271,17 @@ public class BlockchainOperationManager : IBlockchainOperationManager
             return;
         }
 
+        if (operation.Status == OperationStatus.PendingConfirmation)
+        {
+            // value-path-wiring M1: the tx WAS broadcast but is not yet confirmed.
+            // Leave the idempotency record InProgress so (a) a duplicate replays
+            // "in progress" and NEVER re-broadcasts, and (b) reconciliation can
+            // settle the claim Completed/Failed from chain truth once the recorded
+            // TxHash resolves. Completing it now would lie; failing it would block a
+            // legitimate slow-but-valid tx from settling.
+            return;
+        }
+
         if (operation.Status is OperationStatus.Unknown or OperationStatus.Pending)
         {
             // Nothing irreversible happened (unknown op type / no-op). Record
@@ -312,17 +323,25 @@ public class BlockchainOperationManager : IBlockchainOperationManager
     {
         if (operation is not IMintOperation mint) return;
         var walletAddress = operation.Parameters.GetValueOrDefault("WalletAddress", string.Empty);
+        // D5: the typed ulong Amount field is the single source of truth for the
+        // mint value — same field the idempotency key is derived from. No
+        // Parameters["Amount"] side-channel, no int clamp.
+        var amount = mint.Amount;
+        // Mint = ASA-create — a platform/ASA-admin op (the platform is the asset
+        // manager/reserve/freeze/clawback).
         var result = await chainProvider.MintAsync(
-            mint.TokenUri ?? string.Empty, mint.Amount, mint.AssetType ?? string.Empty, walletAddress);
+            mint.TokenUri ?? string.Empty, amount, mint.AssetType ?? string.Empty, walletAddress,
+            SigningContext.Platform);
         ApplyChainResult(operation, result, OperationStatus.Minted);
     }
 
     private async Task ExecuteBurnAsync(IBlockchainOperation operation, IBlockchainProvider chainProvider)
     {
         var tokenId = operation.Parameters.GetValueOrDefault("TokenId", string.Empty);
-        var amount = int.Parse(operation.Parameters.GetValueOrDefault("Amount", "0"));
+        var amount = ReadUlongAmount(operation, fallback: 0UL);
         var walletAddress = operation.Parameters.GetValueOrDefault("WalletAddress", string.Empty);
-        var result = await chainProvider.BurnAsync(tokenId, amount, walletAddress);
+        // Burn = AssetDestroy — a platform/ASA-admin op signed by the asset manager.
+        var result = await chainProvider.BurnAsync(tokenId, amount, walletAddress, SigningContext.Platform);
         ApplyChainResult(operation, result, OperationStatus.Burned);
     }
 
@@ -352,8 +371,44 @@ public class BlockchainOperationManager : IBlockchainOperationManager
         if (operation is not ITransferOperation transfer) return;
         var walletAddress = operation.Parameters.GetValueOrDefault("WalletAddress", string.Empty);
         var sourceTokenId = operation.Parameters.GetValueOrDefault("SourceTokenId", transfer.SourceHolonId?.ToString() ?? string.Empty);
-        var result = await chainProvider.TransferAsync(sourceTokenId, walletAddress, transfer.RecipientAddress ?? string.Empty, 1);
+        // value-path-wiring H4: amount defaults to 1 (single-asset move) when no
+        // explicit Amount parameter is present, preserving the prior contract.
+        var amount = ReadUlongAmount(operation, fallback: 1UL);
+        // value-path-wiring C1: a transfer FROM a user's custodial wallet must sign
+        // with the USER's key — build a per-user SigningContext from the op row so
+        // the custody IDOR guard runs on the real value path. A platform-owned move
+        // (no owning wallet/avatar on the row) signs with the platform key.
+        var signingContext = BuildSigningContext(operation);
+        var result = await chainProvider.TransferAsync(
+            sourceTokenId, walletAddress, transfer.RecipientAddress ?? string.Empty, amount, signingContext);
         ApplyChainResult(operation, result, OperationStatus.Transferred);
+    }
+
+    /// <summary>
+    /// value-path-wiring C1/D1: build the signer-resolution context from the op
+    /// row. When the op carries an owning avatar + wallet, the move is a per-user
+    /// custodial op and must sign with that user's key (custody IDOR-guarded);
+    /// otherwise it is a platform-authority move signed by the platform key.
+    /// </summary>
+    private static SigningContext BuildSigningContext(IBlockchainOperation operation)
+    {
+        if (operation.AvatarId is { } avatarId && avatarId != Guid.Empty &&
+            operation.WalletId is { } walletId && walletId != Guid.Empty)
+        {
+            return SigningContext.ForUser(avatarId, walletId);
+        }
+        return SigningContext.Platform;
+    }
+
+    /// <summary>
+    /// value-path-wiring H4: read the value amount as <see cref="ulong"/> from the
+    /// op's <c>Amount</c> parameter (arbitrary-precision string), falling back to
+    /// the supplied value when the parameter is absent or unparseable.
+    /// </summary>
+    private static ulong ReadUlongAmount(IBlockchainOperation operation, ulong fallback)
+    {
+        var raw = operation.Parameters.GetValueOrDefault("Amount", string.Empty);
+        return ulong.TryParse(raw, out var parsed) ? parsed : fallback;
     }
 
     private async Task ExecuteDeployContractAsync(IBlockchainOperation operation, IBlockchainProvider chainProvider)
@@ -392,11 +447,25 @@ public class BlockchainOperationManager : IBlockchainOperationManager
                                 message.Contains("Requires client-side") ||
                                 message.Contains("Sign and submit");
 
+        // value-path-wiring M1: a "submitted, pending confirmation" success means the
+        // tx WAS broadcast (it carries a real tx id in Result) but did not confirm in
+        // the poll window. Record the op PendingConfirmation + Parameters["TxHash"]
+        // (NOT Failed, NOT a terminal success) so reconciliation settles it from
+        // chain truth and a duplicate replays "in progress" rather than re-broadcasts.
+        var pendingConfirmation = message.StartsWith(
+            OperationStatus.PendingConfirmationMarker, StringComparison.Ordinal);
+
         if (requiresSignature)
         {
             operation.Status = OperationStatus.AwaitingSignature;
             operation.Parameters["OperationId"] = chainResult.Result?.ToString() ?? string.Empty;
             operation.Parameters["Instruction"] = message;
+        }
+        else if (pendingConfirmation)
+        {
+            operation.Status = OperationStatus.PendingConfirmation;
+            if (chainResult.Result != null)
+                operation.Parameters["TxHash"] = chainResult.Result.ToString() ?? string.Empty;
         }
         else
         {

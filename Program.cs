@@ -471,7 +471,14 @@ builder.Services.AddSingleton<IBlockchainProvider>(sp => new AlgorandProvider(
     sp.GetRequiredService<IConfiguration>(),
     sp.GetRequiredService<ILogger<AlgorandProvider>>(),
     sp.GetRequiredService<OASIS.WebAPI.Interfaces.Signing.ITransactionSignerFactory>(),
-    sp.GetRequiredService<WalletKeyService>()));
+    sp.GetRequiredService<WalletKeyService>(),
+    // value-path-wiring C1: route signing through the audited custody choke point.
+    // IKeyCustodyService is scoped and the provider is a singleton, so it is
+    // resolved per signing op from a fresh scope via IServiceScopeFactory (the
+    // AlgorandFaucet precedent). Passing null for the direct custody seam keeps
+    // that injection for unit tests only.
+    custodyService: null,
+    custodyScopeFactory: sp.GetRequiredService<IServiceScopeFactory>()));
 builder.Services.AddSingleton<IBlockchainProvider, SolanaProvider>();
 // db-only-null-provider: the no-signer simulated provider. The factory hands it
 // out for every chain when Blockchain:Mode == "Simulated"; otherwise it is only

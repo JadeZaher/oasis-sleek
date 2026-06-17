@@ -47,8 +47,16 @@ public class NftController : ControllerBase
             return Unauthorized(new OASISResult<IBlockchainOperation> { IsError = true, Message = "Invalid token." });
 
         var result = await _nftManager.MintAsync(request, avatarId.Value, providerRequest);
-        if (result.IsError) return BadRequest(result);
-        return Ok(result);
+        if (!result.IsError) return Ok(result);
+
+        // value-path-wiring H3: the KYC gate now lives in NftManager.MintAsync. A
+        // fail-closed KYC rejection carries the KYC_FORBIDDEN: prefix → 403,
+        // consistent with the kyc-module convention (AllocationController.cs:80,
+        // KycController.cs:124). Any other error stays 400.
+        if (result.Message?.StartsWith(KycAuthorizationError.Forbidden, StringComparison.Ordinal) == true)
+            return StatusCode(StatusCodes.Status403Forbidden, result);
+
+        return BadRequest(result);
     }
 
     [HttpPost("{id:guid}/transfer")]

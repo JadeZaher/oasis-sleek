@@ -91,21 +91,22 @@ public abstract class BaseBlockchainProvider : IBlockchainProvider
     }
 
     public virtual Task<OASISResult<string>> MintAsync(
-        string tokenUri, int amount, string assetType, string walletAddress,
-        CancellationToken ct = default)
+        string tokenUri, ulong amount, string assetType, string walletAddress,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
         return Task.FromResult(Error<string>($"{ChainType} MintAsync not implemented"));
     }
 
     public virtual Task<OASISResult<string>> BurnAsync(
-        string tokenId, int amount, string walletAddress, CancellationToken ct = default)
+        string tokenId, ulong amount, string walletAddress,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
         return Task.FromResult(Error<string>($"{ChainType} BurnAsync not implemented"));
     }
 
     public virtual Task<OASISResult<string>> TransferAsync(
-        string tokenId, string fromAddress, string toAddress, int amount,
-        CancellationToken ct = default)
+        string tokenId, string fromAddress, string toAddress, ulong amount,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
         return Task.FromResult(Error<string>($"{ChainType} TransferAsync not implemented"));
     }

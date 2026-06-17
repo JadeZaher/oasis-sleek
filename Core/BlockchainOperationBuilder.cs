@@ -31,7 +31,7 @@ public class BlockchainOperationBuilder
         return this;
     }
 
-    public BlockchainOperationBuilder Mint(string tokenUri, int amount, string assetType)
+    public BlockchainOperationBuilder Mint(string tokenUri, ulong amount, string assetType)
     {
         _operation.OperationType = "Mint";
         _operation.TokenUri = tokenUri;

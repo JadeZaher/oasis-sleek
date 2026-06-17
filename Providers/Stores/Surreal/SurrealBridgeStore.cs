@@ -605,7 +605,8 @@ public sealed class SurrealBridgeStore : IBridgeStore
             CreatedDate   = poco.CreatedDate.UtcDateTime,
             CompletedDate = poco.CompletedDate?.UtcDateTime,
             TokenUri      = poco.TokenUri,
-            Amount        = poco.Amount.HasValue ? (int)poco.Amount.Value : 0,
+            // Stored as a non-negative i64; read back as the domain ulong losslessly.
+            Amount        = poco.Amount.HasValue ? (ulong)poco.Amount.Value : 0UL,
             AssetType     = poco.AssetType,
             SourceHolonId = poco.SourceHolonId is not null ? FromSurrealGuid(SurrealLink.FromLink(poco.SourceHolonId)!) : null,
             TargetHolonId = poco.TargetHolonId is not null ? FromSurrealGuid(SurrealLink.FromLink(poco.TargetHolonId)!) : null,

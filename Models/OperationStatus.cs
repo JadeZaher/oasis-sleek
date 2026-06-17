@@ -35,6 +35,24 @@ public static class OperationStatus
     /// broadcast server-side, so NOT yet irreversible.</summary>
     public const string AwaitingSignature = "AwaitingSignature";
 
+    /// <summary>
+    /// value-path-wiring M1: the transaction WAS broadcast server-side but did not
+    /// confirm within the provider's poll window. The op carries a real
+    /// <c>Parameters["TxHash"]</c> so reconciliation can settle it from chain truth.
+    /// This is NOT a terminal state and is NOT a failure — it must never be promoted
+    /// to a success or failure without positive chain signal, and a duplicate request
+    /// must replay it as "in progress" rather than re-broadcast.
+    /// </summary>
+    public const string PendingConfirmation = "PendingConfirmation";
+
+    /// <summary>
+    /// value-path-wiring M1: message marker a provider prepends to a
+    /// "submitted but not yet confirmed" SUCCESS result so the operation manager
+    /// records <see cref="PendingConfirmation"/> + the TxHash instead of a terminal
+    /// success/failure. Provider-neutral so any chain can signal the same state.
+    /// </summary>
+    public const string PendingConfirmationMarker = "Submitted, pending confirmation";
+
     // ─── Per-operation-type terminal success verbs ───
 
     public const string Minted = "Minted";

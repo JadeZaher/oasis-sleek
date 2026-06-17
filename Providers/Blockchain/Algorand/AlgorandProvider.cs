@@ -5,10 +5,14 @@ using Algorand;
 using Algorand.Algod.Model;
 using Algorand.Algod.Model.Transactions;
 using Algorand.Utils;
+using Microsoft.Extensions.DependencyInjection;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Core.Signing;
 using OASIS.WebAPI.Interfaces;
+using OASIS.WebAPI.Interfaces.Managers;
 using OASIS.WebAPI.Interfaces.Signing;
+using OASIS.WebAPI.Managers;
+using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Responses;
 using OASIS.WebAPI.Providers.Blockchain.Base;
 using AlgoAccount = Algorand.Algod.Model.Account;
@@ -33,10 +37,20 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
     // signer resolved by ChainType.
     private readonly ITransactionSignerFactory? _signerFactory;
 
-    // INTERIM custody supply (signing-core-keystone Phase 3, plan §79-82). Good
-    // enough for tests/testnet: decrypts the platform signing key from config via
-    // WalletKeyService. The REAL ownership-checked, per-user resolver + IDOR guard
-    // + byte[] zeroing is the custody-key-management track's deliverable (B3/P1).
+    // value-path-wiring C1: the audited custody choke point. When present, every
+    // value-moving signature routes through it — per-user ops via the IDOR-guarded
+    // WithSigningKeyAsync, platform/ASA-admin ops via WithPlatformSigningKeyAsync.
+    // The unconditional config-mnemonic load for USER ops is gone; the platform
+    // mnemonic is reachable ONLY through the platform door (custody or the fallback
+    // platform resolver below).
+    //
+    // The provider is a singleton but IKeyCustodyService is scoped, so production
+    // resolves a fresh custody instance per signing op via _custodyScopeFactory
+    // (the AlgorandFaucet precedent). _custodyService is the direct-inject seam for
+    // unit tests; _keyService is the platform-only fallback for the signing-core
+    // tests (and interim testnet) when no custody is wired at all.
+    private readonly IKeyCustodyService? _custodyService;
+    private readonly IServiceScopeFactory? _custodyScopeFactory;
     private readonly WalletKeyService? _keyService;
 
     public override string ChainType => "Algorand";
@@ -53,11 +67,24 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
         ILogger<AlgorandProvider> logger,
         ITransactionSignerFactory? signerFactory,
         WalletKeyService? keyService)
+        : this(config, logger, signerFactory, keyService, custodyService: null, custodyScopeFactory: null)
+    {
+    }
+
+    public AlgorandProvider(
+        IConfiguration config,
+        ILogger<AlgorandProvider> logger,
+        ITransactionSignerFactory? signerFactory,
+        WalletKeyService? keyService,
+        IKeyCustodyService? custodyService,
+        IServiceScopeFactory? custodyScopeFactory)
         : base(config, logger)
     {
         _configManager = new BlockchainConfigurationManager(config);
         _signerFactory = signerFactory;
         _keyService = keyService;
+        _custodyService = custodyService;
+        _custodyScopeFactory = custodyScopeFactory;
 
         var network = _configManager.GetDefaultNetwork(ChainType);
         var networkConfig = _configManager.GetNetworkConfig(ChainType, network);
@@ -166,24 +193,29 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
     // ─── Token / Asset Lifecycle ───
 
     public override async Task<OASISResult<string>> MintAsync(
-        string tokenUri, int amount, string assetType, string walletAddress,
-        CancellationToken ct = default)
+        string tokenUri, ulong amount, string assetType, string walletAddress,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(walletAddress) || amount <= 0 || string.IsNullOrWhiteSpace(assetType))
+        if (string.IsNullOrWhiteSpace(walletAddress) || amount == 0 || string.IsNullOrWhiteSpace(assetType))
             return Error<string>("Wallet address, positive amount, and asset type are required");
 
-        return await CreateASAAsync(
+        // ASA-create is a platform/ASA-admin op (the platform is manager/reserve/
+        // freeze/clawback of the minted asset). A null context defaults to the
+        // platform signer; an explicit user context would be rejected at the
+        // signer step (a user wallet cannot be the ASA admin here).
+        return await CreateAsaCoreAsync(
             assetType, assetType.ToUpperInvariant()[..Math.Min(8, assetType.Length)],
             amount, 0, walletAddress, walletAddress, walletAddress, walletAddress,
-            walletAddress, ct);
+            walletAddress, signingContext ?? SigningContext.Platform, ct);
     }
 
     public override async Task<OASISResult<string>> BurnAsync(
-        string tokenId, int amount, string walletAddress, CancellationToken ct = default)
+        string tokenId, ulong amount, string walletAddress,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
         // Burn = AssetDestroy (acfg with no params), signed by the asset manager.
         // The full supply must be held by the creator/manager for destroy to
-        // succeed; the manager (platform) address is the signer.
+        // succeed; the manager (platform) address is the signer — an ASA-admin op.
         if (string.IsNullOrWhiteSpace(tokenId) || !ulong.TryParse(tokenId, out var assetIndex))
             return Error<string>("A numeric asset ID is required to burn an ASA");
         if (string.IsNullOrWhiteSpace(walletAddress) || !ValidateAddressFormat(walletAddress))
@@ -197,12 +229,13 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
                 AssetIndex = assetIndex,
             },
             opLabel: $"burn ASA {tokenId}",
+            signingContext: signingContext ?? SigningContext.Platform,
             ct: ct);
     }
 
     public override async Task<OASISResult<string>> TransferAsync(
-        string tokenId, string fromAddress, string toAddress, int amount,
-        CancellationToken ct = default)
+        string tokenId, string fromAddress, string toAddress, ulong amount,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(tokenId) || !ulong.TryParse(tokenId, out var assetIndex))
             return Error<string>("A numeric asset ID is required to transfer an ASA");
@@ -210,7 +243,7 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
             return Error<string>("A valid sender address is required");
         if (string.IsNullOrWhiteSpace(toAddress) || !ValidateAddressFormat(toAddress))
             return Error<string>("A valid recipient address is required");
-        if (amount <= 0)
+        if (amount == 0)
             return Error<string>("Transfer amount must be positive");
 
         var receiver = new Address(toAddress);
@@ -221,9 +254,13 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
                 Sender = sender,
                 XferAsset = assetIndex,
                 AssetReceiver = receiver,
-                AssetAmount = (ulong)amount,
+                AssetAmount = amount,
             },
             opLabel: $"transfer {amount} of ASA {tokenId} to {toAddress}",
+            // A transfer FROM a user wallet must sign with that user's key. A null
+            // context defaults to the platform signer (the platform moving its own
+            // asset, e.g. an allocation mint distributed from the platform reserve).
+            signingContext: signingContext ?? SigningContext.Platform,
             ct: ct);
     }
 
@@ -479,19 +516,37 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
         string managerAddress, string reserveAddress, string freezeAddress,
         string clawbackAddress, string walletAddress, CancellationToken ct = default)
     {
+        // The IAlgorandASAModule surface is unchanged; ASA-create is always a
+        // platform/ASA-admin op, so it signs with the platform key.
+        return await CreateAsaCoreAsync(
+            name, unitName, checked((ulong)total), decimals,
+            managerAddress, reserveAddress, freezeAddress, clawbackAddress,
+            walletAddress, SigningContext.Platform, ct);
+    }
+
+    /// <summary>
+    /// Shared ASA-create implementation that carries the resolved
+    /// <see cref="SigningContext"/> through to the signer (value-path-wiring C1).
+    /// </summary>
+    private async Task<OASISResult<string>> CreateAsaCoreAsync(
+        string name, string unitName, ulong total, int decimals,
+        string managerAddress, string reserveAddress, string freezeAddress,
+        string clawbackAddress, string walletAddress, SigningContext signingContext,
+        CancellationToken ct)
+    {
         if (string.IsNullOrWhiteSpace(walletAddress) || !ValidateAddressFormat(walletAddress))
             return Error<string>("A valid creator (wallet) address is required to create an ASA");
-        if (total <= 0)
+        if (total == 0)
             return Error<string>("ASA total supply must be positive");
         if (decimals < 0)
             return Error<string>("ASA decimals must be non-negative");
 
         var assetParams = BuildAssetParams(
-            name, unitName, (ulong)total, (ulong)decimals, defaultFrozen: false,
+            name, unitName, total, (ulong)decimals, defaultFrozen: false,
             managerAddress, reserveAddress, freezeAddress, clawbackAddress,
             url: null, metadataHash: null);
 
-        return await CreateAsaWithParamsAsync(walletAddress, assetParams, $"create ASA '{name}'", ct);
+        return await CreateAsaWithParamsAsync(walletAddress, assetParams, $"create ASA '{name}'", signingContext, ct);
     }
 
     /// <summary>
@@ -519,7 +574,8 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
             freezeAddress: platformAddress, clawbackAddress: platformAddress,
             url: url, metadataHash: metadataHash);
 
-        return await CreateAsaWithParamsAsync(platformAddress, assetParams, $"create soulbound ASA '{name}'", ct);
+        return await CreateAsaWithParamsAsync(
+            platformAddress, assetParams, $"create soulbound ASA '{name}'", SigningContext.Platform, ct);
     }
 
     public async Task<OASISResult<bool>> OptInAsync(
@@ -530,7 +586,8 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
         if (string.IsNullOrWhiteSpace(walletAddress) || !ValidateAddressFormat(walletAddress))
             return new OASISResult<bool> { IsError = true, Result = false, Message = "A valid wallet address is required to opt in" };
 
-        // Opt-in = a 0-amount AssetTransfer to self.
+        // Opt-in = a 0-amount AssetTransfer to self. Opt-in of the platform
+        // account is an ASA-admin op signed by the platform key.
         var result = await BuildSignSubmitAsync(
             walletAddress,
             (paramsInfo, sender) => new AssetAcceptTransaction
@@ -540,6 +597,7 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
                 AssetReceiver = sender,
             },
             opLabel: $"opt-in to ASA {assetId}",
+            signingContext: SigningContext.Platform,
             ct: ct);
 
         return result.IsError
@@ -572,18 +630,28 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
         string signerAddress,
         Func<AlgodSuggestedParams, Address, Transaction> buildTransaction,
         string opLabel,
+        SigningContext signingContext,
         CancellationToken ct)
     {
-        var submitted = await BuildSignSubmitCoreAsync(signerAddress, buildTransaction, opLabel, ct);
+        var submitted = await BuildSignSubmitCoreAsync(signerAddress, buildTransaction, opLabel, signingContext, ct);
         if (submitted.IsError)
             return Error<string>(submitted.Message, submitted.Exception);
 
-        return Ok(submitted.Result!.TxId, $"Algorand {opLabel} confirmed in round {submitted.Result.ConfirmedRound}");
+        // value-path-wiring M1: a confirm-timeout returns a SUCCESS result whose
+        // ConfirmedRound is 0 + PendingConfirmation marker (the tx is broadcast,
+        // not failed). Surface the tx id so the manager records Pending + TxHash.
+        if (submitted.Result!.PendingConfirmation)
+            return Ok(submitted.Result.TxId,
+                $"{OperationStatus.PendingConfirmationMarker}: Algorand {opLabel} (tx {submitted.Result.TxId}) " +
+                "submitted but not yet confirmed; reconcile against chain truth.");
+
+        return Ok(submitted.Result.TxId, $"Algorand {opLabel} confirmed in round {submitted.Result.ConfirmedRound}");
     }
 
     /// <summary>ASA-create variant that extracts and returns the real on-chain asset id.</summary>
     private async Task<OASISResult<string>> CreateAsaWithParamsAsync(
-        string creatorAddress, AssetParams assetParams, string opLabel, CancellationToken ct)
+        string creatorAddress, AssetParams assetParams, string opLabel,
+        SigningContext signingContext, CancellationToken ct)
     {
         var submitted = await BuildSignSubmitCoreAsync(
             creatorAddress,
@@ -593,12 +661,22 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
                 AssetParams = assetParams,
             },
             opLabel,
+            signingContext,
             ct);
 
         if (submitted.IsError)
             return Error<string>(submitted.Message, submitted.Exception);
 
-        if (submitted.Result!.AssetIndex is not > 0)
+        // value-path-wiring M1: a confirm-timeout on an ASA-create has no asset
+        // index yet (the tx is broadcast, not confirmed). Return the tx id with the
+        // pending marker so the manager records Pending + TxHash for reconciliation,
+        // rather than a false error.
+        if (submitted.Result!.PendingConfirmation)
+            return Ok(submitted.Result.TxId,
+                $"{OperationStatus.PendingConfirmationMarker}: Algorand {opLabel} (tx {submitted.Result.TxId}) " +
+                "submitted but not yet confirmed; the asset id resolves once it confirms.");
+
+        if (submitted.Result.AssetIndex is not > 0)
             return Error<string>(
                 $"ASA created (tx {submitted.Result.TxId}) but the confirmation did not report an asset index");
 
@@ -611,6 +689,7 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
         string signerAddress,
         Func<AlgodSuggestedParams, Address, Transaction> buildTransaction,
         string opLabel,
+        SigningContext signingContext,
         CancellationToken ct)
     {
         if (_signerFactory is null)
@@ -646,19 +725,17 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
             return ErrorT<ConfirmedTxn>($"Failed to build transaction to {opLabel}: {ex.Message}", ex);
         }
 
-        // 3. Resolve interim key material + sign via the seam. The byte[] key is
-        //    zeroed immediately after signing (SigningKeyMaterial.Dispose).
+        // 3. Sign via the custody choke point (value-path-wiring C1). The key bytes
+        //    are resolved and zeroed inside the custody resolver; only the signed
+        //    envelope leaves. The signer resolution depends on the SigningContext:
+        //    user-wallet op → WithSigningKeyAsync (IDOR-guarded); platform/ASA-admin
+        //    op → WithPlatformSigningKeyAsync. A user context that cannot be resolved
+        //    returns a CLEAR ERROR — it NEVER falls back to the platform key.
         OASISResult<byte[]> signResult;
         try
         {
-            using var keyMaterial = ResolveInterimKeyMaterial(signerAddress);
-            if (keyMaterial is null)
-                return ErrorT<ConfirmedTxn>(
-                    $"Cannot {opLabel}: no signing key available for {signerAddress}. " +
-                    "Configure OASIS:Algorand:PlatformMnemonic (interim) — real custody resolution is the custody-key-management track.");
-
             var canonicalUnsigned = Encoder.EncodeToMsgPackOrdered(txn);
-            signResult = _signerFactory.GetSigner(ChainType).Sign(canonicalUnsigned, keyMaterial);
+            signResult = await SignViaCustodyAsync(canonicalUnsigned, opLabel, signingContext);
         }
         catch (Exception ex)
         {
@@ -731,7 +808,7 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
                         return new OASISResult<ConfirmedTxn>
                         {
                             IsError = false,
-                            Result = new ConfirmedTxn(txId, pending.ConfirmedRound, pending.AssetIndex),
+                            Result = new ConfirmedTxn(txId, pending.ConfirmedRound, pending.AssetIndex, PendingConfirmation: false),
                             Message = $"confirmed in round {pending.ConfirmedRound}"
                         };
                 }
@@ -744,9 +821,21 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
             await Task.Delay(1000, ct);
         }
 
-        return ErrorT<ConfirmedTxn>(
-            $"Transaction {txId} did not confirm within {maxPolls} rounds while trying to {opLabel}; " +
-            "it may still confirm — reconcile via GetTransactionStatusAsync.");
+        // value-path-wiring M1: the tx WAS broadcast; it simply has not confirmed
+        // within the poll window. Returning an error here would record the op
+        // Failed WITHOUT a TxHash → a slow-but-valid tx becomes permanently
+        // false-Failed and a retry could double-submit. Instead return a SUCCESS
+        // result carrying the txId with PendingConfirmation=true so the manager
+        // records the op Pending + Parameters["TxHash"]=txId and reconciliation
+        // settles it from chain truth.
+        return new OASISResult<ConfirmedTxn>
+        {
+            IsError = false,
+            Result = new ConfirmedTxn(txId, ConfirmedRound: 0, AssetIndex: null, PendingConfirmation: true),
+            Message =
+                $"Transaction {txId} submitted but not confirmed within {maxPolls} rounds while trying to {opLabel}; " +
+                "recorded pending — reconcile via GetTransactionStatusAsync."
+        };
     }
 
     private AssetParams BuildAssetParams(
@@ -774,29 +863,142 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
         => string.IsNullOrWhiteSpace(address) || !Address.IsValid(address) ? null : new Address(address);
 
     /// <summary>
-    /// INTERIM custody resolver (signing-core-keystone Phase 3). Decrypts the
-    /// platform signing key from configuration so testnet/devnet transact flows
-    /// work end-to-end. This is deliberately NOT production custody: there is no
-    /// per-user ownership check and the secret lives in config. The real
-    /// ownership-checked, KMS-backed, byte[]-zeroing resolver is the
-    /// custody-key-management track's deliverable (DEPLOY-STEPS-TODO B3/P1).
-    /// Returns null when no key is configured.
+    /// value-path-wiring C1: resolve the signing key through the audited custody
+    /// choke point (<see cref="IKeyCustodyService"/>) and return the signed
+    /// envelope. The key bytes are resolved + zeroed INSIDE the custody resolver;
+    /// only the signed envelope leaves this method.
+    /// <list type="bullet">
+    /// <item><b>Per-user op</b> (<c>!IsPlatform</c>): routes through
+    /// <see cref="IKeyCustodyService.WithSigningKeyAsync{T}"/>, inheriting its IDOR
+    /// guard (the avatar must own the wallet) and platform-wallet-type guard.</item>
+    /// <item><b>Platform / ASA-admin op</b> (<c>IsPlatform</c>): routes through
+    /// <see cref="IKeyCustodyService.WithPlatformSigningKeyAsync{T}"/>.</item>
+    /// </list>
+    /// INTERIM SAFETY: a per-user context that does not resolve to a real wallet is
+    /// a CLEAR ERROR — it NEVER falls back to the platform key (the silent mis-sign
+    /// the review flagged). The unconditional config-mnemonic load for user ops is
+    /// gone; the platform mnemonic is now reachable ONLY via the platform door.
     /// </summary>
-    private SigningKeyMaterial? ResolveInterimKeyMaterial(string signerAddress)
+    private async Task<OASISResult<byte[]>> SignViaCustodyAsync(
+        byte[] canonicalUnsigned, string opLabel, SigningContext ctx)
     {
-        if (_keyService is null) return null;
+        // The signing delegate: hand the decrypted key bytes to the chain-agnostic
+        // signer. Runs inside the custody resolver's decrypt→sign→zero scope.
+        Func<byte[], Task<OASISResult<byte[]>>> sign = keyBytes =>
+        {
+            using var material = new SigningKeyMaterial(keyBytes);
+            return Task.FromResult(_signerFactory!.GetSigner(ChainType).Sign(canonicalUnsigned, material));
+        };
 
-        // A pre-provisioned platform mnemonic is the interim key supply. The
-        // signer address is currently informational — per-address resolution is
-        // the custody track's job.
-        var mnemonic = _config.GetValue<string>("OASIS:Algorand:PlatformMnemonic");
+        // Resolve the (scoped) custody service. The provider is a singleton, so a
+        // production custody instance is resolved per-op from a fresh scope (the
+        // AlgorandFaucet precedent); a directly-injected _custodyService is the
+        // unit-test seam.
+        if (_custodyService is not null)
+            return await SignWithCustodyAsync(_custodyService, opLabel, ctx, sign);
+
+        if (_custodyScopeFactory is not null)
+        {
+            using var scope = _custodyScopeFactory.CreateScope();
+            var custody = scope.ServiceProvider.GetRequiredService<IKeyCustodyService>();
+            return await SignWithCustodyAsync(custody, opLabel, ctx, sign);
+        }
+
+        // No custody wired (signing-core tests / interim testnet). The platform key
+        // is still reachable via the platform door ONLY; a per-user op fails closed
+        // (it must never fall back to the platform key — value-path-wiring C1).
+        if (!ctx.IsPlatform)
+            return UserContextNotResolvable(opLabel);
+
+        return await SignWithFallbackPlatformKeyAsync(opLabel, sign);
+    }
+
+    /// <summary>
+    /// Route signing through the custody choke point. Per-user ops use the
+    /// IDOR-guarded <see cref="IKeyCustodyService.WithSigningKeyAsync{T}"/>;
+    /// platform/ASA-admin ops use
+    /// <see cref="IKeyCustodyService.WithPlatformSigningKeyAsync{T}"/>. A per-user
+    /// context with no resolvable wallet/avatar fails closed — never the platform key.
+    /// </summary>
+    private static async Task<OASISResult<byte[]>> SignWithCustodyAsync(
+        IKeyCustodyService custody, string opLabel, SigningContext ctx,
+        Func<byte[], Task<OASISResult<byte[]>>> sign)
+    {
+        if (ctx.IsPlatform)
+            return Flatten(await custody.WithPlatformSigningKeyAsync(true, sign), opLabel);
+
+        if (!ctx.IsResolvableUserContext)
+            return UserContextNotResolvable(opLabel);
+
+        return Flatten(await custody.WithSigningKeyAsync(ctx.WalletId, ctx.AvatarId, sign), opLabel);
+    }
+
+    /// <summary>
+    /// Platform-only fallback resolver (signing-core / interim testnet) used ONLY
+    /// when no <see cref="IKeyCustodyService"/> is wired. Loads the config platform
+    /// mnemonic via the platform door equivalent and signs. A per-user op never
+    /// reaches here (it fails closed above), so the unconditional config-mnemonic
+    /// load the review flagged for user ops is gone.
+    /// </summary>
+    private async Task<OASISResult<byte[]>> SignWithFallbackPlatformKeyAsync(
+        string opLabel, Func<byte[], Task<OASISResult<byte[]>>> sign)
+    {
+        if (_keyService is null)
+            return new OASISResult<byte[]>
+            {
+                IsError = true,
+                Message =
+                    $"Cannot {opLabel}: no custody service and no platform key supply are wired."
+            };
+
+        var mnemonic = _config.GetValue<string>(KeyCustodyService.PlatformMnemonicConfigPath);
         if (string.IsNullOrWhiteSpace(mnemonic))
-            return null;
+            return new OASISResult<byte[]>
+            {
+                IsError = true,
+                Message = $"Cannot {opLabel}: no platform signing key configured."
+            };
 
-        // Derive the raw private-key bytes the signer expects (same representation
-        // WalletKeyService persists: Algorand2 ClearTextPrivateKey).
-        var account = new AlgoAccount(mnemonic.Trim());
-        return new SigningKeyMaterial(account.KeyPair.ClearTextPrivateKey);
+        // Same representation WalletKeyService persists (Algorand2 ClearTextPrivateKey).
+        // Copied into a buffer this method owns so it can be zeroed after signing.
+        byte[] key = (byte[])new AlgoAccount(mnemonic.Trim()).KeyPair.ClearTextPrivateKey.Clone();
+        try
+        {
+            return await sign(key);
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(key);
+        }
+    }
+
+    private static OASISResult<byte[]> UserContextNotResolvable(string opLabel) =>
+        new()
+        {
+            IsError = true,
+            Message =
+                $"Cannot {opLabel}: a per-user custodial signature was requested but the signing " +
+                "context has no resolvable wallet/avatar (or no custody service is wired). Refusing " +
+                "to fall back to the platform key (value-path-wiring C1 interim safety)."
+        };
+
+    /// <summary>
+    /// Flatten the custody resolver's outer <see cref="OASISResult{T}"/> (which
+    /// carries resolve-time errors: wallet not found, IDOR rejection, no platform
+    /// key) and the signer's inner result (sign-time errors) into one result.
+    /// </summary>
+    private static OASISResult<byte[]> Flatten(OASISResult<OASISResult<byte[]>> outer, string opLabel)
+    {
+        if (outer.IsError || outer.Result is null)
+            return new OASISResult<byte[]>
+            {
+                IsError = true,
+                Message = string.IsNullOrWhiteSpace(outer.Message)
+                    ? $"Signer resolution failed to {opLabel}."
+                    : outer.Message,
+                Exception = outer.Exception
+            };
+        return outer.Result;
     }
 
     private OASISResult<T> ErrorT<T>(string message, Exception? ex = null)
@@ -805,7 +1007,7 @@ public class AlgorandProvider : BaseBlockchainProvider, IAlgorandASAModule
         return new OASISResult<T> { IsError = true, Message = message, Exception = ex };
     }
 
-    private sealed record ConfirmedTxn(string TxId, long ConfirmedRound, ulong? AssetIndex);
+    private sealed record ConfirmedTxn(string TxId, long ConfirmedRound, ulong? AssetIndex, bool PendingConfirmation);
 
     // ─── REST API DTOs ───
 

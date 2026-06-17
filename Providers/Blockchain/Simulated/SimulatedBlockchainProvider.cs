@@ -85,7 +85,7 @@ public sealed class SimulatedBlockchainProvider : BaseBlockchainProvider
     /// differ.
     /// </summary>
     public static string SimTxHash(
-        string op, string walletAddress, string? tokenId, int amount, string? assetType)
+        string op, string walletAddress, string? tokenId, ulong amount, string? assetType)
     {
         var digest = Base32(Sha256(Canonical(
             op, walletAddress, tokenId ?? string.Empty, amount.ToString(), assetType ?? string.Empty)));
@@ -140,10 +140,10 @@ public sealed class SimulatedBlockchainProvider : BaseBlockchainProvider
     // ─── Token / Asset lifecycle (deterministic simulated successes) ───
 
     public override Task<OASISResult<string>> MintAsync(
-        string tokenUri, int amount, string assetType, string walletAddress,
-        CancellationToken ct = default)
+        string tokenUri, ulong amount, string assetType, string walletAddress,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(walletAddress) || amount <= 0 || string.IsNullOrWhiteSpace(assetType))
+        if (string.IsNullOrWhiteSpace(walletAddress) || amount == 0 || string.IsNullOrWhiteSpace(assetType))
             return Task.FromResult(Error<string>("Wallet address, positive amount, and asset type are required"));
 
         var hash = SimTxHash("mint", walletAddress, tokenUri, amount, assetType);
@@ -154,14 +154,14 @@ public sealed class SimulatedBlockchainProvider : BaseBlockchainProvider
     }
 
     public override Task<OASISResult<string>> TransferAsync(
-        string tokenId, string fromAddress, string toAddress, int amount,
-        CancellationToken ct = default)
+        string tokenId, string fromAddress, string toAddress, ulong amount,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(tokenId))
             return Task.FromResult(Error<string>("Token ID is required"));
         if (string.IsNullOrWhiteSpace(fromAddress) || string.IsNullOrWhiteSpace(toAddress))
             return Task.FromResult(Error<string>("Sender and recipient addresses are required"));
-        if (amount <= 0)
+        if (amount == 0)
             return Task.FromResult(Error<string>("Transfer amount must be positive"));
 
         var hash = SimTxHash("transfer", fromAddress, tokenId, amount, toAddress);
@@ -174,13 +174,14 @@ public sealed class SimulatedBlockchainProvider : BaseBlockchainProvider
     }
 
     public override Task<OASISResult<string>> BurnAsync(
-        string tokenId, int amount, string walletAddress, CancellationToken ct = default)
+        string tokenId, ulong amount, string walletAddress,
+        SigningContext? signingContext = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(tokenId))
             return Task.FromResult(Error<string>("Token ID is required"));
         if (string.IsNullOrWhiteSpace(walletAddress))
             return Task.FromResult(Error<string>("Wallet address is required"));
-        if (amount <= 0)
+        if (amount == 0)
             return Task.FromResult(Error<string>("Burn amount must be positive"));
 
         var hash = SimTxHash("burn", walletAddress, tokenId, amount, null);
@@ -237,11 +238,20 @@ public sealed class SimulatedBlockchainProvider : BaseBlockchainProvider
 
     // ─── Ledger primitives ───
 
-    private void Credit(string address, string tokenId, int amount) =>
-        _ledger.AddOrUpdate((address, tokenId), amount, (_, cur) => cur + amount);
+    private void Credit(string address, string tokenId, ulong amount)
+    {
+        // checked: a simulated amount above long.MaxValue is impossible-balance —
+        // throw loudly rather than silently inverting the ledger via wraparound.
+        var delta = checked((long)amount);
+        _ledger.AddOrUpdate((address, tokenId), delta, (_, cur) => cur + delta);
+    }
 
-    private void Debit(string address, string tokenId, int amount) =>
-        _ledger.AddOrUpdate((address, tokenId), -amount, (_, cur) => cur - amount);
+    private void Debit(string address, string tokenId, ulong amount)
+    {
+        // checked: see Credit — an overflowing ulong must throw, not debit a credit.
+        var delta = checked((long)amount);
+        _ledger.AddOrUpdate((address, tokenId), -delta, (_, cur) => cur - delta);
+    }
 
     // ─── Deterministic digest helpers ───
 

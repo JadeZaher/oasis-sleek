@@ -18,7 +18,7 @@ namespace OASIS.WebAPI.Providers.Stores.Surreal;
 ///   - BlockchainOperation.Id (Guid)        → OperationLog.Id (string, "N" format, lowercase)
 ///   - BlockchainOperation.AvatarId (Guid?) → OperationLog.AvatarId (string?, "N" format)
 ///   - BlockchainOperation.WalletId (Guid?) → OperationLog.WalletId (string?, "N" format)
-///   - BlockchainOperation.Amount (int)     → OperationLog.Amount (long?)
+///   - BlockchainOperation.Amount (ulong)   → OperationLog.Amount (long?, i64; checked on write)
 ///   - BlockchainOperation.Parameters (Dictionary) → OperationLog.Parameters (JsonElement?)
 ///   - BlockchainOperation.CreatedDate (DateTime UTC) → OperationLog.CreatedDate (DateTimeOffset UTC)
 ///   - BlockchainOperation.CompletedDate (DateTime?) → OperationLog.CompletedDate (DateTimeOffset?)
@@ -263,7 +263,11 @@ public sealed class SurrealBlockchainOperationStore : IBlockchainOperationStore
 
             // IMintOperation
             TokenUri  = concrete?.TokenUri,
-            Amount    = concrete is not null ? (long?)concrete.Amount : null,
+            // OperationLog.Amount is a 64-bit signed column (option<int> ⇒ i64). The
+            // domain Amount is ulong; a value above long.MaxValue cannot round-trip,
+            // so convert checked — an impossible-to-store amount throws loudly here
+            // rather than silently persisting an inverted (negative) value.
+            Amount    = concrete is not null ? checked((long)concrete.Amount) : null,
             AssetType = concrete?.AssetType,
 
             // IExchangeOperation
@@ -313,7 +317,8 @@ public sealed class SurrealBlockchainOperationStore : IBlockchainOperationStore
 
             // IMintOperation
             TokenUri  = poco.TokenUri,
-            Amount    = poco.Amount.HasValue ? (int)poco.Amount.Value : 0,
+            // Stored as a non-negative i64; read back as the domain ulong losslessly.
+            Amount    = poco.Amount.HasValue ? (ulong)poco.Amount.Value : 0UL,
             AssetType = poco.AssetType,
 
             // IExchangeOperation

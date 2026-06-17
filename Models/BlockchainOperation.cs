@@ -15,7 +15,7 @@ public class BlockchainOperation : IBlockchainOperation, IMintOperation, IExchan
 
     // IMintOperation
     public string? TokenUri { get; set; }
-    public int Amount { get; set; }
+    public ulong Amount { get; set; }
     public string? AssetType { get; set; }
 
     // IExchangeOperation

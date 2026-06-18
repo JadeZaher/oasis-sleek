@@ -2,7 +2,7 @@
 
 ## Overview
 
-Rebuild the Next.js frontend with shadcn/ui as a full-featured demo harness that exercises every capability of the OASIS ecosystem — the .NET API, the @oasis/wallet-sdk, and the OasisClient. The primary goal is functional testing: every API endpoint, every wallet operation, and every integration path should be demonstrable and verifiable from the UI.
+Rebuild the Next.js frontend with shadcn/ui as a full-featured demo harness that exercises every capability of the OASIS ecosystem — the .NET API, the @oasis/sdk, and the OasisClient. The primary goal is functional testing: every API endpoint, every wallet operation, and every integration path should be demonstrable and verifiable from the UI.
 
 ## Goals
 
@@ -15,8 +15,9 @@ Rebuild the Next.js frontend with shadcn/ui as a full-featured demo harness that
 
 - Next.js 14 (App Router, existing setup)
 - shadcn/ui (Radix primitives + Tailwind)
-- @oasis/wallet-sdk (local link, already configured)
+- @oasis/sdk (local link, already configured; package renamed 2026-06-18, directory remains `sdk/oasis-wallet/`)
 - OasisClient, OasisAuthProvider, hooks from `frontend/src/lib/oasis-*`
+- `oasis.workflow` (WorkflowClient + QuestFactory, composed on the OasisClient facade alongside wallet/holons/portfolio/auth)
 
 ## Architecture
 
@@ -42,6 +43,7 @@ frontend/src/
       search/page.tsx       -- Unified search with facets
       star-odk/page.tsx     -- STAR dApp generator (create, generate, deploy)
       settings/page.tsx     -- Provider selection, network config, session info
+      workflow/page.tsx     -- Quest template authoring + durable run driver (start/step/signal/status, live run state)
   components/
     ui/                     -- shadcn/ui components (button, card, dialog, table, etc.)
     layout/
@@ -101,6 +103,14 @@ frontend/src/
 - [ ] 4.1: **Search page** — search input with entity type filters (checkboxes for Avatars, Holons, Wallets, etc.), faceted results, pagination. Tests: POST /api/search with all SearchRequest fields
 - [ ] 4.2: **STAR ODK page** — list ODKs, create form, generate dApp (shows generated code), deploy stub. Tests: all 6 STARODK endpoints
 - [ ] 4.3: **Settings page** — current session info (JWT claims, expiry), provider selection (OASISRequest.providerName), network config display, SDK version info
+- [ ] 4.4: **Workflow page** — end-to-end exercise of the durable workflow engine via `oasis.workflow` (`WorkflowClient` + `quest()` factory). Covers:
+  - **Template authoring panel**: create a quest template (small DAG of generic nodes using `nodeConfig` builders — `gateCheck`, `emit`; optionally `swap`/`grant`/`transfer`/`refund`), list templates, get a template, instantiate with `{{param}}` values. SDK: `oasis.workflow.createTemplate()`, `.listTemplates()`, `.getTemplate(templateId)`, `.instantiate(templateId, params)`.
+  - **Fluent run driver panel — phase-by-phase**: drive a run step-by-step via `oasis.workflow.quest(questId).start({ params }).step(nodeId)` chains. Each `.step(nodeId)` issues `POST /api/quest/runs/{runId}/advance {fromNodeId}`.
+  - **Fluent run driver panel — start-and-signal-at-gates**: start a run then un-park a GATE node via `.signal(gateId, payload)` (`POST /api/quest/runs/{runId}/signal {gateId, payload}`). Demonstrates the hybrid model: both paths compose on the same `WorkflowRunHandle`.
+  - **Live run state visualizer**: poll `.status()` (`GET /api/quest/runs/{runId}`) and `.getExecutionState()` (`GET /api/quest/runs/{runId}/execution-state`) to display `WorkflowRunStatus` (`Pending` / `Running` / `Suspended` / `AwaitingSignal` / `AwaitingTimer` / `Succeeded` / `Failed` / `Cancelled`) and per-node `WorkflowNodeExecution` state. Use `.onSuspend(cb)` to surface when a run parks at a gate.
+  - **Pure-metadata demo flow** (Tier-1, chain-free): a `HolonCreate → GateCheck → Emit` quest run that completes without any wallet bound — the end-to-end proof that the durable engine + economic-primitive-nodes + workflow SDK all work together on the chain-free path.
+  - **Capability-gate demo** (Tier-2, optional): a quest with a `Transfer` node where no wallet is bound; the node must fail closed, proving the capability-gate enforcement.
+  - Tests: all workflow operations in the Functional Test Matrix below.
 
 ### Phase 5: Functional Test Dashboard
 
@@ -175,13 +185,24 @@ Every row must pass for the harness to be "green":
 | Search Facets | GET /api/search/facets | api.getSearchFacets() | /search | [ ] |
 | Create STARODK | POST /api/starodk | api.request() | /star-odk | [ ] |
 | Generate dApp | POST /api/starodk/{id}/generate | api.request() | /star-odk | [ ] |
+| Create Template | POST /api/quest/templates | oasis.workflow.createTemplate() | /workflow | [ ] |
+| List Templates | GET /api/quest/templates | oasis.workflow.listTemplates() | /workflow | [ ] |
+| Get Template | GET /api/quest/templates/{id} | oasis.workflow.getTemplate(id) | /workflow | [ ] |
+| Instantiate Template | POST /api/quest/templates/{id}/instantiate | oasis.workflow.instantiate(id, params) | /workflow | [ ] |
+| Start Run | POST /api/quest/{id}/start-workflow | quest(id).start({ params }) | /workflow | [ ] |
+| Advance (step) | POST /api/quest/runs/{id}/advance | .step(nodeId) | /workflow | [ ] |
+| Signal Gate | POST /api/quest/runs/{id}/signal | .signal(gateId, payload) | /workflow | [ ] |
+| Run Status | GET /api/quest/runs/{id} | .status() | /workflow | [ ] |
+| Run Execution State | GET /api/quest/runs/{id}/execution-state | oasis.workflow.getExecutionState(id) | /workflow | [ ] |
+| Pure-metadata run E2E | HolonCreate→GateCheck→Emit (no wallet) | quest(id).start().step()... | /workflow | [ ] |
+| Capability gate (Tier-2 no wallet) | Transfer node rejected when no wallet bound | quest(id).step() → fails closed | /workflow | [ ] |
 
 ## Acceptance Criteria
 
 - All shadcn/ui components render correctly
 - Auth flow works end-to-end with real JWT tokens
 - Every page exercises its corresponding API endpoints
-- Test runner page can execute all 38+ test cases and report pass/fail
+- Test runner page can execute all 51+ test cases (including 13 new workflow rows) and report pass/fail
 - UI correctly handles: loading states, error responses, empty states, network failures
 - Responsive down to 768px
 - No console errors in production build
@@ -192,3 +213,7 @@ Every row must pass for the harness to be "green":
 - Requires SDK built (`cd sdk/oasis-wallet && npm run build`)
 - Requires blockchain nodes accessible (testnet/devnet RPCs)
 - For bridge testing: Wormhole Guardian network access (testnet)
+- **Workflow page** requires the following tracks (all SHIPPED 2026-06-17):
+  - `durable-workflow-engine` — provides `POST /api/quest/{id}/start-workflow`, `POST /api/quest/runs/{id}/advance`, `POST /api/quest/runs/{id}/signal`, `GET /api/quest/runs/{id}`, `GET /api/quest/runs/{id}/execution-state`, and the `Suspended` / `AwaitingSignal` / `AwaitingTimer` run states
+  - `economic-primitive-nodes` — provides the generic `GateCheck` / `Emit` / `Swap` / `Grant` / `Transfer` / `Refund` node types whose configs the `nodeConfig` builders serialize
+  - `workflow-sdk` — provides `oasis.workflow` (`WorkflowClient` + `quest()` factory) on the OasisClient facade

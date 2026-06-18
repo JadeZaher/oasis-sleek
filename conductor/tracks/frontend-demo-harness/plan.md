@@ -2,7 +2,7 @@
 
 ## Overview
 
-6 phases building from shadcn/ui foundation through entity pages, blockchain operations, search/STAR, a functional test dashboard, and polish. Phases 2-4 can partially overlap. Phase 5 (test dashboard) depends on all prior pages.
+6 phases building from shadcn/ui foundation through entity pages, blockchain operations, search/STAR/workflow, a functional test dashboard, and polish. Phases 2-4 can partially overlap. Phase 5 (test dashboard) depends on all prior pages.
 
 ---
 
@@ -14,7 +14,7 @@
   Run `npx shadcn@latest init` in frontend/. Configure: New York style, zinc base color, CSS variables enabled. Install components: button, card, input, label, dialog, table, tabs, badge, toast, separator, skeleton, dropdown-menu, sheet, command, avatar, scroll-area, form, select, checkbox, switch, textarea, popover, tooltip.
 
 - [ ] Task 1.2: Build dashboard layout
-  Create `app/(dashboard)/layout.tsx` with collapsible sidebar (`components/layout/sidebar.tsx`) and header (`components/layout/header.tsx`). Sidebar nav items map to all pages in the spec. Header shows: auth status (avatar name), chain selector dropdown (Algorand/Solana), theme toggle (dark/light).
+  Create `app/(dashboard)/layout.tsx` with collapsible sidebar (`components/layout/sidebar.tsx`) and header (`components/layout/header.tsx`). Sidebar nav items map to all pages in the spec. Header shows: auth status (avatar name), chain selector dropdown (Algorand/Solana), theme toggle (dark/light). Nav list: /overview, /avatars, /holons, /wallets, /nfts, /avatar-nfts, /blockchain, /swap, /bridge, /search, /star-odk, /workflow, /settings.
 
 - [ ] Task 1.3: Build auth pages
   Create `app/(auth)/login/page.tsx` and `app/(auth)/register/page.tsx` using shadcn form components. Wire to `useOasisAuth()`. Redirect to dashboard on success. Show validation errors from API.
@@ -137,7 +137,40 @@
   - SDK version info.
   - "Clear session" button.
 
-- [ ] Verification: Search returns results across entity types. STAR ODK CRUD works. Settings display correct info.
+- [ ] Task 4.4: Workflow page
+  Create `app/(dashboard)/workflow/page.tsx`. This page exercises the durable workflow engine + economic-primitive-nodes + workflow-sdk end-to-end via `oasis.workflow` (the `WorkflowClient` and `quest()` factory composed on the OasisClient facade).
+
+  **Template authoring panel**
+  - Form to compose a quest template: name, description, and a small node DAG. Use the `nodeConfig` builders from `@oasis/sdk` to construct node config strings:
+    - `nodeConfig.gateCheck({ predicate, reads? })` for gate nodes
+    - `nodeConfig.emit({ payload })` for emit nodes
+    - `nodeConfig.swap/grant/transfer/refund` for chain nodes (optional, Tier-2)
+  - SDK calls: `oasis.workflow.createTemplate(params)` → `POST /api/quest/templates`
+  - Template list table: `oasis.workflow.listTemplates()` → `GET /api/quest/templates`
+  - Template detail viewer: `oasis.workflow.getTemplate(templateId)` → `GET /api/quest/templates/{id}`
+  - Instantiate dialog: param key/value inputs → `oasis.workflow.instantiate(templateId, params)` → `POST /api/quest/templates/{id}/instantiate`
+
+  **Phase-by-phase run driver panel**
+  - "Start run" button: calls `oasis.workflow.quest(questId).start({ params })` → `POST /api/quest/{questId}/start-workflow`; binds the handle to the returned `runId`.
+  - Node advance controls: for each node in the quest DAG, a "Step" button calls `.step(nodeId)` → `POST /api/quest/runs/{runId}/advance { fromNodeId }`. Steps chain on the same `WorkflowRunHandle` in order.
+  - Optional idempotency key input (passed as `.step(nodeId, { idempotencyKey })`) — sets `Idempotency-Key` header.
+
+  **Start-and-signal-at-gates panel**
+  - Start a run (same `.start()` as above), then show a signal form when the run parks at `AwaitingSignal`: gate id input + payload input → `.signal(gateId, payload)` → `POST /api/quest/runs/{runId}/signal { gateId, payload }`.
+  - Demonstrates the hybrid model: `.start()` then `.signal()` is the start-and-signal-at-gates path; `.step()` is the phase-by-phase path; both compose on the same `WorkflowRunHandle`.
+
+  **Live run state visualizer**
+  - Run status card: poll `.status()` → `GET /api/quest/runs/{runId}`. Display `WorkflowRunStatus` with color coding:
+    - Active: `Pending` (grey), `Running` (blue), `Suspended` (amber), `AwaitingSignal` (amber), `AwaitingTimer` (amber)
+    - Terminal: `Succeeded` (green), `Failed` (red), `Cancelled` (muted)
+  - Per-node execution table: `oasis.workflow.getExecutionState(runId)` → `GET /api/quest/runs/{runId}/execution-state`. Columns: nodeId, state, startedAt, endedAt, error.
+  - `.onSuspend(cb)` callback wired to surface a dismissible banner "Run parked at gate — signal to resume" when the run enters an awaiting state.
+
+  **Demo flows (built-in)**
+  - *Pure-metadata E2E* (Tier-1, chain-free): create a `HolonCreate → GateCheck → Emit` template, instantiate it, start the run, step through each node. No wallet required. This is the canonical proof that the durable engine + economic-primitive-nodes + workflow SDK work end-to-end on the chain-free path.
+  - *Capability-gate check* (Tier-2, optional): create a template with a `Transfer` node, start a run without any wallet bound, attempt to step through the Transfer node — the run must enter `Failed` state with a capability-gate rejection, proving fail-closed enforcement.
+
+- [ ] Verification: Template CRUD round-trips correctly. `quest(id).start().step(nodeId)` chain issues ordered HTTP calls and the run reaches `Succeeded`. Signal path parks at `AwaitingSignal` and resumes on `.signal()`. Live status visualizer reflects `WorkflowRunStatus` changes. Pure-metadata E2E completes without a wallet. Capability-gate demo fails closed on Transfer with no wallet. All 13 workflow rows in the Functional Test Matrix pass.
 
 ---
 
@@ -167,10 +200,20 @@
 - [ ] Task 5.6: Search + STAR test suite
   Tests: search with various filters, getFacets, STARODK CRUD + generate.
 
-- [ ] Task 5.7: Test persistence + regression
+- [ ] Task 5.7: Workflow test suite
+  Tests (mirrors the 13 workflow rows in the Functional Test Matrix):
+  - Template lifecycle: createTemplate → listTemplates → getTemplate → instantiate
+  - Phase-by-phase run: quest(questId).start({ params }).step(nodeId) — verify ordered HTTP calls + run reaches Succeeded
+  - Hybrid signal path: quest(questId).start().signal(gateId, payload) — verify run parks at AwaitingSignal then resumes
+  - Run status poll: .status() returns WorkflowRunStatus; getExecutionState() returns per-node WorkflowNodeExecution
+  - onSuspend fires on AwaitingSignal state
+  - Pure-metadata E2E: HolonCreate→GateCheck→Emit completes with status Succeeded, no wallet
+  - Capability-gate: Transfer node with no wallet bound → run enters Failed state (fail-closed)
+
+- [ ] Task 5.8: Test persistence + regression
   Save test results to localStorage with timestamp. Show diff against last run. Highlight regressions in red.
 
-- [ ] Verification: Test runner executes all 38+ test cases. Green/red indicators for each. Regression comparison works.
+- [ ] Verification: Test runner executes all 51+ test cases (including 13 workflow rows). Green/red indicators for each. Regression comparison works.
 
 ---
 
@@ -192,6 +235,6 @@
 | 1 | Foundation (shadcn/ui + layout + auth) | 1 day | No (sequential) |
 | 2 | Core entity pages (Avatar, Holon, Wallet) | 2 days | Yes (pages independent) |
 | 3 | Blockchain ops (NFT, Swap, Bridge) | 2-3 days | Yes (pages independent) |
-| 4 | Search, STAR, Settings | 1 day | Yes (pages independent) |
+| 4 | Search, STAR, Settings, Workflow | 2 days | Yes (pages independent) |
 | 5 | Functional test dashboard | 1-2 days | Depends on phases 2-4 |
 | 6 | Polish | 1 day | Yes |

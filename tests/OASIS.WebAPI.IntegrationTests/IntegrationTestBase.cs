@@ -228,7 +228,7 @@ public abstract class IntegrationTestBase : IClassFixture<OASISTestWebApplicatio
 
     /// Execute raw SurrealQL (DDL from Worker C's schema files).
     /// Must only be called with file-sourced SQL — never with runtime input.
-    private async Task ExecuteSurrealSqlRawAsync(string sql)
+    protected async Task ExecuteSurrealSqlRawAsync(string sql)
     {
         if (!await IsSurrealDbAvailableAsync()) return;
 
@@ -245,8 +245,11 @@ public abstract class IntegrationTestBase : IClassFixture<OASISTestWebApplicatio
             System.Text.Encoding.UTF8.GetBytes($"{SurrealTestDefaults.User}:{SurrealTestDefaults.Password}"));
         tempClient.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-        tempClient.DefaultRequestHeaders.Add("NS", TestNamespace);
-        tempClient.DefaultRequestHeaders.Add("DB", "test");
+        // SurrealDB 3.x requires the "Surreal-NS"/"Surreal-DB" header names; the
+        // legacy "NS"/"DB" names are ignored, which silently routed raw DDL to
+        // the DEFAULT namespace instead of the per-test one.
+        tempClient.DefaultRequestHeaders.Add("Surreal-NS", TestNamespace);
+        tempClient.DefaultRequestHeaders.Add("Surreal-DB", "test");
 
         var response = await tempClient.PostAsync("/sql",
             new StringContent(sql, System.Text.Encoding.UTF8, "text/plain"));

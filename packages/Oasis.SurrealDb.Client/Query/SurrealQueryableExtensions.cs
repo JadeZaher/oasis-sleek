@@ -104,6 +104,53 @@ namespace Oasis.SurrealDb.Client.Query
             where T : ISurrealRecord, new()
             => await CountAsync(source, ct).ConfigureAwait(false) > 0;
 
+        /// <summary>
+        /// Subscribe to live changes for this query over a
+        /// <see cref="Connection.WebSocketSurrealConnection"/> (Phase 5, D9):
+        /// folds the deferred chain, rewrites the leading <c>SELECT</c> to
+        /// <c>LIVE SELECT</c>, and streams
+        /// <see cref="Connection.LiveNotification{T}"/> until <paramref name="ct"/>
+        /// cancels — at which point the live query is <c>KILL</c>ed. ORDER BY /
+        /// LIMIT / START are dropped (LIVE SELECT does not order/page a stream);
+        /// the WHERE predicate + params are preserved.
+        /// </summary>
+        public static System.Collections.Generic.IAsyncEnumerable<Connection.LiveNotification<T>> ExecuteLiveAsync<T>(
+            this IQueryable<T> source,
+            Connection.WebSocketSurrealConnection socket,
+            CancellationToken ct = default)
+            where T : ISurrealRecord, new()
+        {
+            if (socket is null) throw new ArgumentNullException(nameof(socket));
+            if (source is not SurrealQueryable<T> sq)
+                throw new NotSupportedException(
+                    "ExecuteLiveAsync requires a SurrealQueryable<T> source (from SurrealContext.Set<T>()).");
+            var liveQuery = BuildLiveQuery(sq.BuildQuery());
+            return socket.LiveAsync<T>(liveQuery, ct);
+        }
+
+        /// <summary>
+        /// Rewrite a folded <c>SELECT * FROM t [WHERE …][ORDER…][LIMIT…]</c> into
+        /// <c>LIVE SELECT * FROM t [WHERE …]</c>, preserving the predicate +
+        /// params and dropping ordering/paging (meaningless on a live stream).
+        /// </summary>
+        private static SurrealQuery BuildLiveQuery<T>(SurrealQuery<T> typed)
+            where T : ISurrealRecord, new()
+        {
+            var inner = typed.AsUntyped();
+            var sql = inner.Sql;
+            const string select = "SELECT ";
+            if (!sql.StartsWith(select, StringComparison.Ordinal))
+                throw new NotSupportedException("ExecuteLiveAsync expects a SELECT query to convert to LIVE SELECT.");
+
+            // Strip ordering/paging tails — LIVE SELECT rejects them.
+            foreach (var tail in new[] { " ORDER BY ", " LIMIT ", " START " })
+            {
+                int idx = sql.IndexOf(tail, StringComparison.Ordinal);
+                if (idx >= 0) sql = sql.Substring(0, idx);
+            }
+            return SurrealQuery.Of("LIVE " + sql.TrimEnd()).WithParams(inner.Params);
+        }
+
         // ─── helpers ────────────────────────────────────────────────────────
 
         private static (ISurrealExecutor, SurrealQuery<T>) Resolve<T>(IQueryable<T> source)

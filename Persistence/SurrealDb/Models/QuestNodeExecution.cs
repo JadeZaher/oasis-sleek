@@ -74,7 +74,11 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         [Column(Order = 7, Type = "datetime")]
         [FieldGroup("Wall-clock time at which the row entered Running")]
-        [ReadOnly]
+        // NOT [ReadOnly]: started_at is set at the Pending->Running CLAIM
+        // (TryClaimPendingAsync UPDATE ... SET started_at = $_now), not at row
+        // creation — so it is legitimately written once AFTER insert. READONLY
+        // would reject the claim UPDATE (verified via integration test). Unlike
+        // the other 17 models whose creation timestamp is set at CREATE time.
         [JsonPropertyName("started_at")]
         public DateTimeOffset StartedAt { get; set; }
 

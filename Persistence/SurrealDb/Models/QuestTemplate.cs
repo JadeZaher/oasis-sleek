@@ -62,7 +62,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         // Order = 8 is the [ExtraSurrealField("nodes", ...)] declared at class level.
         // Order = 9 is the [ExtraSurrealField("edges", ...)] declared at class level.
 
-        [Column(Order = 10, Type = "array<object>", Flexible = true)]
+        // array<string> (not array<object>): Tags is a string list; SurrealDB
+        // 3.x strictly coerces array<object> and rejects string elements.
+        [Column(Order = 10, Type = "array<string>")]
         [FieldGroup("Free-form tags.")]
         public IReadOnlyList<string> Tags { get; set; } = System.Array.Empty<string>();
     }

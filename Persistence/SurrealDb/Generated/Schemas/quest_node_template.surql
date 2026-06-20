@@ -51,7 +51,7 @@ DEFINE FIELD IF NOT EXISTS is_public ON TABLE quest_node_template TYPE bool
     DEFAULT false;
 
 -- Free-form tags
-DEFINE FIELD IF NOT EXISTS tags ON TABLE quest_node_template TYPE array<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS tags ON TABLE quest_node_template TYPE array<string>;
 
 -- ── Indexes ──────────────────────────────────────────────────
 

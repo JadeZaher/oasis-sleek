@@ -40,7 +40,7 @@ DEFINE FIELD IF NOT EXISTS nodes ON TABLE quest_template TYPE array<object> FLEX
 DEFINE FIELD IF NOT EXISTS edges ON TABLE quest_template TYPE array<object> FLEXIBLE;
 
 -- Free-form tags.
-DEFINE FIELD IF NOT EXISTS tags ON TABLE quest_template TYPE array<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS tags ON TABLE quest_template TYPE array<string>;
 
 -- ── Indexes ──────────────────────────────────────────────────
 

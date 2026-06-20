@@ -123,7 +123,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Default("false")]
         public bool IsPublic { get; set; }
 
-        [Column(Order = 12, Type = "array<object>", Flexible = true)]
+        // array<string> (not array<object>): Tags is a string list; SurrealDB
+        // 3.x strictly coerces array<object> and rejects string elements.
+        [Column(Order = 12, Type = "array<string>")]
         [FieldGroup("Free-form tags")]
         public IReadOnlyList<string> Tags { get; set; } = System.Array.Empty<string>();
     }

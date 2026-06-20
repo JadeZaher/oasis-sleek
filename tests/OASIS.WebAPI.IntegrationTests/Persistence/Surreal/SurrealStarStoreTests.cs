@@ -398,65 +398,8 @@ public sealed class SurrealStarStoreTests : IAsyncLifetime
         catch { return false; }
     }
 
-    private async Task BootstrapSchemaAsync()
-    {
-        using var ddlClient = new HttpClient { BaseAddress = new Uri(SurrealTestDefaults.Endpoint) };
-        var credentials = Convert.ToBase64String(
-            System.Text.Encoding.UTF8.GetBytes($"{SurrealTestDefaults.User}:{SurrealTestDefaults.Password}"));
-        ddlClient.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-        // SurrealDB 3.x requires "Surreal-NS"/"Surreal-DB" headers; scope the
-        // DDL client to the per-test namespace so the table DDL lands there.
-        ddlClient.DefaultRequestHeaders.Add("Surreal-NS", _testNamespace);
-        ddlClient.DefaultRequestHeaders.Add("Surreal-DB", "test");
+    private Task BootstrapSchemaAsync()
+        => SurrealTestSchema.BootstrapAsync(_testNamespace, "star_odk");
 
-        // The namespace/database identifiers cannot be $params in DDL. Create
-        // the namespace at ROOT, then the database scoped to the namespace with
-        // the NS header ONLY (a Surreal-DB header naming a not-yet-existing db
-        // makes the connection-level USE fail). The table DDL below then runs
-        // with both NS+DB headers set.
-        using (var nsClient = new HttpClient { BaseAddress = new Uri(SurrealTestDefaults.Endpoint) })
-        {
-            nsClient.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-            await nsClient.PostAsync("/sql", new StringContent(
-                $"DEFINE NAMESPACE IF NOT EXISTS {_testNamespace}", System.Text.Encoding.UTF8, "text/plain"));
-            nsClient.DefaultRequestHeaders.Add("Surreal-NS", _testNamespace);
-            await nsClient.PostAsync("/sql", new StringContent(
-                "DEFINE DATABASE IF NOT EXISTS test", System.Text.Encoding.UTF8, "text/plain"));
-        }
-
-        // Inline DDL mirroring 110_star.surql (wave-2 schema).
-        const string ddl = """
-            DEFINE TABLE IF NOT EXISTS star_odk SCHEMAFULL;
-            DEFINE FIELD IF NOT EXISTS id               ON star_odk TYPE string;
-            DEFINE FIELD IF NOT EXISTS name             ON star_odk TYPE string;
-            DEFINE FIELD IF NOT EXISTS description      ON star_odk TYPE string;
-            DEFINE FIELD IF NOT EXISTS public_key       ON star_odk TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS private_key_hash ON star_odk TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS avatar_id        ON star_odk TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS bound_holon_ids  ON star_odk TYPE option<array<string>>;
-            DEFINE FIELD IF NOT EXISTS target_chain     ON star_odk TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS generated_code   ON star_odk TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS deployment_config ON star_odk TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS created_date     ON star_odk TYPE datetime;
-            DEFINE FIELD IF NOT EXISTS modified_date    ON star_odk TYPE option<datetime>;
-            DEFINE FIELD IF NOT EXISTS is_active        ON star_odk TYPE bool DEFAULT true
-            """;
-
-        var content = new StringContent(ddl, System.Text.Encoding.UTF8, "text/plain");
-        _ = await ddlClient.PostAsync("/sql", content);
-    }
-
-    private async Task DropNamespaceAsync()
-    {
-        using var dropClient = new HttpClient { BaseAddress = new Uri(SurrealTestDefaults.Endpoint) };
-        var credentials = Convert.ToBase64String(
-            System.Text.Encoding.UTF8.GetBytes($"{SurrealTestDefaults.User}:{SurrealTestDefaults.Password}"));
-        dropClient.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-                var removeSql = $"REMOVE NAMESPACE IF EXISTS {_testNamespace}";
-        _ = await dropClient.PostAsync("/sql",
-            new StringContent(removeSql, System.Text.Encoding.UTF8, "text/plain"));
-    }
+    private Task DropNamespaceAsync() => SurrealTestSchema.DropAsync(_testNamespace);
 }

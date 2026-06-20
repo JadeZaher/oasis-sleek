@@ -304,72 +304,8 @@ public sealed class SurrealBlockchainOperationStoreTests : IAsyncLifetime
     /// the schema runner having been executed separately. The SCHEMAFULL definition
     /// matches the wave-1 schema (050_operation_log.mermaid).
     /// </summary>
-    private async Task BootstrapSchemaAsync()
-    {
-        // Use the SurrealDB HTTP SQL endpoint directly for DDL.
-        using var ddlClient = new HttpClient { BaseAddress = new Uri(SurrealTestDefaults.Endpoint) };
-        var credentials = Convert.ToBase64String(
-            System.Text.Encoding.UTF8.GetBytes($"{SurrealTestDefaults.User}:{SurrealTestDefaults.Password}"));
-        ddlClient.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-        // SurrealDB 3.x requires "Surreal-NS"/"Surreal-DB" headers; scope the
-        // DDL client to the per-test namespace so the table DDL lands there.
-        ddlClient.DefaultRequestHeaders.Add("Surreal-NS", _testNamespace);
-        ddlClient.DefaultRequestHeaders.Add("Surreal-DB", "test");
+    private Task BootstrapSchemaAsync()
+        => SurrealTestSchema.BootstrapAsync(_testNamespace, "operation_log");
 
-        // The namespace/database identifiers cannot be $params in DDL. Create
-        // the namespace at ROOT, then the database scoped to the namespace with
-        // the NS header ONLY (a Surreal-DB header naming a not-yet-existing db
-        // makes the connection-level USE fail). The table DDL below then runs
-        // with both NS+DB headers set.
-        using (var nsClient = new HttpClient { BaseAddress = new Uri(SurrealTestDefaults.Endpoint) })
-        {
-            nsClient.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-            await nsClient.PostAsync("/sql", new StringContent(
-                $"DEFINE NAMESPACE IF NOT EXISTS {_testNamespace}", System.Text.Encoding.UTF8, "text/plain"));
-            nsClient.DefaultRequestHeaders.Add("Surreal-NS", _testNamespace);
-            await nsClient.PostAsync("/sql", new StringContent(
-                "DEFINE DATABASE IF NOT EXISTS test", System.Text.Encoding.UTF8, "text/plain"));
-        }
-
-        const string ddl = """
-            DEFINE TABLE IF NOT EXISTS operation_log SCHEMAFULL;
-            DEFINE FIELD IF NOT EXISTS id             ON operation_log TYPE string;
-            DEFINE FIELD IF NOT EXISTS avatar_id      ON operation_log TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS wallet_id      ON operation_log TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS operation_type ON operation_log TYPE string;
-            DEFINE FIELD IF NOT EXISTS status         ON operation_log TYPE string DEFAULT 'Pending';
-            DEFINE FIELD IF NOT EXISTS parameters     ON operation_log TYPE option<object>;
-            DEFINE FIELD IF NOT EXISTS token_uri      ON operation_log TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS amount         ON operation_log TYPE option<int>;
-            DEFINE FIELD IF NOT EXISTS asset_type     ON operation_log TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS source_holon_id ON operation_log TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS target_holon_id ON operation_log TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS exchange_rate  ON operation_log TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS recipient_address ON operation_log TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS idempotency_key ON operation_log TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS error          ON operation_log TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS created_date   ON operation_log TYPE datetime;
-            DEFINE FIELD IF NOT EXISTS completed_date ON operation_log TYPE option<datetime>
-            """;
-
-        // Raw text/plain DDL — namespace is passed via header, not interpolated.
-        var content = new StringContent(ddl, System.Text.Encoding.UTF8, "text/plain");
-        var response = await ddlClient.PostAsync("/sql", content);
-        // Best-effort — tests may still work if table already exists.
-        _ = response;
-    }
-
-    private async Task DropNamespaceAsync()
-    {
-        using var dropClient = new HttpClient { BaseAddress = new Uri(SurrealTestDefaults.Endpoint) };
-        var credentials = Convert.ToBase64String(
-            System.Text.Encoding.UTF8.GetBytes($"{SurrealTestDefaults.User}:{SurrealTestDefaults.Password}"));
-        dropClient.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-                var removeSql = $"REMOVE NAMESPACE IF EXISTS {_testNamespace}";
-        var content = new StringContent(removeSql, System.Text.Encoding.UTF8, "text/plain");
-        await dropClient.PostAsync("/sql", content);
-    }
+    private Task DropNamespaceAsync() => SurrealTestSchema.DropAsync(_testNamespace);
 }

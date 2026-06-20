@@ -442,75 +442,14 @@ public sealed class SurrealNftStoreTests : IAsyncLifetime
             MintedDate         = DateTime.UtcNow
         };
 
-    private async Task BootstrapSchemaAsync()
-    {
-        using var ddlClient = new HttpClient { BaseAddress = new Uri(SurrealTestDefaults.Endpoint) };
-        var credentials = Convert.ToBase64String(
-            System.Text.Encoding.UTF8.GetBytes($"{SurrealTestDefaults.User}:{SurrealTestDefaults.Password}"));
-        ddlClient.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-        // SurrealDB 3.x requires "Surreal-NS"/"Surreal-DB" headers; scope the
-        // DDL client to the per-test namespace so the table DDL lands there.
-        ddlClient.DefaultRequestHeaders.Add("Surreal-NS", _testNamespace);
-        ddlClient.DefaultRequestHeaders.Add("Surreal-DB", "test");
+    private Task BootstrapSchemaAsync()
+        // Apply the real nft_ownership golden + the two SCHEMALESS join tables
+        // (holon_nft_binding / wallet_nft_binding have no committed golden).
+        => SurrealTestSchema.BootstrapWithExtraAsync(
+            _testNamespace,
+            extraDdl: "DEFINE TABLE IF NOT EXISTS holon_nft_binding SCHEMALESS; " +
+                      "DEFINE TABLE IF NOT EXISTS wallet_nft_binding SCHEMALESS",
+            "nft_ownership");
 
-        // The namespace/database identifiers cannot be $params in DDL. Create
-        // the namespace at ROOT, then the database scoped to the namespace with
-        // the NS header ONLY (a Surreal-DB header naming a not-yet-existing db
-        // makes the connection-level USE fail). The table DDL below then runs
-        // with both NS+DB headers set.
-        using (var nsClient = new HttpClient { BaseAddress = new Uri(SurrealTestDefaults.Endpoint) })
-        {
-            nsClient.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-            await nsClient.PostAsync("/sql", new StringContent(
-                $"DEFINE NAMESPACE IF NOT EXISTS {_testNamespace}", System.Text.Encoding.UTF8, "text/plain"));
-            nsClient.DefaultRequestHeaders.Add("Surreal-NS", _testNamespace);
-            await nsClient.PostAsync("/sql", new StringContent(
-                "DEFINE DATABASE IF NOT EXISTS test", System.Text.Encoding.UTF8, "text/plain"));
-        }
-
-        // nft_ownership: mirrors 040_nft_ownership.surql
-        // holon_nft_binding + wallet_nft_binding: SCHEMALESS (no wave-1 .surql exists).
-        const string ddl = """
-            DEFINE TABLE IF NOT EXISTS nft_ownership SCHEMAFULL;
-            DEFINE FIELD IF NOT EXISTS id                ON nft_ownership TYPE string;
-            DEFINE FIELD IF NOT EXISTS avatar_id         ON nft_ownership TYPE string;
-            DEFINE FIELD IF NOT EXISTS chain_type        ON nft_ownership TYPE string;
-            DEFINE FIELD IF NOT EXISTS contract_address  ON nft_ownership TYPE string;
-            DEFINE FIELD IF NOT EXISTS token_id          ON nft_ownership TYPE string;
-            DEFINE FIELD IF NOT EXISTS token_standard    ON nft_ownership TYPE string;
-            DEFINE FIELD IF NOT EXISTS metadata_uri      ON nft_ownership TYPE string;
-            DEFINE FIELD IF NOT EXISTS image_uri         ON nft_ownership TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS name              ON nft_ownership TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS description       ON nft_ownership TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS attributes        ON nft_ownership TYPE option<object>;
-            DEFINE FIELD IF NOT EXISTS royalty_percentage ON nft_ownership TYPE decimal DEFAULT 0.0;
-            DEFINE FIELD IF NOT EXISTS royalty_recipient  ON nft_ownership TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS is_soulbound      ON nft_ownership TYPE bool DEFAULT false;
-            DEFINE FIELD IF NOT EXISTS is_transferable   ON nft_ownership TYPE bool DEFAULT true;
-            DEFINE FIELD IF NOT EXISTS is_current        ON nft_ownership TYPE bool DEFAULT true;
-            DEFINE FIELD IF NOT EXISTS current_owner     ON nft_ownership TYPE option<string>;
-            DEFINE FIELD IF NOT EXISTS is_active         ON nft_ownership TYPE bool DEFAULT true;
-            DEFINE FIELD IF NOT EXISTS minted_date       ON nft_ownership TYPE datetime;
-            DEFINE FIELD IF NOT EXISTS last_transfer_date ON nft_ownership TYPE option<datetime>;
-            DEFINE TABLE IF NOT EXISTS holon_nft_binding SCHEMALESS;
-            DEFINE TABLE IF NOT EXISTS wallet_nft_binding SCHEMALESS
-            """;
-
-        var content = new StringContent(ddl, System.Text.Encoding.UTF8, "text/plain");
-        _ = await ddlClient.PostAsync("/sql", content);
-    }
-
-    private async Task DropNamespaceAsync()
-    {
-        using var dropClient = new HttpClient { BaseAddress = new Uri(SurrealTestDefaults.Endpoint) };
-        var credentials = Convert.ToBase64String(
-            System.Text.Encoding.UTF8.GetBytes($"{SurrealTestDefaults.User}:{SurrealTestDefaults.Password}"));
-        dropClient.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
-                var removeSql = $"REMOVE NAMESPACE IF EXISTS {_testNamespace}";
-        _ = await dropClient.PostAsync("/sql",
-            new StringContent(removeSql, System.Text.Encoding.UTF8, "text/plain"));
-    }
+    private Task DropNamespaceAsync() => SurrealTestSchema.DropAsync(_testNamespace);
 }

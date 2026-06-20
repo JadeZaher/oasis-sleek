@@ -40,36 +40,31 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Id, Column(Order = 1, Type = "string")]
         [FieldGroup("Execution row identity (record id is the Guid('N') of QuestNodeExecution.Id)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2)]
         [FieldGroup("Owning run (originating run; cross-run references via `executes` RELATE edge)")]
         [References(typeof(QuestRun))]
-        [JsonPropertyName("run_id")]
         public string RunId { get; set; } = string.Empty;
 
         [Column(Order = 3)]
         [FieldGroup("Quest definition node this execution corresponds to")]
         [References(typeof(QuestNode))]
-        [JsonPropertyName("node_id")]
         public string NodeId { get; set; } = string.Empty;
 
         [Column(Order = 4, Type = "string")]
         [FieldGroup("QuestNodeState enum name")]
         [Inside("Pending", "Running", "Succeeded", "Failed", "Skipped", "Cancelled")]
         [Default("\"Pending\"")]
-        [JsonPropertyName("state"), JsonConverter(typeof(JsonStringEnumConverter))]
+        [JsonConverter(typeof(JsonStringEnumConverter))]
         public QuestNodeState State { get; set; }
 
         [Column(Order = 5, Type = "option<string>")]
         [FieldGroup("Serialized OASISResult<T> from the handler call (null until Succeeded)")]
-        [JsonPropertyName("output")]
         public string? Output { get; set; }
 
         [Column(Order = 6, Type = "option<string>")]
         [FieldGroup("Failure message when state is Failed")]
-        [JsonPropertyName("error")]
         public string? Error { get; set; }
 
         [Column(Order = 7, Type = "datetime")]
@@ -79,12 +74,10 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         // creation — so it is legitimately written once AFTER insert. READONLY
         // would reject the claim UPDATE (verified via integration test). Unlike
         // the other 17 models whose creation timestamp is set at CREATE time.
-        [JsonPropertyName("started_at")]
         public DateTimeOffset StartedAt { get; set; }
 
         [Column(Order = 8, Type = "option<datetime>")]
         [FieldGroup("Wall-clock time at which the row reached a terminal state (null while non-terminal)")]
-        [JsonPropertyName("ended_at")]
         public DateTimeOffset? EndedAt { get; set; }
     }
 }

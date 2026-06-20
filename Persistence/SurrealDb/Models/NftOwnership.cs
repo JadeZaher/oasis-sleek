@@ -27,98 +27,78 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         [Id, Column(Order = 1, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2)]
         [References(typeof(Avatar))]
-        [JsonPropertyName("avatar_id")]
         public string AvatarId { get; set; } = string.Empty;
 
         [Column(Order = 3, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("chain_type")]
         public string ChainType { get; set; } = string.Empty;
 
         [Column(Order = 4, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("contract_address")]
         public string ContractAddress { get; set; } = string.Empty;
 
         [Column(Order = 5, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("token_id")]
         public string TokenId { get; set; } = string.Empty;
 
         [Column(Order = 6, Type = "string")]
         [FieldGroup("Token standard (ERC721, ERC1155, ARC3, ...)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("token_standard")]
         public string TokenStandard { get; set; } = string.Empty;
 
         [Column(Order = 7, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("metadata_uri")]
         public string MetadataUri { get; set; } = string.Empty;
 
         [Column(Order = 8, Type = "option<string>")]
-        [JsonPropertyName("image_uri")]
         public string? ImageUri { get; set; }
 
         [Column(Order = 9, Type = "option<string>")]
-        [JsonPropertyName("name")]
         public string? Name { get; set; }
 
         [Column(Order = 10, Type = "option<string>")]
-        [JsonPropertyName("description")]
         public string? Description { get; set; }
 
         [Column(Order = 11, Type = "option<object>")]
         [FieldGroup("Attributes (flexible key->value bag)")]
-        [JsonPropertyName("attributes")]
         public JsonElement? Attributes { get; set; }
 
         [Column(Order = 12, Type = "decimal")]
         [Default("0.0")]
-        [JsonPropertyName("royalty_percentage")]
         public decimal RoyaltyPercentage { get; set; }
 
         [Column(Order = 13, Type = "option<string>")]
-        [JsonPropertyName("royalty_recipient")]
         public string? RoyaltyRecipient { get; set; }
 
         [Column(Order = 14, Type = "bool")]
         [Default("false")]
-        [JsonPropertyName("is_soulbound")]
         public bool IsSoulbound { get; set; }
 
         [Column(Order = 15, Type = "bool")]
         [Default("true")]
-        [JsonPropertyName("is_transferable")]
         public bool IsTransferable { get; set; }
 
         [Column(Order = 16, Type = "bool")]
         [FieldGroup("is_current: true = live ownership; false = historical")]
         [Default("true")]
-        [JsonPropertyName("is_current")]
         public bool IsCurrent { get; set; }
 
         [Column(Order = 17, Type = "option<string>")]
-        [JsonPropertyName("current_owner")]
         public string? CurrentOwner { get; set; }
 
         [Column(Order = 18, Type = "bool")]
         [Default("true")]
-        [JsonPropertyName("is_active")]
         public bool IsActive { get; set; }
 
         [Column(Order = 19, Type = "datetime")]
         [ReadOnly]
-        [JsonPropertyName("minted_date")]
         public DateTimeOffset MintedDate { get; set; }
 
         [Column(Order = 20, Type = "option<datetime>")]
-        [JsonPropertyName("last_transfer_date")]
         public DateTimeOffset? LastTransferDate { get; set; }
     }
 }

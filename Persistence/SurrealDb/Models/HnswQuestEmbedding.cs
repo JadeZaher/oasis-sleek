@@ -24,11 +24,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         [Column(Order = 1, Type = "string")]
         [FieldGroup("HNSW index on quest.embedding (DIMENSION 384, DIST COSINE)")]
-        [JsonPropertyName("table")]
         public string Table { get; set; } = string.Empty;
 
         [Column(Order = 2, Type = "string")]
-        [JsonPropertyName("fields")]
         public string Fields { get; set; } = string.Empty;
     }
 }

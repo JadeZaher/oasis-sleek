@@ -28,43 +28,36 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         [Id, Column(Order = 1, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2, Type = "string")]
         [FieldGroup("Digest is the replay-protection key (keccak256 of VAA body, hex)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("digest")]
         public string Digest { get; set; } = string.Empty;
 
         [Column(Order = 3, Type = "int")]
         [FieldGroup("Wormhole emitter chain ID")]
         [Assert("$value != NONE")]
-        [JsonPropertyName("emitter_chain_id")]
         public long EmitterChainId { get; set; }
 
         [Column(Order = 4, Type = "string")]
         [FieldGroup("Wormhole emitter address (hex, 32-byte Wormhole format)")]
         [Assert("$value != NONE AND $value != \"\" AND string::matches($value, \"^[0-9a-f]{64}$\")")]
-        [JsonPropertyName("emitter_address")]
         public string EmitterAddress { get; set; } = string.Empty;
 
         [Column(Order = 5, Type = "int")]
         [FieldGroup("Wormhole sequence number")]
         [Assert("$value != NONE")]
-        [JsonPropertyName("sequence")]
         public long Sequence { get; set; }
 
         [Column(Order = 6)]
         [FieldGroup("Bridge transaction this VAA was consumed for (audit linkage)")]
         [References(typeof(BridgeTx), Optional = true)]
-        [JsonPropertyName("bridge_transaction_id")]
         public string? BridgeTransactionId { get; set; }
 
         [Column(Order = 7, Type = "datetime")]
         [FieldGroup("Timestamp of consumption (immutable after insert)")]
         [ReadOnly]
-        [JsonPropertyName("consumed_at")]
         public DateTimeOffset ConsumedAt { get; set; }
     }
 }

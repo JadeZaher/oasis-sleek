@@ -37,53 +37,43 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         }
 
         [Id, Column(Order = 1, Type = "string")]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2)]
         [References(typeof(Avatar))]
-        [JsonPropertyName("avatar_id")]
         public string AvatarId { get; set; } = string.Empty;
 
         [Column(Order = 3, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("chain_type")]
         public string ChainType { get; set; } = string.Empty;
 
         [Column(Order = 4, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("address")]
         public string Address { get; set; } = string.Empty;
 
         [Column(Order = 5, Type = "option<string>")]
-        [JsonPropertyName("public_key")]
         public string? PublicKey { get; set; }
 
         [Column(Order = 6, Type = "option<string>")]
-        [JsonPropertyName("label")]
         public string? Label { get; set; }
 
         [Column(Order = 7, Type = "bool")]
         [Default("false")]
-        [JsonPropertyName("is_default")]
         public bool IsDefault { get; set; }
 
         [Column(Order = 8, Type = "string")]
         [Inside("External", "Platform")]
-        [JsonPropertyName("wallet_type"), JsonConverter(typeof(JsonStringEnumConverter))]
+        [JsonConverter(typeof(JsonStringEnumConverter))]
         public WalletTypeKind WalletType { get; set; }
 
         [Column(Order = 9, Type = "option<string>")]
-        [JsonPropertyName("encrypted_private_key")]
         public string? EncryptedPrivateKey { get; set; }
 
         [Column(Order = 10, Type = "option<string>")]
-        [JsonPropertyName("encrypted_seed_phrase")]
         public string? EncryptedSeedPhrase { get; set; }
 
         [Column(Order = 11, Type = "datetime")]
         [ReadOnly]
-        [JsonPropertyName("created_date")]
         public DateTimeOffset CreatedDate { get; set; }
     }
 }

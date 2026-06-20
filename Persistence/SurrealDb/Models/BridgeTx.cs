@@ -44,120 +44,98 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Id, Column(Order = 1, Type = "string")]
         [FieldGroup("Core identity")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2)]
         [References(typeof(Avatar))]
-        [JsonPropertyName("avatar_id")]
         public string AvatarId { get; set; } = string.Empty;
 
         [Column(Order = 3, Type = "string")]
         [FieldGroup("Route")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("source_chain")]
         public string SourceChain { get; set; } = string.Empty;
 
         [Column(Order = 4, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("target_chain")]
         public string TargetChain { get; set; } = string.Empty;
 
         [Column(Order = 5, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("source_token_id")]
         public string SourceTokenId { get; set; } = string.Empty;
 
         [Column(Order = 6, Type = "option<string>")]
-        [JsonPropertyName("target_token_id")]
         public string? TargetTokenId { get; set; }
 
         [Column(Order = 7, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("source_address")]
         public string SourceAddress { get; set; } = string.Empty;
 
         [Column(Order = 8, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("target_address")]
         public string TargetAddress { get; set; } = string.Empty;
 
         [Column(Order = 9, Type = "string")]
         [FieldGroup("Amount (string for arbitrary precision)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("amount")]
         public string Amount { get; set; } = string.Empty;
 
         [Column(Order = 10, Type = "string")]
         [FieldGroup("State machine")]
         [Inside("Initiated", "Locked", "AwaitingVAA", "VAAReady", "Redeeming", "Completed",
                 "Failed", "Refunded", "Reversing")]
-        [JsonPropertyName("status"), JsonConverter(typeof(JsonStringEnumConverter))]
+        [JsonConverter(typeof(JsonStringEnumConverter))]
         public StatusKind Status { get; set; }
 
         [Column(Order = 11, Type = "string")]
         [FieldGroup("Mode")]
         [Inside("Trusted", "Wormhole")]
         [Default("\"Trusted\"")]
-        [JsonPropertyName("mode"), JsonConverter(typeof(JsonStringEnumConverter))]
+        [JsonConverter(typeof(JsonStringEnumConverter))]
         public ModeKind Mode { get; set; }
 
         [Column(Order = 12, Type = "option<string>")]
         [FieldGroup("Transaction hashes (nullable)")]
-        [JsonPropertyName("lock_tx_hash")]
         public string? LockTxHash { get; set; }
 
         [Column(Order = 13, Type = "option<string>")]
-        [JsonPropertyName("mint_tx_hash")]
         public string? MintTxHash { get; set; }
 
         [Column(Order = 14, Type = "option<string>")]
-        [JsonPropertyName("proof_data")]
         public string? ProofData { get; set; }
 
         [Column(Order = 15, Type = "option<string>")]
-        [JsonPropertyName("error_message")]
         public string? ErrorMessage { get; set; }
 
         [Column(Order = 16, Type = "datetime")]
         [FieldGroup("Timestamps")]
         [ReadOnly]
-        [JsonPropertyName("created_at")]
         public DateTimeOffset CreatedAt { get; set; }
 
         [Column(Order = 17, Type = "option<datetime>")]
-        [JsonPropertyName("completed_at")]
         public DateTimeOffset? CompletedAt { get; set; }
 
         [Column(Order = 18, Type = "option<int>")]
         [FieldGroup("Wormhole-specific (populated when mode == Wormhole)")]
-        [JsonPropertyName("wormhole_emitter_chain_id")]
         public long? WormholeEmitterChainId { get; set; }
 
         [Column(Order = 19, Type = "option<string>")]
         [Assert("$value = NONE OR string::matches($value, \"^[0-9a-f]{64}$\")")]
-        [JsonPropertyName("wormhole_emitter_address")]
         public string? WormholeEmitterAddress { get; set; }
 
         [Column(Order = 20, Type = "option<int>")]
-        [JsonPropertyName("wormhole_sequence")]
         public long? WormholeSequence { get; set; }
 
         [Column(Order = 21, Type = "option<string>")]
-        [JsonPropertyName("vaa_bytes")]
         public string? VaaBytes { get; set; }
 
         [Column(Order = 22, Type = "option<int>")]
-        [JsonPropertyName("vaa_signature_count")]
         public long? VaaSignatureCount { get; set; }
 
         [Column(Order = 23, Type = "option<string>")]
-        [JsonPropertyName("redemption_tx_hash")]
         public string? RedemptionTxHash { get; set; }
 
         [Column(Order = 24, Type = "option<string>")]
         [FieldGroup("Exactly-once / atomic-transition safety (G2)")]
-        [JsonPropertyName("idempotency_key")]
         public string? IdempotencyKey { get; set; }
     }
 }

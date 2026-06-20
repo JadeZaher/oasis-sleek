@@ -2,6 +2,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using Oasis.SurrealDb.Client.Schema;
 
 namespace Oasis.SurrealDb.Client.Json;
 
@@ -33,28 +34,39 @@ public static class SurrealJsonOptions
 {
     /// <summary>
     /// The pre-configured options the client uses for every request / response.
-    /// Safe to share across threads; <see cref="JsonSerializerOptions"/> is
-    /// immutable once first used.
+    /// Lazily built on first access so a startup
+    /// <see cref="SurrealNaming.Convention"/> override is honored. Safe to
+    /// share across threads; <see cref="JsonSerializerOptions"/> is immutable
+    /// once first used.
     /// </summary>
-    public static JsonSerializerOptions Default { get; } = BuildDefault();
+    public static JsonSerializerOptions Default => _default.Value;
+
+    private static readonly System.Lazy<JsonSerializerOptions> _default =
+        new(BuildDefault, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
 
     private static JsonSerializerOptions BuildDefault()
     {
+        // Property/field wire names follow the process-wide naming convention
+        // (SurrealNaming.Convention, default snake_case) so the JSON key matches
+        // the SurrealDB column name the schema scanner derives from the same
+        // convention — no per-property [JsonPropertyName] needed. Enum VALUES
+        // stay camelCase (the JsonStringEnumConverter below) to match the
+        // SCHEMAFULL `ASSERT $value INSIDE [...]` token casing, independent of
+        // the field-name policy.
+        var policy = SurrealNaming.JsonPolicy;
         var opts = new JsonSerializerOptions
         {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            DictionaryKeyPolicy  = JsonNamingPolicy.CamelCase,
-            // The HTTP /sql contract uses snake-case property keys on
-            // statement slots, but the wave-1 schemas use lowerCamelCase for
-            // field names. We accept either on read via
-            // PropertyNameCaseInsensitive=true and emit camelCase on write —
-            // the camel form matches the wave-1 .mermaid sources.
+            PropertyNamingPolicy = policy,
+            DictionaryKeyPolicy  = policy,
+            // Read tolerates either casing so legacy payloads still deserialize.
             PropertyNameCaseInsensitive = true,
             DefaultIgnoreCondition      = JsonIgnoreCondition.WhenWritingNull,
             WriteIndented               = false,
         };
 
-        // C6 fix — strings, not ints, for enums.
+        // C6 fix — strings, not ints, for enums. Enum-value casing is fixed to
+        // camelCase regardless of the field-name policy (matches the schema's
+        // INSIDE token set).
         opts.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
         opts.Converters.Add(new RecordIdJsonConverter());
         opts.Converters.Add(new SurrealDateTimeJsonConverter());
@@ -89,13 +101,20 @@ public static class SurrealJsonOptions
     private static void StripSchemaNameFromSurrealRecords(JsonTypeInfo typeInfo)
     {
         if (!typeof(ISurrealRecord).IsAssignableFrom(typeInfo.Type)) return;
-        // The interface property is "SchemaName"; serialization with the
-        // default camelCase policy emits it as "schemaName". Match both
-        // so the modifier is robust to per-POCO naming overrides.
+        // Match on the CLR MEMBER name (SchemaName), not the policy-applied JSON
+        // name — the wire name varies with SurrealNaming.Convention (schemaName
+        // under camelCase, schema_name under snake_case), and matching the
+        // emitted name would miss it under the snake_case policy and leak
+        // `schema_name` into the CONTENT body (SCHEMAFULL "no such field").
         for (var i = typeInfo.Properties.Count - 1; i >= 0; i--)
         {
             var p = typeInfo.Properties[i];
-            if (string.Equals(p.Name, "schemaName", System.StringComparison.OrdinalIgnoreCase)
+            var clrName = (p.AttributeProvider as System.Reflection.MemberInfo)?.Name;
+            if (string.Equals(clrName, nameof(ISurrealRecord.SchemaName), System.StringComparison.Ordinal)
+                // Fallback: also match the policy-applied JSON name forms, so a
+                // POCO that hides the member or uses [JsonPropertyName] is covered.
+                || string.Equals(p.Name, "schemaName", System.StringComparison.OrdinalIgnoreCase)
+                || string.Equals(p.Name, "schema_name", System.StringComparison.OrdinalIgnoreCase)
                 || string.Equals(p.Name, "SchemaName", System.StringComparison.OrdinalIgnoreCase))
             {
                 typeInfo.Properties.RemoveAt(i);

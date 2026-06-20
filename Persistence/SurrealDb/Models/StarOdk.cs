@@ -26,60 +26,47 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         [Id, Column(Order = 1, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("name")]
         public string Name { get; set; } = string.Empty;
 
         [Column(Order = 3, Type = "string")]
-        [JsonPropertyName("description")]
         public string Description { get; set; } = string.Empty;
 
         [Column(Order = 4, Type = "option<string>")]
-        [JsonPropertyName("public_key")]
         public string? PublicKey { get; set; }
 
         [Column(Order = 5, Type = "option<string>")]
-        [JsonPropertyName("private_key_hash")]
         public string? PrivateKeyHash { get; set; }
 
         [Column(Order = 6)]
         [References(typeof(Avatar), Optional = true)]
-        [JsonPropertyName("avatar_id")]
         public string? AvatarId { get; set; }
 
         [Column(Order = 7, Type = "option<array<string>>")]
         [FieldGroup("BoundHolonIds (list of holon-id strings)")]
-        [JsonPropertyName("bound_holon_ids")]
         public IReadOnlyList<string>? BoundHolonIds { get; set; }
 
         [Column(Order = 8, Type = "option<string>")]
-        [JsonPropertyName("target_chain")]
         public string? TargetChain { get; set; }
 
         [Column(Order = 9, Type = "option<string>")]
-        [JsonPropertyName("generated_code")]
         public string? GeneratedCode { get; set; }
 
         [Column(Order = 10, Type = "option<string>")]
-        [JsonPropertyName("deployment_config")]
         public string? DeploymentConfig { get; set; }
 
         [Column(Order = 11, Type = "datetime")]
         [ReadOnly]
-        [JsonPropertyName("created_date")]
         public DateTimeOffset CreatedDate { get; set; }
 
         [Column(Order = 12, Type = "option<datetime>")]
-        [JsonPropertyName("modified_date")]
         public DateTimeOffset? ModifiedDate { get; set; }
 
         [Column(Order = 13, Type = "bool")]
         [Default("true")]
-        [JsonPropertyName("is_active")]
         public bool IsActive { get; set; }
     }
 }

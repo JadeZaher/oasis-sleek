@@ -27,30 +27,25 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Id, Column(Order = 1, Type = "string")]
         [FieldGroup("Core identity (record id is the Guid('N') of DappSeriesQuest.Id)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2)]
         [FieldGroup("Parent series")]
         [References(typeof(DappSeries))]
-        [JsonPropertyName("dapp_series_id")]
         public string DappSeriesId { get; set; } = string.Empty;
 
         [Column(Order = 3)]
         [FieldGroup("Referenced quest")]
         [References(typeof(Quest))]
-        [JsonPropertyName("quest_id")]
         public string QuestId { get; set; } = string.Empty;
 
         [Column(Order = 4, Type = "int")]
         [FieldGroup("1-indexed execution order within the series")]
         [Assert("$value > 0")]
-        [JsonPropertyName("order")]
         public long Order { get; set; }
 
         [Column(Order = 5, Type = "option<string>")]
         [FieldGroup("JSON array of InputMapping entries (null when no cross-quest flow needed)")]
-        [JsonPropertyName("input_mappings")]
         public string? InputMappings { get; set; }
     }
 }

@@ -30,47 +30,39 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Id, Column(Order = 1, Type = "string")]
         [FieldGroup("Core identity (record id is the Guid('N') of Quest.Id)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2)]
         [FieldGroup("Owner avatar (Guid('N') hex)")]
         [References(typeof(Avatar))]
-        [JsonPropertyName("avatar_id")]
         public string AvatarId { get; set; } = string.Empty;
 
         [Column(Order = 3, Type = "string")]
         [FieldGroup("Caller-supplied label")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("name")]
         public string Name { get; set; } = string.Empty;
 
         [Column(Order = 4, Type = "option<string>")]
         [FieldGroup("Optional description")]
-        [JsonPropertyName("description")]
         public string? Description { get; set; }
 
         [Column(Order = 5)]
         [FieldGroup("Source template id when instantiated from a QuestTemplate (null for hand-authored quests)")]
         [References(typeof(QuestTemplate), Optional = true)]
-        [JsonPropertyName("template_id")]
         public string? TemplateId { get; set; }
 
         [Column(Order = 6)]
         [FieldGroup("Owning DappSeries when this quest is part of a composed dApp (null for standalone quests)")]
         [References(typeof(DappSeries), Optional = true)]
-        [JsonPropertyName("dapp_series_id")]
         public string? DappSeriesId { get; set; }
 
         [Column(Order = 7, Type = "object", Flexible = true)]
         [FieldGroup("Free-form caller-supplied metadata (string->string map)")]
-        [JsonPropertyName("metadata")]
         public JsonElement Metadata { get; set; }
 
         [Column(Order = 8, Type = "datetime")]
         [FieldGroup("Definition birthdate -- STAYS on the definition, not a runtime artifact")]
         [ReadOnly]
-        [JsonPropertyName("created_date")]
         public DateTimeOffset CreatedDate { get; set; }
     }
 }

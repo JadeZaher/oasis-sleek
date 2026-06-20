@@ -526,7 +526,11 @@ namespace Oasis.SurrealDb.Schema.Generator
         private static string ResolveColumnName(PropertyInfo prop, ColumnAttribute? column)
         {
             if (column != null && !string.IsNullOrWhiteSpace(column.Name)) return column.Name!;
-            return ToSnakeCase(prop.Name);
+            // Derive from the property name via the process-wide naming
+            // convention (default snake_case) — the SAME source the runtime
+            // JSON policy uses, so the column name and the JSON wire name always
+            // agree without a per-property [JsonPropertyName].
+            return Oasis.SurrealDb.Client.Schema.SurrealNaming.ToColumnName(prop.Name);
         }
 
         private static string ResolveTypeToken(PropertyInfo prop, ColumnAttribute? column)

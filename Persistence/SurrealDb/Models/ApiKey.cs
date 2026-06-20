@@ -27,61 +27,50 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Id, Column(Order = 1, Type = "string")]
         [FieldGroup("Core identity (record id is the Guid('N') of ApiKey.Id)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2)]
         [FieldGroup("Owner avatar (Guid('N') hex); indexed for ListByAvatar")]
         [References(typeof(Avatar))]
-        [JsonPropertyName("avatar_id")]
         public string AvatarId { get; set; } = string.Empty;
 
         [Column(Order = 3, Type = "string")]
         [FieldGroup("Caller-supplied label (free string)")]
-        [JsonPropertyName("name")]
         public string Name { get; set; } = string.Empty;
 
         [Column(Order = 4, Type = "string")]
         [FieldGroup("SHA-256(raw key) hex -- the dedup key; UNIQUE")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("key_hash")]
         public string KeyHash { get; set; } = string.Empty;
 
         [Column(Order = 5, Type = "string")]
         [FieldGroup("Display prefix (first 16 chars of raw key, never the secret)")]
-        [JsonPropertyName("key_prefix")]
         public string KeyPrefix { get; set; } = string.Empty;
 
         [Column(Order = 6, Type = "datetime")]
         [FieldGroup("Creation timestamp (UTC)")]
         [ReadOnly]
-        [JsonPropertyName("created_date")]
         public DateTimeOffset CreatedDate { get; set; }
 
         [Column(Order = 7, Type = "option<datetime>")]
         [FieldGroup("Optional expiry (NONE = no expiry)")]
-        [JsonPropertyName("expires_at")]
         public DateTimeOffset? ExpiresAt { get; set; }
 
         [Column(Order = 8, Type = "option<datetime>")]
         [FieldGroup("Last-used timestamp (fire-and-forget; may lag under load)")]
-        [JsonPropertyName("last_used_at")]
         public DateTimeOffset? LastUsedAt { get; set; }
 
         [Column(Order = 9, Type = "option<datetime>")]
         [FieldGroup("Soft-delete marker (NONE = active)")]
-        [JsonPropertyName("revoked_at")]
         public DateTimeOffset? RevokedAt { get; set; }
 
         [Column(Order = 10, Type = "bool")]
         [FieldGroup("Active flag mirror for cheap WHERE filtering")]
         [Default("true")]
-        [JsonPropertyName("is_active")]
         public bool IsActive { get; set; }
 
         [Column(Order = 11, Type = "option<string>")]
         [FieldGroup("Optional comma-separated scopes (empty/NONE = full access)")]
-        [JsonPropertyName("scopes")]
         public string? Scopes { get; set; }
     }
 }

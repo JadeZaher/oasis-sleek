@@ -31,39 +31,32 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Id, Column(Order = 1, Type = "string")]
         [FieldGroup("Core identity (record id is the Guid('N') of QuestTemplate.Id)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2, Type = "string")]
         [FieldGroup("Caller-supplied label")]
-        [JsonPropertyName("name")]
         public string Name { get; set; } = string.Empty;
 
         [Column(Order = 3, Type = "option<string>")]
         [FieldGroup("Optional description")]
-        [JsonPropertyName("description")]
         public string? Description { get; set; }
 
         [Column(Order = 4, Type = "string")]
         [FieldGroup("Owner avatar (Guid('N') hex)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("author_avatar_id")]
         public string AuthorAvatarId { get; set; } = string.Empty;
 
         [Column(Order = 5, Type = "string")]
         [FieldGroup("JSON-Schema for instantiation parameters (string-encoded)")]
-        [JsonPropertyName("parameters")]
         public string Parameters { get; set; } = string.Empty;
 
         [Column(Order = 6, Type = "string")]
         [FieldGroup("Semantic version (free string -- e.g. 1.0.0)")]
-        [JsonPropertyName("version")]
         public string Version { get; set; } = string.Empty;
 
         [Column(Order = 7, Type = "bool")]
         [FieldGroup("Marketplace visibility flag")]
         [Default("false")]
-        [JsonPropertyName("is_public")]
         public bool IsPublic { get; set; }
 
         // Order = 8 is the [ExtraSurrealField("nodes", ...)] declared at class level.
@@ -71,7 +64,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         [Column(Order = 10, Type = "array<object>", Flexible = true)]
         [FieldGroup("Free-form tags.")]
-        [JsonPropertyName("tags")]
         public IReadOnlyList<string> Tags { get; set; } = System.Array.Empty<string>();
     }
 }

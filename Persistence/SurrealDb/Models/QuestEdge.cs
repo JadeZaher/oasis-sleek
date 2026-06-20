@@ -33,37 +33,32 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Id, Column(Order = 1, Type = "string")]
         [FieldGroup("Core identity (record id is the Guid('N') of QuestEdge.Id)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2)]
         [FieldGroup("Owning quest")]
         [References(typeof(Quest))]
-        [JsonPropertyName("quest_id")]
         public string QuestId { get; set; } = string.Empty;
 
         [Column(Order = 3)]
         [FieldGroup("Upstream node")]
         [References(typeof(QuestNode))]
-        [JsonPropertyName("source_node_id")]
         public string SourceNodeId { get; set; } = string.Empty;
 
         [Column(Order = 4)]
         [FieldGroup("Downstream node")]
         [References(typeof(QuestNode))]
-        [JsonPropertyName("target_node_id")]
         public string TargetNodeId { get; set; } = string.Empty;
 
         [Column(Order = 5, Type = "option<string>")]
         [FieldGroup("Optional condition expression (only with edge_type=Conditional)")]
-        [JsonPropertyName("condition")]
         public string? Condition { get; set; }
 
         [Column(Order = 6, Type = "string")]
         [FieldGroup("QuestEdgeType enum name")]
         [Inside("Control", "Conditional")]
         [Default("\"Control\"")]
-        [JsonPropertyName("edge_type"), JsonConverter(typeof(JsonStringEnumConverter))]
+        [JsonConverter(typeof(JsonStringEnumConverter))]
         public QuestEdgeTypeKind EdgeType { get; set; }
     }
 }

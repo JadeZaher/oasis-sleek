@@ -24,11 +24,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         [Column(Order = 1, Name = "in", Type = "string")]
         [FieldGroup("RELATION quest_run -> quest_node_execution (per-(run, node) ownership; many-to-many across forks).")]
-        [JsonPropertyName("in")]
         public string In { get; set; } = string.Empty;
 
         [Column(Order = 2, Name = "out", Type = "string")]
-        [JsonPropertyName("out")]
         public string Out { get; set; } = string.Empty;
     }
 }

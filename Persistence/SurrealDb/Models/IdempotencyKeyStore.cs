@@ -33,51 +33,43 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         [Id, Column(Order = 1, Type = "string")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
         [Column(Order = 2, Type = "string")]
         [FieldGroup("Idempotency key (caller-supplied or content hash); primary dedup key")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("key")]
         public string Key { get; set; } = string.Empty;
 
         [Column(Order = 3, Type = "string")]
         [FieldGroup("Logical operation type (e.g. bridge_redeem, faucet_dispense)")]
         [Required(NotEmpty = true)]
-        [JsonPropertyName("operation_type")]
         public string OperationType { get; set; } = string.Empty;
 
         [Column(Order = 4, Type = "string")]
         [FieldGroup("Lifecycle state")]
         [Inside("InProgress", "Completed", "Failed")]
         [Default("\"InProgress\"")]
-        [JsonPropertyName("state"), JsonConverter(typeof(JsonStringEnumConverter))]
+        [JsonConverter(typeof(JsonStringEnumConverter))]
         public StateKind State { get; set; }
 
         [Column(Order = 5, Type = "option<string>")]
         [FieldGroup("Serialized result of completed operation (replayed verbatim to duplicates)")]
-        [JsonPropertyName("result_payload")]
         public string? ResultPayload { get; set; }
 
         [Column(Order = 6, Type = "option<string>")]
         [FieldGroup("Failure reason when state == Failed")]
-        [JsonPropertyName("error")]
         public string? Error { get; set; }
 
         [Column(Order = 7, Type = "datetime")]
         [FieldGroup("Timestamps")]
         [ReadOnly]
-        [JsonPropertyName("created_at")]
         public DateTimeOffset CreatedAt { get; set; }
 
         [Column(Order = 8, Type = "datetime")]
-        [JsonPropertyName("updated_at")]
         public DateTimeOffset UpdatedAt { get; set; }
 
         [Column(Order = 9, Type = "option<datetime>")]
         [FieldGroup("TTL expiry timestamp -- sweep job purges old InProgress rows")]
-        [JsonPropertyName("ttl_expires_at")]
         public DateTimeOffset? TtlExpiresAt { get; set; }
     }
 }

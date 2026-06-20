@@ -205,8 +205,10 @@ public sealed class SurrealQueryTests
     {
         var q = SurrealQuery.SelectById("wallet", "abc123");
 
-        q.Sql.Should().Be("SELECT * FROM wallet WHERE id = $id");
-        q.Params.Should().ContainKey("id").WhoseValue.Should().Be("abc123");
+        // 3.x record-id addressing (a plain `WHERE id = $stringId` matches nothing).
+        q.Sql.Should().Be("SELECT * FROM type::record($_t, $_id)");
+        q.Params.Should().ContainKey("_t").WhoseValue.Should().Be("wallet");
+        q.Params.Should().ContainKey("_id").WhoseValue.Should().Be("abc123");
     }
 
     [Fact]
@@ -223,8 +225,9 @@ public sealed class SurrealQueryTests
     {
         var q = SurrealQuery.DeleteById("wallet", "abc123");
 
-        q.Sql.Should().Be("DELETE FROM wallet WHERE id = $id");
-        q.Params.Should().ContainKey("id").WhoseValue.Should().Be("abc123");
+        q.Sql.Should().Be("DELETE type::record($_t, $_id)");
+        q.Params.Should().ContainKey("_t").WhoseValue.Should().Be("wallet");
+        q.Params.Should().ContainKey("_id").WhoseValue.Should().Be("abc123");
     }
 
     [Fact]

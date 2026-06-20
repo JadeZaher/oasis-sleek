@@ -153,9 +153,17 @@ namespace Oasis.SurrealDb.Client.Query
         /// </summary>
         public static SurrealQuery SelectById(string table, object id)
         {
+            // SurrealDB 3.x: `WHERE id = $id` with a plain STRING id matches
+            // nothing — the stored id is a record id (table:key), not the bare
+            // string. Address the record directly via type::record($_t, $_id)
+            // (table + bare key both parameter-bound). The key strips any
+            // leading `table:` so a link-form or bare id both work.
+            // Validate the table name (throws on an invalid identifier) even
+            // though it is parameter-bound — preserves the build-time guard.
             var safeTable = SurrealIdentifier.ForTable(table);
-            return Of("SELECT * FROM " + safeTable + " WHERE id = $id")
-                   .WithParam("id", id);
+            return Of("SELECT * FROM type::record($_t, $_id)")
+                   .WithParam("_t", safeTable)
+                   .WithParam("_id", BareKey(id));
         }
 
         /// <summary>
@@ -176,9 +184,27 @@ namespace Oasis.SurrealDb.Client.Query
         /// </summary>
         public static SurrealQuery DeleteById(string table, object id)
         {
+            // See SelectById: address the record via type::record($_t, $_id)
+            // rather than `WHERE id = $stringId` (which matches nothing on 3.x).
             var safeTable = SurrealIdentifier.ForTable(table);
-            return Of("DELETE FROM " + safeTable + " WHERE id = $id")
-                   .WithParam("id", id);
+            return Of("DELETE type::record($_t, $_id)")
+                   .WithParam("_t", safeTable)
+                   .WithParam("_id", BareKey(id));
+        }
+
+        /// <summary>
+        /// Strip a leading <c>table:</c> prefix from a record id so it binds as
+        /// the bare key to <c>type::record($_t, $_id)</c>. Non-string ids pass
+        /// through unchanged.
+        /// </summary>
+        private static object BareKey(object id)
+        {
+            if (id is string s)
+            {
+                int colon = s.IndexOf(':');
+                return colon >= 0 ? s.Substring(colon + 1) : s;
+            }
+            return id;
         }
 
         // ─── Builder — params ────────────────────────────────────────────────

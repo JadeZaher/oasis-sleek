@@ -211,3 +211,9 @@ StrykerOutput/
 # Dev-only JSONL exception logs (W1-A1)
 logs/exceptions/
 conductor/.conductor_session_log
+
+# Agent-orchestration scratch / state (oh-my-claudecode, pi, mind-palace).
+# Local working memory only — not part of the application or its history.
+.omc/
+.pi/
+.mdg/

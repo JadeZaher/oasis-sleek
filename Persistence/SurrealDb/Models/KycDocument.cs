@@ -43,12 +43,10 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Required(NotEmpty = true)]
         public string FileName { get; set; } = string.Empty;
 
-        [Optional]
         public string? MimeType { get; set; }
 
         public long? FileSizeBytes { get; set; }
 
-        [Optional]
         public string? Metadata { get; set; }
 
         [ReadOnly]

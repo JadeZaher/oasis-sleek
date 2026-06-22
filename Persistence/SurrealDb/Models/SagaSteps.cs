@@ -84,11 +84,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [FieldGroup("Lease/visibility-timeout tracking (NONE when not claimed)")]
         public DateTimeOffset? ClaimedAt { get; set; }
 
-        [Optional]
         [FieldGroup("Diagnostics")]
         public string? LastError { get; set; }
 
-        [Optional]
         public string? Output { get; set; }
 
         [FieldGroup("Mirror of status==DeadLettered for cheap querying")]
@@ -101,7 +99,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         public DateTimeOffset UpdatedAt { get; set; }
 
-        [Optional]
         [FieldGroup("Gate id a Parked step waits on (durable-workflow-engine). NONE unless status==Parked. SignalAsync(correlationKey, gateId) un-parks the matching row via a G2 conditional UPDATE; a timer-armed park leaves this NONE and relies on next_run_at instead.")]
         public string? GateId { get; set; }
     }

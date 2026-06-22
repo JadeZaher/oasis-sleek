@@ -37,7 +37,7 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [FieldGroup("Caller-supplied label")]
         public string Name { get; set; } = string.Empty;
 
-        [Column(Order = 3), Optional]
+        [Column(Order = 3)]
         [FieldGroup("Optional description")]
         public string? Description { get; set; }
 

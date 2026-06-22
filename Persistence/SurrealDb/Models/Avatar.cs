@@ -37,13 +37,10 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Required(NotEmpty = true)]
         public string PasswordHash { get; set; } = string.Empty;
 
-        [Optional]
         public string? Title { get; set; }
 
-        [Optional]
         public string? FirstName { get; set; }
 
-        [Optional]
         public string? LastName { get; set; }
 
         [ReadOnly]
@@ -60,10 +57,8 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [References(typeof(Avatar), Optional = true)]
         public string? OwnerTenantId { get; set; }
 
-        [Optional]
         public string? ExternalUserId { get; set; }
 
-        [Optional]
         public string? ExternalRef { get; set; }
     }
 }

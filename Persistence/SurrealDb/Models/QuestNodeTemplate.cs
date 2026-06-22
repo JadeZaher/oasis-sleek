@@ -87,7 +87,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [JsonConverter(typeof(JsonStringEnumConverter))]
         public NodeTypeKind NodeType { get; set; }
 
-        [Optional]
         [FieldGroup("Optional description")]
         public string? Description { get; set; }
 

@@ -50,20 +50,20 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Required(NotEmpty = true)]
         public string ProviderName { get; set; } = string.Empty;
 
-        [Column(Order = 7), Optional]
+        [Column(Order = 7)]
         public string? ChainId { get; set; }
 
-        [Column(Order = 8), Optional]
+        [Column(Order = 8)]
         public string? AssetType { get; set; }
 
-        [Column(Order = 9), Optional]
+        [Column(Order = 9)]
         public string? TokenId { get; set; }
 
         [Column(Order = 10, Flexible = true)]
         [FieldGroup("Metadata (flexible key->value bag)")]
         public JsonElement? Metadata { get; set; }
 
-        [Column(Order = 11), Optional]
+        [Column(Order = 11)]
         [FieldGroup("PeerHolonIds (list of holon-id strings)")]
         public IReadOnlyList<string>? PeerHolonIds { get; set; }
 

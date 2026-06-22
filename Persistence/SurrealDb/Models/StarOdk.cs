@@ -33,26 +33,20 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         public string Description { get; set; } = string.Empty;
 
-        [Optional]
         public string? PublicKey { get; set; }
 
-        [Optional]
         public string? PrivateKeyHash { get; set; }
 
         [References(typeof(Avatar), Optional = true)]
         public string? AvatarId { get; set; }
 
-        [Optional]
         [FieldGroup("BoundHolonIds (list of holon-id strings)")]
         public IReadOnlyList<string>? BoundHolonIds { get; set; }
 
-        [Optional]
         public string? TargetChain { get; set; }
 
-        [Optional]
         public string? GeneratedCode { get; set; }
 
-        [Optional]
         public string? DeploymentConfig { get; set; }
 
         [ReadOnly]

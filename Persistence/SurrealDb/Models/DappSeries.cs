@@ -44,7 +44,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Required(NotEmpty = true)]
         public string Name { get; set; } = string.Empty;
 
-        [Optional]
         [FieldGroup("Optional description")]
         public string? Description { get; set; }
 
@@ -65,11 +64,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [References(typeof(StarOdk), Optional = true)]
         public string? StarOdkId { get; set; }
 
-        [Optional]
         [FieldGroup("Deployment target chain (e.g. algorand-mainnet) -- nullable until set")]
         public string? TargetChain { get; set; }
 
-        [Optional]
         [FieldGroup("Composed DappManifest as JSON-on-row (null until ComposeAsync runs)")]
         public string? Manifest { get; set; }
 

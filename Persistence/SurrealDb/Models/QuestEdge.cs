@@ -47,7 +47,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [References(typeof(QuestNode))]
         public string TargetNodeId { get; set; } = string.Empty;
 
-        [Optional]
         [FieldGroup("Optional condition expression (only with edge_type=Conditional)")]
         public string? Condition { get; set; }
 

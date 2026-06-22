@@ -59,7 +59,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Required(NotEmpty = true)]
         public string SourceTokenId { get; set; } = string.Empty;
 
-        [Optional]
         public string? TargetTokenId { get; set; }
 
         [Required(NotEmpty = true)]
@@ -84,17 +83,13 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [JsonConverter(typeof(JsonStringEnumConverter))]
         public ModeKind Mode { get; set; }
 
-        [Optional]
         [FieldGroup("Transaction hashes (nullable)")]
         public string? LockTxHash { get; set; }
 
-        [Optional]
         public string? MintTxHash { get; set; }
 
-        [Optional]
         public string? ProofData { get; set; }
 
-        [Optional]
         public string? ErrorMessage { get; set; }
 
         [FieldGroup("Timestamps")]
@@ -106,21 +101,17 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [FieldGroup("Wormhole-specific (populated when mode == Wormhole)")]
         public long? WormholeEmitterChainId { get; set; }
 
-        [Optional]
         [Assert("$value = NONE OR string::matches($value, \"^[0-9a-f]{64}$\")")]
         public string? WormholeEmitterAddress { get; set; }
 
         public long? WormholeSequence { get; set; }
 
-        [Optional]
         public string? VaaBytes { get; set; }
 
         public long? VaaSignatureCount { get; set; }
 
-        [Optional]
         public string? RedemptionTxHash { get; set; }
 
-        [Optional]
         [FieldGroup("Exactly-once / atomic-transition safety (G2)")]
         public string? IdempotencyKey { get; set; }
     }

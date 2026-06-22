@@ -43,21 +43,16 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [JsonConverter(typeof(JsonStringEnumConverter))]
         public KycStatus Status { get; set; }
 
-        [Optional]
         [FieldGroup("Review metadata (set by the admin review path)")]
         public string? ReviewerId { get; set; }
 
-        [Optional]
         public string? ReviewNotes { get; set; }
 
-        [Optional]
         public string? RejectionReason { get; set; }
 
-        [Optional]
         [FieldGroup("Provider session linkage (manual provider stamps the avatar id as a pseudo-session)")]
         public string? ProviderSessionId { get; set; }
 
-        [Optional]
         public string? ProviderResult { get; set; }
 
         [FieldGroup("Timestamps")]

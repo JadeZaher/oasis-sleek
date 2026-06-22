@@ -48,10 +48,8 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Required(NotEmpty = true)]
         public string Address { get; set; } = string.Empty;
 
-        [Optional]
         public string? PublicKey { get; set; }
 
-        [Optional]
         public string? Label { get; set; }
 
         [Default("false")]
@@ -61,10 +59,8 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [JsonConverter(typeof(JsonStringEnumConverter))]
         public WalletTypeKind WalletType { get; set; }
 
-        [Optional]
         public string? EncryptedPrivateKey { get; set; }
 
-        [Optional]
         public string? EncryptedSeedPhrase { get; set; }
 
         [ReadOnly]

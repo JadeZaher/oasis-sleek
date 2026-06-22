@@ -60,7 +60,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Default("true")]
         public bool IsActive { get; set; }
 
-        [Optional]
         [FieldGroup("Optional comma-separated scopes (empty/NONE = full access)")]
         public string? Scopes { get; set; }
     }

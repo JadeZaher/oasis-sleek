@@ -61,21 +61,17 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Required(NotEmpty = true)]
         public string AmountIn { get; set; } = string.Empty;
 
-        [Optional]
         public string? ExpectedAmountOut { get; set; }
 
-        [Optional]
         public string? ActualAmountOut { get; set; }
 
         [FieldGroup("Slippage in basis points")]
         [Default("50")]
         public long SlippageBps { get; set; }
 
-        [Optional]
         [FieldGroup("Wallet executing the swap")]
         public string? WalletAddress { get; set; }
 
-        [Optional]
         [FieldGroup("Quote reference (chain-side opaque)")]
         public string? QuoteId { get; set; }
 
@@ -86,11 +82,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [JsonConverter(typeof(JsonStringEnumConverter))]
         public StatusKind Status { get; set; }
 
-        [Optional]
         [FieldGroup("G2 idempotency")]
         public string? IdempotencyKey { get; set; }
 
-        [Optional]
         public string? ErrorMessage { get; set; }
 
         [ReadOnly]

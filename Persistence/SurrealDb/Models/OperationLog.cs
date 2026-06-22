@@ -64,13 +64,11 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [FieldGroup("Opaque parameters bag (Dictionary<string,string>)")]
         public JsonElement? Parameters { get; set; }
 
-        [Optional]
         [FieldGroup("IMintOperation fields")]
         public string? TokenUri { get; set; }
 
         public long? Amount { get; set; }
 
-        [Optional]
         public string? AssetType { get; set; }
 
         [FieldGroup("IExchangeOperation fields")]
@@ -80,18 +78,14 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [References(typeof(Holon), Optional = true)]
         public string? TargetHolonId { get; set; }
 
-        [Optional]
         public string? ExchangeRate { get; set; }
 
-        [Optional]
         [FieldGroup("ITransferOperation fields")]
         public string? RecipientAddress { get; set; }
 
-        [Optional]
         [FieldGroup("G2 idempotency")]
         public string? IdempotencyKey { get; set; }
 
-        [Optional]
         [FieldGroup("Error detail (populated on failure)")]
         public string? Error { get; set; }
 
@@ -101,11 +95,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
 
         public DateTimeOffset? CompletedDate { get; set; }
 
-        [Optional]
         [FieldGroup("Holon-asset link (economic-primitive-nodes)")]
         public string? AssetId { get; set; }
 
-        [Optional]
         public string? TxHash { get; set; }
 
         [References(typeof(Holon), Optional = true)]

@@ -49,11 +49,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [JsonConverter(typeof(JsonStringEnumConverter))]
         public StateKind State { get; set; }
 
-        [Optional]
         [FieldGroup("Serialized result of completed operation (replayed verbatim to duplicates)")]
         public string? ResultPayload { get; set; }
 
-        [Optional]
         [FieldGroup("Failure reason when state == Failed")]
         public string? Error { get; set; }
 

@@ -40,7 +40,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Required(NotEmpty = true)]
         public string Name { get; set; } = string.Empty;
 
-        [Optional]
         [FieldGroup("Optional description")]
         public string? Description { get; set; }
 

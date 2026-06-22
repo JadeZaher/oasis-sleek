@@ -70,11 +70,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [References(typeof(QuestNode), Optional = true)]
         public string? ForkedAtNodeId { get; set; }
 
-        [Optional]
         [FieldGroup("Free-form audit reason supplied when fork was triggered")]
         public string? ForkReason { get; set; }
 
-        [Optional]
         [FieldGroup("Free-form audit reason when a supervisor explicitly marked the run failed (distinct from internal-error path)")]
         public string? FailReason { get; set; }
     }

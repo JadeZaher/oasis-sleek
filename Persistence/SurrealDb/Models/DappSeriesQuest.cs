@@ -41,7 +41,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Assert("$value > 0")]
         public long Order { get; set; }
 
-        [Optional]
         [FieldGroup("JSON array of InputMapping entries (null when no cross-quest flow needed)")]
         public string? InputMappings { get; set; }
     }

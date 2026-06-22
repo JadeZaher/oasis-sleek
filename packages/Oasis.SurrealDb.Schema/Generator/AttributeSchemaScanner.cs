@@ -558,9 +558,17 @@ namespace Oasis.SurrealDb.Schema.Generator
             // Explicit Column.Type wins over CLR inference when no FK is declared.
             if (column != null && !string.IsNullOrWhiteSpace(column.Type)) return column.Type!;
 
-            var optional = prop.GetCustomAttribute<OptionalAttribute>(inherit: false) != null;
+            // Nullability sources, in order:
+            //   * [Required] forces NOT NULL (overrides everything below).
+            //   * [Optional] forces option<> (explicit override).
+            //   * a C# nullable-reference-type annotation (`string?`) — read from
+            //     the compiler's NullableAttribute byte-blob — infers option<>
+            //     with no attribute needed. (Nullable<T> value types are handled
+            //     inside MapClrTypeToSurreal.)
             var required = prop.GetCustomAttribute<RequiredAttribute>(inherit: false) != null;
-            if (optional && required)
+            var optional = prop.GetCustomAttribute<OptionalAttribute>(inherit: false) != null
+                           || IsNullableReferenceType(prop);
+            if (prop.GetCustomAttribute<OptionalAttribute>(inherit: false) != null && required)
             {
                 throw new InvalidOperationException(
                     $"'{prop.DeclaringType?.Name}.{prop.Name}' carries both [Optional] and [Required] -- " +
@@ -588,9 +596,11 @@ namespace Oasis.SurrealDb.Schema.Generator
             var nullable = Nullable.GetUnderlyingType(t);
             if (nullable != null) return (MapClrTypeToSurreal(nullable).token, true);
 
-            // Reference-type nullability cannot be observed from the CLR
-            // alone (need the NullableAttribute byte blob); authors set the
-            // [Optional] attribute when they want the wrap.
+            // Reference-type nullability is read from the compiler's
+            // NullableAttribute byte-blob by IsNullableReferenceType (called from
+            // ResolveTypeToken), not here — this mapper only carries the storage
+            // token. [Optional] remains an explicit override for the rare case of
+            // forcing option<> on a non-nullable property.
 
             // CLR enums round-trip as JSON strings (the consumer wires
             // JsonStringEnumConverter) and project onto SurrealDB `string`.
@@ -635,6 +645,51 @@ namespace Oasis.SurrealDb.Schema.Generator
             throw new NotSupportedException(
                 "Cannot infer SurrealDB type for CLR type '" + t.FullName + "'. " +
                 "Add [Column(Type = \"...\")] explicitly.");
+        }
+
+        /// <summary>
+        /// True when <paramref name="prop"/> is a C# nullable-reference-type
+        /// (<c>string?</c>), inferred from the compiler-emitted
+        /// <c>NullableAttribute</c> (per-member) / <c>NullableContextAttribute</c>
+        /// (per-declaring-type) byte-blob. This is plain custom-attribute
+        /// reflection — it works on netstandard2.0 as well as net8.0, unlike
+        /// <c>NullabilityInfoContext</c> (net6+ only). Value types are excluded
+        /// (their nullability is carried by <c>Nullable&lt;T&gt;</c>, handled in
+        /// <see cref="MapClrTypeToSurreal"/>); a member with no nullability
+        /// metadata (oblivious context) reads as not-null.
+        /// In the NRT flag encoding: 1 = not-null, 2 = nullable.
+        /// </summary>
+        private static bool IsNullableReferenceType(PropertyInfo prop)
+        {
+            var t = prop.PropertyType;
+            if (t.IsValueType) return false; // value-type nullability => Nullable<T>
+
+            // Per-member [Nullable(...)]: a single byte or a byte[] whose FIRST
+            // element describes the top-level type.
+            foreach (var attr in prop.GetCustomAttributes(inherit: false))
+            {
+                var at = attr.GetType();
+                if (at.FullName != "System.Runtime.CompilerServices.NullableAttribute") continue;
+                var field = at.GetField("NullableFlags");
+                if (field?.GetValue(attr) is byte[] flags && flags.Length > 0)
+                    return flags[0] == 2;
+            }
+
+            // Fall back to the declaring type's [NullableContext(flag)] default.
+            var declaring = prop.DeclaringType;
+            while (declaring != null)
+            {
+                foreach (var attr in declaring.GetCustomAttributes(inherit: false))
+                {
+                    var at = attr.GetType();
+                    if (at.FullName != "System.Runtime.CompilerServices.NullableContextAttribute") continue;
+                    if (at.GetField("Flag")?.GetValue(attr) is byte flag)
+                        return flag == 2;
+                }
+                declaring = declaring.DeclaringType; // nested types inherit the enclosing context
+            }
+
+            return false; // oblivious => not-null
         }
 
         /// <summary>PascalCase -> snake_case. Mirrors generator inverse.</summary>

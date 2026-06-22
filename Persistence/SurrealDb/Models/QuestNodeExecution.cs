@@ -56,11 +56,9 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [JsonConverter(typeof(JsonStringEnumConverter))]
         public QuestNodeState State { get; set; }
 
-        [Optional]
         [FieldGroup("Serialized OASISResult<T> from the handler call (null until Succeeded)")]
         public string? Output { get; set; }
 
-        [Optional]
         [FieldGroup("Failure message when state is Failed")]
         public string? Error { get; set; }
 

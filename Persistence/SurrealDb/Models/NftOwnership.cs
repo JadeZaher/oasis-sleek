@@ -48,13 +48,10 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Required(NotEmpty = true)]
         public string MetadataUri { get; set; } = string.Empty;
 
-        [Optional]
         public string? ImageUri { get; set; }
 
-        [Optional]
         public string? Name { get; set; }
 
-        [Optional]
         public string? Description { get; set; }
 
         [Column(Flexible = true)]
@@ -64,7 +61,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Default("0.0")]
         public decimal RoyaltyPercentage { get; set; }
 
-        [Optional]
         public string? RoyaltyRecipient { get; set; }
 
         [Default("false")]
@@ -77,7 +73,6 @@ namespace OASIS.WebAPI.Persistence.SurrealDb.Models
         [Default("true")]
         public bool IsCurrent { get; set; }
 
-        [Optional]
         public string? CurrentOwner { get; set; }
 
         [Default("true")]

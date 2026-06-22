@@ -155,7 +155,9 @@ public sealed class SurrealAvatarStoreTests : IAsyncLifetime
         var result = await _store.GetByIdAsync(Guid.NewGuid());
 
         result.IsError.Should().BeTrue();
-        result.Message.Should().Be("Avatar not found.");
+        // GetById returns a verbose, actionable not-found message (id + re-auth
+        // hint); assert the stable prefix rather than the full diagnostic text.
+        result.Message.Should().StartWith("Avatar not found");
         result.Result.Should().BeNull();
     }
 
@@ -222,7 +224,7 @@ public sealed class SurrealAvatarStoreTests : IAsyncLifetime
 
         var getResult = await _store.GetByIdAsync(avatar.Id);
         getResult.IsError.Should().BeTrue();
-        getResult.Message.Should().Be("Avatar not found.");
+        getResult.Message.Should().StartWith("Avatar not found");
     }
 
     /// <summary>Test 5: Delete of a non-existent id returns IsError=true, Result=false.</summary>

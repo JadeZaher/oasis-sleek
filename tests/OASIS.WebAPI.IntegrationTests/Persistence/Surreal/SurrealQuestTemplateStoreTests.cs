@@ -198,7 +198,9 @@ public sealed class SurrealQuestTemplateStoreTests : IAsyncLifetime
             ["id"] = nodeTemplateId.ToString("N").ToLowerInvariant(),
             ["name"] = name,
             ["node_type"] = nodeType,
-            ["description"] = (string?)null,
+            // description omitted intentionally: it is an option<string> and
+            // SurrealDB 3.x rejects an EXPLICIT null for option<T> (an absent
+            // field is the NONE that option<> wants).
             ["default_config"] = defaultConfig,
             ["config_schema"] = "{}",
             ["input_schema"] = "{}",

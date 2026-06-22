@@ -230,6 +230,21 @@ public sealed class SurrealQuestStore : IQuestStore
         {
             var surrealId = ToSurrealId(id);
 
+            // Pre-check existence: a DELETE of a missing row is a silent no-op in
+            // SurrealDB, and the post-delete absence check cannot distinguish
+            // "deleted an existing row" from "never existed". Mirror the NFT/Holon
+            // delete contract — a non-existent id is an error, not a success.
+            var existsQ = SurrealQuery
+                .Of("SELECT id FROM type::record($_t, $_id)")
+                .WithParam("_t",  QuestTable)
+                .WithParam("_id", surrealId);
+            var existing = await _executor.QueryAsync<QuestIdProjection>(existsQ, ct);
+            if (existing.Count == 0)
+                return new OASISResult<bool>
+                {
+                    Result = false, IsError = true, Message = $"Quest {id} not found.",
+                };
+
             // Delete head + child rows. SurrealQuery.Of rejects a multi-statement
             // (';'-joined) body, so compose three single-statement DELETEs via
             // Combine (mirrors HydrateChildrenAsync / UpsertQuestAsync). SurrealDB

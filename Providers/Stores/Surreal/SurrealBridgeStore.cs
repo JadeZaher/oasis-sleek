@@ -360,39 +360,44 @@ public sealed class SurrealBridgeStore : IBridgeStore
 
         if (alsoSet is not null)
         {
+            // String columns are type::string()-wrapped: a `table:id`-shaped value
+            // (e.g. TargetTokenId "ASA:777") is otherwise coerced into a record id
+            // by SurrealDB 3.x and rejected by the option<string> column, faulting
+            // the whole UPDATE (so it returned affected=0). Numeric/datetime fields
+            // below are bound bare. This mirrors SurrealWriter's wrapping rule.
             if (alsoSet.IdempotencyKey is not null)
             {
-                setParts.Add("idempotency_key = $_idem");
+                setParts.Add("idempotency_key = type::string($_idem)");
                 paramBag["_idem"] = alsoSet.IdempotencyKey;
             }
             if (alsoSet.ErrorMessage is not null)
             {
-                setParts.Add("error_message = $_err");
+                setParts.Add("error_message = type::string($_err)");
                 paramBag["_err"] = alsoSet.ErrorMessage;
             }
             if (alsoSet.LockTxHash is not null)
             {
-                setParts.Add("lock_tx_hash = $_lock");
+                setParts.Add("lock_tx_hash = type::string($_lock)");
                 paramBag["_lock"] = alsoSet.LockTxHash;
             }
             if (alsoSet.SourceAddress is not null)
             {
-                setParts.Add("source_address = $_src_addr");
+                setParts.Add("source_address = type::string($_src_addr)");
                 paramBag["_src_addr"] = alsoSet.SourceAddress;
             }
             if (alsoSet.RedemptionTxHash is not null)
             {
-                setParts.Add("redemption_tx_hash = $_redeem");
+                setParts.Add("redemption_tx_hash = type::string($_redeem)");
                 paramBag["_redeem"] = alsoSet.RedemptionTxHash;
             }
             if (alsoSet.MintTxHash is not null)
             {
-                setParts.Add("mint_tx_hash = $_mint");
+                setParts.Add("mint_tx_hash = type::string($_mint)");
                 paramBag["_mint"] = alsoSet.MintTxHash;
             }
             if (alsoSet.TargetTokenId is not null)
             {
-                setParts.Add("target_token_id = $_target_token");
+                setParts.Add("target_token_id = type::string($_target_token)");
                 paramBag["_target_token"] = alsoSet.TargetTokenId;
             }
             if (alsoSet.WormholeEmitterChainId is not null)
@@ -402,7 +407,7 @@ public sealed class SurrealBridgeStore : IBridgeStore
             }
             if (alsoSet.WormholeEmitterAddress is not null)
             {
-                setParts.Add("wormhole_emitter_address = $_emit_addr");
+                setParts.Add("wormhole_emitter_address = type::string($_emit_addr)");
                 paramBag["_emit_addr"] = alsoSet.WormholeEmitterAddress;
             }
             if (alsoSet.WormholeSequence is not null)

@@ -91,18 +91,9 @@ public sealed class SurrealWalletStore : IWalletStore
             if (wallet.Id == Guid.Empty)
                 wallet.Id = Guid.NewGuid();
 
-            var poco   = ToPoco(wallet);
-            var surrId = poco.Id;
+            var poco = ToPoco(wallet);
 
-            // UPSERT type::record($_t, $_id) CONTENT $_body RETURN AFTER
-            // SurrealDB upsert: creates the record if it does not exist; replaces
-            // it if it does. Same pattern as SurrealBlockchainOperationStore.
-            var q = SurrealQuery
-                .Of("UPSERT type::record($_t, $_id) CONTENT $_body RETURN AFTER")
-                .WithParam("_t",    GeneratedWallet.SchemaNameConst)
-                .WithParam("_id",   surrId)
-                .WithParam("_body", poco);
-
+            var q    = SurrealWriter.Upsert(poco);
             var resp = await _executor.ExecuteAsync(q, ct);
             resp.EnsureAllOk();
 

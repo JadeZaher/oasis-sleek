@@ -82,7 +82,9 @@ public sealed class SurrealQuestTemplateStore : IQuestTemplateStore
     {
         var template = new QuestTemplate
         {
-            Id             = FromSurrealId(p.Id),
+            // SELECT * returns the record id in full `table:<hex>` form; strip the
+            // table prefix before parsing the bare 32-hex Guid.
+            Id             = FromSurrealIdStripped(p.Id),
             Name           = p.Name ?? string.Empty,
             Description    = p.Description,
             AuthorAvatarId = string.IsNullOrEmpty(p.AuthorAvatarId)
@@ -139,7 +141,7 @@ public sealed class SurrealQuestTemplateStore : IQuestTemplateStore
 
     private static QuestNodeTemplate ToDomain(QuestNodeTemplatePoco p) => new()
     {
-        Id             = FromSurrealId(p.Id),
+        Id             = FromSurrealIdStripped(p.Id),
         Name           = p.Name ?? string.Empty,
         NodeType       = ParseNodeType(p.NodeType),
         Description    = p.Description,

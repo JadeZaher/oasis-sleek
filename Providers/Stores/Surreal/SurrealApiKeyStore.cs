@@ -102,7 +102,14 @@ public sealed class SurrealApiKeyStore : IApiKeyStore
             .WithParam("_body", poco);
 
         var response = await _executor.ExecuteAsync(q, ct);
-        response.EnsureAllOk();
+        if (!response[0].IsOk)
+        {
+            // Surface the DB error (notably the unique-hash-index violation) as a
+            // domain InvalidOperationException with a store-prefixed message, the
+            // contract callers and tests expect — not the raw transport exception.
+            throw new InvalidOperationException(
+                $"SurrealApiKeyStore.CreateAsync failed: {response[0].ErrorText}");
+        }
     }
 
     public async Task<bool> RevokeAsync(Guid id, Guid avatarId, DateTime revokedAt, CancellationToken ct)

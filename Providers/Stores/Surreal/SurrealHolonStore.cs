@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Oasis.SurrealDb.Client;
 using Oasis.SurrealDb.Client.Json;
 using Oasis.SurrealDb.Client.Query;
+using Oasis.SurrealDb.Client.Schema;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
@@ -163,13 +164,11 @@ public sealed class SurrealHolonStore : IHolonStore
                 holon.Id = Guid.NewGuid();
 
             var poco   = ToPoco(holon);
-            var surrId = poco.Id;
 
-            var q = SurrealQuery
-                .Of("UPSERT type::record($_t, $_id) CONTENT $_body RETURN AFTER")
-                .WithParam("_t",    HolonPoco.HolonTable)
-                .WithParam("_id",   surrId)
-                .WithParam("_body", poco);
+            // Coercion-safe SET-based UPSERT (SurrealWriter): keeps `table:id`-shaped
+            // string columns as strings (3.x would otherwise coerce them to record
+            // ids), type::decimal-wraps decimals, and omits null option<> fields.
+            var q = SurrealWriter.Upsert(poco);
 
             var resp = await _executor.ExecuteAsync(q, ct);
             resp.EnsureAllOk();
@@ -232,12 +231,14 @@ public sealed class SurrealHolonStore : IHolonStore
             metadataJson = doc.RootElement.Clone();
         }
 
-        // Serialize PeerHolonIds (List<Guid>) as a JSON array of record links
-        // (holon:<id>) for the `array<record<holon>>` schema field.
+        // Serialize PeerHolonIds (List<Guid>) as a JSON array of BARE hex ids
+        // for the `array<string>` schema field. NOT `holon:<id>` links — a
+        // `table:id`-shaped element is coerced to a record id by 3.x even inside
+        // an `array<string>` column, which the schema then rejects.
         JsonElement? peerIdsJson = null;
         if (h.PeerHolonIds is { Count: > 0 })
         {
-            var strs = h.PeerHolonIds.Select(g => SurrealLink.ToLink(HolonPoco.HolonTable, ToSurrealId(g))).ToList();
+            var strs = h.PeerHolonIds.Select(ToSurrealId).ToList();
             var raw  = JsonSerializer.Serialize(strs, SurrealJsonOptions.Default);
             using var doc = JsonDocument.Parse(raw);
             peerIdsJson = doc.RootElement.Clone();
@@ -288,7 +289,9 @@ public sealed class SurrealHolonStore : IHolonStore
                 var strs = JsonSerializer.Deserialize<List<string>>(
                     p.PeerHolonIds.Value.GetRawText(), SurrealJsonOptions.Default);
                 if (strs != null)
-                    peerHolonIds = strs.Select(s => FromSurrealId(SurrealLink.FromLink(s)!)).ToList();
+                    // Stored as bare hex ids (array<string>); tolerate a legacy
+                    // `holon:<id>` link form by stripping the prefix if present.
+                    peerHolonIds = strs.Select(s => FromSurrealId(SurrealLink.FromLink(s) ?? s)).ToList();
             }
             catch { /* best-effort */ }
         }
@@ -314,51 +317,69 @@ public sealed class SurrealHolonStore : IHolonStore
 
     // ── Inline POCO ───────────────────────────────────────────────────────────
 
+    // Column(Type=...) attributes mirror Generated/Schemas/holon.surql so the
+    // SET-based SurrealWriter classifies each field correctly: record<…> columns
+    // are bound as-is (NOT type::string-wrapped), plain strings ARE wrapped so a
+    // `table:id`-shaped value is not mis-coerced into a record id.
     private sealed class HolonPoco : ISurrealRecord
     {
         public const string HolonTable = "holon";
 
         public string SchemaName => HolonTable;
 
+        [Id, Column(Type = "string")]
         [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
+        [Column(Type = "string")]
         [JsonPropertyName("name")]
         public string Name { get; set; } = string.Empty;
 
+        [Column(Type = "string")]
         [JsonPropertyName("description")]
         public string Description { get; set; } = string.Empty;
 
+        [Column(Type = "option<record<holon>>")]
         [JsonPropertyName("parent_holon_id")]
         public string? ParentHolonId { get; set; }
 
+        [Column(Type = "option<record<avatar>>")]
         [JsonPropertyName("avatar_id")]
         public string? AvatarId { get; set; }
 
+        [Column(Type = "string")]
         [JsonPropertyName("provider_name")]
         public string ProviderName { get; set; } = string.Empty;
 
+        [Column(Type = "option<string>")]
         [JsonPropertyName("chain_id")]
         public string? ChainId { get; set; }
 
+        [Column(Type = "option<string>")]
         [JsonPropertyName("asset_type")]
         public string? AssetType { get; set; }
 
+        [Column(Type = "option<string>")]
         [JsonPropertyName("token_id")]
         public string? TokenId { get; set; }
 
+        [Column(Type = "option<object>")]
         [JsonPropertyName("metadata")]
         public JsonElement? Metadata { get; set; }
 
+        [Column(Type = "option<array<string>>")]
         [JsonPropertyName("peer_holon_ids")]
         public JsonElement? PeerHolonIds { get; set; }
 
+        [Column(Type = "datetime")]
         [JsonPropertyName("created_date")]
         public DateTimeOffset CreatedDate { get; set; }
 
+        [Column(Type = "option<datetime>")]
         [JsonPropertyName("modified_date")]
         public DateTimeOffset? ModifiedDate { get; set; }
 
+        [Column(Type = "bool")]
         [JsonPropertyName("is_active")]
         public bool IsActive { get; set; } = true;
     }

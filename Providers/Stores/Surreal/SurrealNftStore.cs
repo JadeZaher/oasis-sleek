@@ -226,8 +226,11 @@ public sealed class SurrealNftStore : INftStore
     {
         try
         {
-            var q = SurrealQuery.Of("SELECT * FROM holon_nft_binding WHERE avatar_nft_id = $avatarNftId")
-                .WithParam("avatarNftId", ToSurrealId(avatarNFTId));
+            // Param name MUST be lowercase: SurrealDB 3.x case-folds the `$token`
+            // in the query but NOT the RPC vars key, so a mixed-case name binds to
+            // NONE and the predicate silently matches nothing.
+            var q = SurrealQuery.Of("SELECT * FROM holon_nft_binding WHERE avatar_nft_id = $avatar_nft_id")
+                .WithParam("avatar_nft_id", ToSurrealId(avatarNFTId));
 
             var rows = await _executor.QueryAsync<SurrealHolonBinding>(q, ct);
             return new OASISResult<IEnumerable<IHolonNFTBinding>>
@@ -325,8 +328,9 @@ public sealed class SurrealNftStore : INftStore
     {
         try
         {
-            var q = SurrealQuery.Of("SELECT * FROM wallet_nft_binding WHERE avatar_nft_id = $avatarNftId")
-                .WithParam("avatarNftId", ToSurrealId(avatarNFTId));
+            // Lowercase param name — see GetHolonNFTBindingsByAvatarNFTAsync.
+            var q = SurrealQuery.Of("SELECT * FROM wallet_nft_binding WHERE avatar_nft_id = $avatar_nft_id")
+                .WithParam("avatar_nft_id", ToSurrealId(avatarNFTId));
 
             var rows = await _executor.QueryAsync<SurrealWalletBinding>(q, ct);
             return new OASISResult<IEnumerable<IWalletNFTBinding>>

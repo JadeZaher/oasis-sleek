@@ -112,17 +112,8 @@ public sealed class SurrealBlockchainOperationStore : IBlockchainOperationStore
         try
         {
             var poco = ToPoco(operation);
-            var surrealId = poco.Id;
 
-            // UPDATE type::record('operation_log', $id) CONTENT $body RETURN AFTER
-            // SurrealDB upsert: creates the record if it does not exist; replaces
-            // it if it does.  No conditional guard — full replacement semantics.
-            var q = SurrealQuery
-                .Of("UPSERT type::record($_t, $_id) CONTENT $_body RETURN AFTER")
-                .WithParam("_t", TableName)
-                .WithParam("_id", surrealId)
-                .WithParam("_body", poco);
-
+            var q        = SurrealWriter.Upsert(poco);
             var response = await _executor.ExecuteAsync(q, ct);
             response.EnsureAllOk();
 

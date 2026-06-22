@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Oasis.SurrealDb.Client;
 using Oasis.SurrealDb.Client.Json;
 using Oasis.SurrealDb.Client.Query;
+using Oasis.SurrealDb.Client.Schema;
 using OASIS.WebAPI.Core;
 using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Stores;
@@ -103,18 +104,9 @@ public sealed class SurrealStarStore : ISTARStore
             if (odk.Id == Guid.Empty)
                 odk.Id = Guid.NewGuid();
 
-            var poco   = ToPoco(odk);
-            var surrId = poco.Id;
+            var poco = ToPoco(odk);
 
-            // UPSERT type::record($_t, $_id) CONTENT $_body RETURN AFTER
-            // SurrealDB upsert: creates the record if it does not exist; replaces
-            // it if it does. Same pattern as SurrealWalletStore.
-            var q = SurrealQuery
-                .Of("UPSERT type::record($_t, $_id) CONTENT $_body RETURN AFTER")
-                .WithParam("_t",    StarRecord.StarTable)
-                .WithParam("_id",   surrId)
-                .WithParam("_body", poco);
-
+            var q    = SurrealWriter.Upsert(poco);
             var resp = await _executor.ExecuteAsync(q, ct);
             resp.EnsureAllOk();
 
@@ -234,42 +226,56 @@ public sealed class SurrealStarStore : ISTARStore
 
         public string SchemaName => StarTable;
 
+        [Id, Column(Type = "string")]
         [JsonPropertyName("id")]
         public string Id { get; set; } = string.Empty;
 
+        [Column(Type = "string")]
         [JsonPropertyName("name")]
         public string Name { get; set; } = string.Empty;
 
+        [Column(Type = "string")]
         [JsonPropertyName("description")]
         public string Description { get; set; } = string.Empty;
 
+        [Column(Type = "option<string>")]
         [JsonPropertyName("public_key")]
         public string? PublicKey { get; set; }
 
+        [Column(Type = "option<string>")]
         [JsonPropertyName("private_key_hash")]
         public string? PrivateKeyHash { get; set; }
 
+        [Column(Type = "option<record<avatar>>")]
         [JsonPropertyName("avatar_id")]
         public string? AvatarId { get; set; }
 
+        [Column(Type = "option<array<string>>")]
         [JsonPropertyName("bound_holon_ids")]
         public JsonElement? BoundHolonIds { get; set; }
 
+        [Column(Type = "option<string>")]
         [JsonPropertyName("target_chain")]
         public string? TargetChain { get; set; }
 
+        [Column(Type = "option<string>")]
         [JsonPropertyName("generated_code")]
         public string? GeneratedCode { get; set; }
 
+        [Column(Type = "option<string>")]
         [JsonPropertyName("deployment_config")]
         public string? DeploymentConfig { get; set; }
 
+        [Column(Type = "datetime")]
+        [ReadOnly]
         [JsonPropertyName("created_date")]
         public DateTimeOffset CreatedDate { get; set; }
 
+        [Column(Type = "option<datetime>")]
         [JsonPropertyName("modified_date")]
         public DateTimeOffset? ModifiedDate { get; set; }
 
+        [Column(Type = "bool")]
         [JsonPropertyName("is_active")]
         public bool IsActive { get; set; } = true;
     }

@@ -1,4 +1,3 @@
-using System.Text.Json.Serialization;
 using Oasis.SurrealDb.Client;
 using Oasis.SurrealDb.Client.Query;
 using OASIS.WebAPI.Core;
@@ -6,6 +5,7 @@ using OASIS.WebAPI.Interfaces;
 using OASIS.WebAPI.Interfaces.Stores;
 using OASIS.WebAPI.Models;
 using OASIS.WebAPI.Models.Responses;
+using GeneratedAvatar = OASIS.WebAPI.Persistence.SurrealDb.Models.Avatar;
 
 namespace OASIS.WebAPI.Providers.Stores.Surreal;
 
@@ -38,7 +38,7 @@ public sealed class SurrealAvatarStore : IAvatarStore
                 .Of("SELECT * FROM type::record($_t, $_id)")
                 .WithParam("_t",  AvatarTable)
                 .WithParam("_id", ToSurrealId(id));
-            var row = await _executor.QuerySingleAsync<SurrealAvatar>(q, ct);
+            var row = await _executor.QuerySingleAsync<GeneratedAvatar>(q, ct);
             return new OASISResult<IAvatar>
             {
                 IsError = row == null,
@@ -59,7 +59,7 @@ public sealed class SurrealAvatarStore : IAvatarStore
         try
         {
             var q = SurrealQuery.SelectAll(AvatarTable);
-            var rows = await _executor.QueryAsync<SurrealAvatar>(q, ct);
+            var rows = await _executor.QueryAsync<GeneratedAvatar>(q, ct);
             return new OASISResult<IEnumerable<IAvatar>>
             {
                 Result  = rows.Select(FromPoco).ToList(),
@@ -79,22 +79,13 @@ public sealed class SurrealAvatarStore : IAvatarStore
             if (avatar.Id == Guid.Empty)
                 avatar.Id = Guid.NewGuid();
 
-            var poco   = ToPoco(avatar);
-            var surrId = poco.Id;
+            var poco = ToPoco(avatar);
 
-            // UPSERT type::record($_t, $_id) CONTENT $_body RETURN AFTER
-            // SurrealDB upsert: creates the record if it does not exist; replaces
-            // it if it does. Same pattern as SurrealWalletStore.
-            var q = SurrealQuery
-                .Of("UPSERT type::record($_t, $_id) CONTENT $_body RETURN AFTER")
-                .WithParam("_t",    AvatarTable)
-                .WithParam("_id",   surrId)
-                .WithParam("_body", poco);
-
+            var q    = SurrealWriter.Upsert(poco);
             var resp = await _executor.ExecuteAsync(q, ct);
             resp.EnsureAllOk();
 
-            var saved = resp.GetValues<SurrealAvatar>(0).FirstOrDefault();
+            var saved = resp.GetValues<GeneratedAvatar>(0).FirstOrDefault();
             var result = saved is not null ? FromPoco(saved) : avatar;
 
             return new OASISResult<IAvatar> { Result = result, Message = "Saved." };
@@ -114,7 +105,7 @@ public sealed class SurrealAvatarStore : IAvatarStore
                 .Of("SELECT * FROM type::record($_t, $_id)")
                 .WithParam("_t",  AvatarTable)
                 .WithParam("_id", ToSurrealId(id));
-            var existing = await _executor.QuerySingleAsync<SurrealAvatar>(checkQ, ct);
+            var existing = await _executor.QuerySingleAsync<GeneratedAvatar>(checkQ, ct);
             if (existing == null)
                 return new OASISResult<bool> { IsError = true, Message = "Avatar not found.", Result = false };
 
@@ -142,7 +133,7 @@ public sealed class SurrealAvatarStore : IAvatarStore
             var q = SurrealQuery
                 .Of("SELECT * FROM avatar WHERE owner_tenant_id = $_tenant ORDER BY created_date DESC")
                 .WithParam("_tenant", SurrealLink.ToLink(AvatarTable, ToSurrealId(tenantId)));
-            var rows = await _executor.QueryAsync<SurrealAvatar>(q, ct);
+            var rows = await _executor.QueryAsync<GeneratedAvatar>(q, ct);
             return new OASISResult<IEnumerable<IAvatar>>
             {
                 Result  = rows.Select(FromPoco).ToList(),
@@ -166,7 +157,7 @@ public sealed class SurrealAvatarStore : IAvatarStore
                 .Of("SELECT * FROM avatar WHERE owner_tenant_id = $_tenant AND external_user_id = $_ext LIMIT 1")
                 .WithParam("_tenant", SurrealLink.ToLink(AvatarTable, ToSurrealId(tenantId)))
                 .WithParam("_ext", externalUserId);
-            var row = await _executor.QuerySingleAsync<SurrealAvatar>(q, ct);
+            var row = await _executor.QuerySingleAsync<GeneratedAvatar>(q, ct);
             return new OASISResult<IAvatar>
             {
                 Result  = row == null ? null : FromPoco(row),
@@ -187,7 +178,7 @@ public sealed class SurrealAvatarStore : IAvatarStore
     private static Guid FromSurrealId(string id)
         => Guid.ParseExact(id, "N");
 
-    private static SurrealAvatar ToPoco(IAvatar a) => new()
+    private static GeneratedAvatar ToPoco(IAvatar a) => new()
     {
         Id               = ToSurrealId(a.Id),
         Username         = a.Username,
@@ -213,7 +204,7 @@ public sealed class SurrealAvatarStore : IAvatarStore
         ExternalRef      = a.ExternalRef
     };
 
-    private static Avatar FromPoco(SurrealAvatar p) => new()
+    private static Avatar FromPoco(GeneratedAvatar p) => new()
     {
         Id               = FromSurrealId(p.Id),
         Username         = p.Username,
@@ -233,52 +224,4 @@ public sealed class SurrealAvatarStore : IAvatarStore
         ExternalRef      = p.ExternalRef
     };
 
-    // ── Inline POCO ───────────────────────────────────────────────────────────
-
-    private sealed class SurrealAvatar : Oasis.SurrealDb.Client.ISurrealRecord
-    {
-        public string SchemaName => AvatarTable;
-
-        [JsonPropertyName("id")]
-        public string Id { get; set; } = string.Empty;
-
-        [JsonPropertyName("username")]
-        public string Username { get; set; } = string.Empty;
-
-        [JsonPropertyName("email")]
-        public string Email { get; set; } = string.Empty;
-
-        [JsonPropertyName("password_hash")]
-        public string PasswordHash { get; set; } = string.Empty;
-
-        [JsonPropertyName("title")]
-        public string? Title { get; set; }
-
-        [JsonPropertyName("first_name")]
-        public string? FirstName { get; set; }
-
-        [JsonPropertyName("last_name")]
-        public string? LastName { get; set; }
-
-        [JsonPropertyName("created_date")]
-        public DateTimeOffset CreatedDate { get; set; }
-
-        [JsonPropertyName("last_beamed_in_date")]
-        public DateTimeOffset? LastBeamedInDate { get; set; }
-
-        [JsonPropertyName("is_active")]
-        public bool IsActive { get; set; } = true;
-
-        [JsonPropertyName("is_verified")]
-        public bool IsVerified { get; set; }
-
-        [JsonPropertyName("owner_tenant_id")]
-        public string? OwnerTenantId { get; set; }
-
-        [JsonPropertyName("external_user_id")]
-        public string? ExternalUserId { get; set; }
-
-        [JsonPropertyName("external_ref")]
-        public string? ExternalRef { get; set; }
-    }
 }
